@@ -13,7 +13,6 @@ from training_utils import (
 )
 
 from ghostEngines.graddotprod_engine import GradDotProdEngine
-# from ghostEngines.gradnorm_engine import GradNormEngine
 
 
 class Trainer: 
@@ -80,10 +79,8 @@ class Trainer:
         result_file = self.config.get_result_file_path()
         
         try:
-            t0_total = time.time()
             
             while self.iter_num < self.config.max_steps:
-                t_iter_start = time.time()
                 
                 # Get training batch
                 X, Y, batch_idx = self.get_batch(
@@ -111,22 +108,8 @@ class Trainer:
                 
                 # Training step
                 self._training_step(X, Y, batch_idx, lr)
-                
-                # Timing
-                torch.cuda.synchronize()
-                t_iter_end = time.time()
-                dt = t_iter_end - t_iter_start
-                self.time_list.append(dt)
-                
-                print(f"iter {self.iter_num}: time {dt*1000:.2f}ms")
-                
+                                
                 self.iter_num += 1
-            
-            # Training completed
-            t1_total = time.time()
-            dt_total = t1_total - t0_total
-            avg_time = np.mean(self.time_list) * 1000 if self.time_list else 0
-            print(f"Training completed in {dt_total:.2f}s, avg iter time: {avg_time:.2f}ms")
             
         except Exception as e:
             print(f"Error during training: {e}")
@@ -141,14 +124,6 @@ class Trainer:
         
         loss = None
 
-        # # Debug: print the first few entries of each layer's parameters
-        # if self.ddp_info['master_process']:
-        #     print("[Debug] Inspecting model parameters before training step:")
-        #     for name, param in self.model.named_parameters():
-        #         if param.initially_requires_grad:
-        #             first_vals = param.view(-1)[:5].detach().cpu()
-        #             print(f"[Debug] {name} first entries: {first_vals}")
-
         # Forward and backward pass with gradient accumulation
         for micro_step in range(self.config.gradient_accumulation_steps):
             if self.ddp_info['ddp']:
@@ -158,30 +133,17 @@ class Trainer:
             
             with self.ctx:
                 if self.config.method == 'Regular':
-                    start_time = time.time()
                     outputs = self.model(input_ids=X, labels=Y)
                     logits, loss = outputs.logits, outputs.loss
-                    torch.cuda.synchronize()
-                    print(f"Forward pass time: {time.time() - start_time:.4f}s")
-
-                elif self.config.method == 'GradNorm':
-                    start_time = time.time()
-                    outputs = self.model(input_ids=X, labels=Y)
-                    logits, loss = outputs.logits, outputs.loss
-                    torch.cuda.synchronize()
-                    print(f"Forward pass time: {time.time() - start_time:.4f}s")
 
                 elif self.config.method == 'GradDotProd':
                     # Concatenate train and val batches
                     X_cat = torch.cat((X, self.X_val), dim=0)
                     Y_cat = torch.cat((Y, self.Y_val), dim=0)
 
-                    start_time = time.time()
                     # The loss here will be from the concatenated batch
                     outputs = self.model(input_ids=X_cat, labels=Y_cat)
                     logits, loss = outputs.logits, outputs.loss
-                    torch.cuda.synchronize()
-                    print(f"Forward pass time: {time.time() - start_time:.4f}s")
                 
                 # Scale loss for gradient accumulation
                 if loss is not None:
@@ -189,10 +151,7 @@ class Trainer:
             
             # Backward pass
             if loss is not None:
-                start_time = time.time()
                 self.scaler.scale(loss).backward()
-                torch.cuda.synchronize()
-                print(f"Backward pass time: {time.time() - start_time:.4f}s")
         
         # Gradient clipping and optimization step
         self.scaler.unscale_(self.optimizer)
