@@ -1,4 +1,6 @@
-"""Utilities to make using PrivacyEngine easy with Hugging Face transformers."""
+"""This file is adapted from https://github.com/awslabs/fast-differential-privacy/blob/3d5cc561aa337c72f79873ccc4fe8b900b5493b5/fastDP/transformers_support.py"""
+
+
 import types
 from typing import Optional, Tuple, Union
 

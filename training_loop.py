@@ -15,6 +15,8 @@ from training_utils import (
 from ghostEngines.graddotprod_engine import GradDotProdEngine
 
 
+
+
 class Trainer: 
     """Main trainer class that orchestrates the training process."""
     
@@ -72,6 +74,7 @@ class Trainer:
         self.X_val = self.X_val.to(ddp_info['device'])
         self.Y_val = self.Y_val.to(ddp_info['device'])
 
+
     def run_training(self):
         """Run the main training loop."""
         print("Starting training...")
@@ -124,6 +127,8 @@ class Trainer:
         
         loss = None
 
+        iter_start_time = time.time()
+
         # Forward and backward pass with gradient accumulation
         for micro_step in range(self.config.gradient_accumulation_steps):
             if self.ddp_info['ddp']:
@@ -153,6 +158,9 @@ class Trainer:
             if loss is not None:
                 self.scaler.scale(loss).backward()
         
+        if self.grad_dot_prod_engine:
+            self.grad_dot_prod_engine.prepare_gradients()
+
         # Gradient clipping and optimization step
         self.scaler.unscale_(self.optimizer)
         
@@ -163,6 +171,13 @@ class Trainer:
         # before calling the original optimizer step.
         self.scaler.step(self.optimizer)
         self.scaler.update()
+
+        if self.grad_dot_prod_engine:
+            self.grad_dot_prod_engine.aggregate_and_log()
+            self.grad_dot_prod_engine.clear_gradients()
+
+        torch.cuda.synchronize()
+        print(f"Step {self.iter_num} completed in {(time.time() - iter_start_time)*1000:.4f}ms.")
 
         # Print loss value for debugging
         if loss is not None:
@@ -201,4 +216,35 @@ class Trainer:
             save_path=self.dot_prod_save_path,
             iter_num=self.iter_num
         )
+
+    def _cleanup(self, result_file):
+        """Cleanup training resources and run a final evaluation."""
+
+        print("Running cleanup ...")
+
+        # Run a final evaluation to save the last set of metrics
+        try:
+            self._run_evaluation(result_file)
+        except Exception as e:
+            print(f"Error during final evaluation: {e}")
+
+        # Save any remaining dot products and detach the engine
+        if self.grad_dot_prod_engine is not None:
+            try:
+                if self.grad_dot_prod_engine.dot_product_log:
+                    self._save_dot_products()
+            except Exception as e:
+                print(f"Error saving dot products during cleanup: {e}")
+            finally:
+                try:
+                    self.grad_dot_prod_engine.detach()
+                except Exception as e:
+                    print(f"Error detaching GradDotProdEngine: {e}")
+
+        # Disable GradNormEngine hooks if they were used
+        if self.grad_norm_engine is not None:
+            try:
+                self.grad_norm_engine.disable_hooks()
+            except Exception as e:
+                print(f"Error disabling GradNormEngine hooks: {e}")
 

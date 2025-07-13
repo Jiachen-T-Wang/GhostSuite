@@ -90,10 +90,8 @@ class GradDotProdEngine:
         self._grad_creation_locked = False
 
     def attach(self, optimizer: torch.optim.Optimizer):
-        """
-        Attaches the GradDotProdEngine to a PyTorch optimizer, overriding its
-        step() method to use the custom training gradients.
-        """
+        """ Attach the engine to an optimizer and register autograd hooks. """
+
         self.optimizer = optimizer
 
         autograd_grad_sample_dotprod.add_hooks(
@@ -102,34 +100,8 @@ class GradDotProdEngine:
             loss_reduction=self.loss_reduction
         )
 
-        def dot_prod_step(self, closure=None):
-            """
-            Performs a single optimization step using the gradients stored in
-            `param.train_grad`.
-            """
-            # 1. Zero out any existing gradients on the parameters.
-            self.zero_grad()
-
-            # 2. Prepare the training gradients for the optimizer step.
-            self.grad_dot_prod_engine._prepare_and_apply_train_grad()
-
-            # TODO: add gradient clipping here if needed
-
-            # --- Aggregate and log dot products for this step ---
-            self.grad_dot_prod_engine._aggregate_and_log_dot_products()
-
-            # 3. Call the original optimizer's step function to update weights.
-            self.original_step(closure=closure)
-            
-            # 4. Clean up the used gradients to prepare for the next iteration.
-            self.grad_dot_prod_engine._clear_train_grad()
-
-        # Store a reference to the engine on the optimizer for access in the step
+        # Keep a reference to the engine on the optimizer for convenience
         optimizer.grad_dot_prod_engine = self
-
-        # Save the original step method and override it with our custom one
-        optimizer.original_step = optimizer.step
-        optimizer.step = types.MethodType(dot_prod_step, optimizer)
 
     def detach(self):
         """
@@ -137,11 +109,9 @@ class GradDotProdEngine:
         cleaning up hooks and custom attributes.
         """
         optimizer = self.optimizer
-        optimizer.step = optimizer.original_step
 
-        # Remove the references we added
-        del optimizer.original_step
-        del optimizer.grad_dot_prod_engine
+        if hasattr(optimizer, "grad_dot_prod_engine"):
+            del optimizer.grad_dot_prod_engine
 
         # Remove the hooks from the model
         autograd_grad_sample_dotprod.remove_hooks(self.module)
@@ -202,6 +172,19 @@ class GradDotProdEngine:
         
         # Unlock to allow the next backward pass to create new gradients.
         self._unlock_grad_creation()
+
+
+    def prepare_gradients(self):
+        """Move accumulated training gradients to ``.grad`` for optimizer."""
+        self._prepare_and_apply_train_grad()
+
+    def clear_gradients(self):
+        """Remove stored training gradients after the optimizer step."""
+        self._clear_train_grad()
+
+    def aggregate_and_log(self):
+        """Aggregate per-layer dot products and append to the log list."""
+        self._aggregate_and_log_dot_products()
 
 
     def _aggregate_and_log_dot_products(self):
