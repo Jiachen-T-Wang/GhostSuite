@@ -1,4 +1,6 @@
-# Codebase revision notes
+# Developing version of the GhostSuite codebase.
+
+## Codebase revision notes
 - 6/26: There is an issue when upgrading transformers to 4.50. Now falling back to 4.36.2
 - 7/10: Removed gradient clipping and I realize that gradient clipping should happen inside the engine. **TODO:** if no more elegant way to handle gradient clipping then just manually handle gradient clipping inside Engine. 
 - 7/10: The dropout rates need to be set to 0 at the moment as per-sample activation dropouts are dependent on batch size, but it's okey. Can try customized dropout later if that does not increase runtime.
