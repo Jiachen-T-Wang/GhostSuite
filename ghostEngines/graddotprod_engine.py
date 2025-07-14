@@ -69,10 +69,6 @@ class GradDotProdEngine:
 
             # Only set requires_grad to True for the very first layer (e.g., embedding layer)
             param.requires_grad = False
-            # if name == "transformer.wte.weight":
-            #     param.requires_grad = True
-            # if name == "transformer.wpe.weight":
-            #     param.requires_grad = True
 
         # Fix for Hugging Face model incompatibility
         transformers_support.forward_swapper(module=module)

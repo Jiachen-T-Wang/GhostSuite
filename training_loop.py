@@ -127,8 +127,6 @@ class Trainer:
         
         loss = None
 
-        iter_start_time = time.time()
-
         # Forward and backward pass with gradient accumulation
         for micro_step in range(self.config.gradient_accumulation_steps):
             if self.ddp_info['ddp']:
@@ -175,13 +173,6 @@ class Trainer:
         if self.grad_dot_prod_engine:
             self.grad_dot_prod_engine.aggregate_and_log()
             self.grad_dot_prod_engine.clear_gradients()
-
-        torch.cuda.synchronize()
-        print(f"Step {self.iter_num} completed in {(time.time() - iter_start_time)*1000:.4f}ms.")
-
-        # Print loss value for debugging
-        if loss is not None:
-            print(f"Loss at iter {self.iter_num}: {loss.item():.4f}")
 
         self.optimizer.zero_grad(set_to_none=True)
     
