@@ -13,6 +13,31 @@ from transformers.utils import logging
 logger = logging.get_logger(__name__)
 
 
+
+def _add_dummy_bias(embedding: nn.Embedding):
+    """Ensure the embedding produces gradients without updating its weight."""
+    if hasattr(embedding, "dummy_bias"):
+        return
+
+    # Add a single trainable parameter
+    embedding.register_parameter("dummy_bias", 
+                                 nn.Parameter(torch.zeros(1, device=embedding.weight.device)))
+
+    old_forward = embedding.forward
+
+    def new_forward(self, input, *args, **kwargs):
+        output = old_forward(input, *args, **kwargs)
+        bias = self.dummy_bias.to(dtype=output.dtype, device=output.device)
+        return output + bias * 0
+
+    embedding.forward = types.MethodType(new_forward, embedding)
+
+    # Stop gradient computation for the weight
+    embedding.weight.requires_grad = False
+    embedding.dummy_bias.initially_requires_grad = True
+
+
+
 def forward_swapper(module):
     """Fix incompatibility between Opacus and Hugging Face.
 
@@ -40,6 +65,10 @@ def forward_swapper(module):
 
 
 def swap_openai_gpt_model_forward(model: transformers.OpenAIGPTModel):
+
+    _add_dummy_bias(model.tokens_embed)
+    _add_dummy_bias(model.positions_embed)
+
     def new_forward(
         self,
         input_ids=None,
@@ -139,6 +168,9 @@ def swap_gpt2_model_forward(model: Union[transformers.GPT2Model, transformers.GP
 
     Main issue is that positional embedding's input should be duplicated.
     """
+
+    _add_dummy_bias(model.wte)
+    _add_dummy_bias(model.wpe)
 
     def new_forward(
         self,

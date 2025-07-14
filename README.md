@@ -23,3 +23,14 @@ Prepare dataset binaries as expected by `dataloader.py` and adjust paths in `con
 python main.py --method "GradDotProd" --batch_size 16 --val_batch_size 1
 ```
 During training the engine logs gradient dot products and saves results under the directory specified by `TrainingConfig.result_folder`.
+
+When integrating `GradDotProdEngine` manually the update step now looks like:
+
+```python
+loss.backward()
+engine.prepare_gradients()
+# Can add any additional gradient operations such as gradient clipping here. 
+optimizer.step()
+engine.aggregate_and_log()
+engine.clear_gradients()
+```
