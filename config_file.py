@@ -5,7 +5,7 @@ import os
 
 
 # Replace with your own data and result root directories
-DATA_ROOT = "/scratch/gpfs/tw8948/LESS/pile-6m"
+DATA_ROOT = "/scratch/gpfs/tw8948/GhostSuite/pile-bin"
 RESULT_ROOT = "/scratch/gpfs/tw8948/InRunResult"
 
 
