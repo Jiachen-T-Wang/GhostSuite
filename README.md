@@ -1,7 +1,7 @@
 # "Ghost" Suites for fast gradient information calculation
 
 ## Introduction
-This repository demonstrates how to compute gradient based metrics, such as [In-Run Data Shapley](https://openreview.net/pdf?id=HD6bWcj87Y), while training language models. The "ghost" engines currently support first-order In-Run Data Shapley which computes the gradient dot-product between validation loss and each individual training sample within a batch without fully materialising intermediate gradients. The code is built around the `transformers` library and currently targets GPT-2 style architectures.
+This repository demonstrates how to compute gradient based metrics, such as [In-Run Data Shapley](https://openreview.net/pdf?id=HD6bWcj87Y), while training language models. The "ghost" engines currently support first-order In-Run Data Shapley which computes the gradient dot-product between validation loss and each individual training sample within a batch without fully materialising intermediate gradients. The code is built around the `transformers` library. The current codebase demonstrates GPT-2 pretraining, but it should be able to easily adapt to your own Trainer. 
 
 ## Installation
 ```bash
