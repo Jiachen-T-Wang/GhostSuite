@@ -17,19 +17,8 @@ from training_utils import (
 )
 from model_setup import setup_model_and_optimizer
 from training_loop import Trainer
-from dataloader import load_all_data, get_batch_from_dataset, get_batch_subdomain
+from dataloader import load_all_data, get_batch_from_dataset
 from utils import set_seed
-
-
-# def setup_data_functions(dataset, config):
-#     """Setup data loading functions."""
-#     def get_batch(split, batch_size, return_idx=False):
-#         return get_batch_from_dataset(split, batch_size, dataset, return_idx=return_idx)
-    
-#     def get_val_batch(batch_size, domain_name, return_idx=False, return_first=False):
-#         return get_batch('val', batch_size, return_idx=False)
-    
-#     return get_batch, get_val_batch
 
 
 def setup_data_functions(dataset, config):

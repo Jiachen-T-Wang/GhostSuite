@@ -4,22 +4,3 @@ PILE_DOMAIN_LIST = ['Pile-CC',
                     'PubMed Abstracts', 'PubMed Central', 'NIH ExPorter',
                     'EuroParl', 'PhilPapers', 'USPTO Backgrounds',
                     'FreeLaw', 'Gutenberg (PG-19)', 'Enron Emails']
-
-
-FORGET_DOMAIN_RANK = [
-    "DM Mathematics",
-    "NIH ExPorter",
-    "EuroParl",
-    "Github",
-    "Enron Emails",
-    "ArXiv",
-    "PubMed Abstracts",
-    "USPTO Backgrounds",
-    "PubMed Central",
-    "Gutenberg (PG-19)",
-    "PhilPapers",
-    "StackExchange",
-    "FreeLaw",
-    "HackerNews",
-    "Wikipedia (en)"
-]

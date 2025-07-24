@@ -4,6 +4,11 @@ import argparse
 import os
 
 
+# Replace with your own data and result root directories
+DATA_ROOT = "/scratch/gpfs/tw8948/LESS/pile-6m"
+RESULT_ROOT = "/scratch/gpfs/tw8948/InRunResult"
+
+
 def get_model_config(architecture):
     """Get model configuration based on architecture name."""
     configs = {
@@ -136,7 +141,7 @@ class TrainingConfig:
         self.method = args.method
         
         # Result directory setup
-        self.result_folder = '/scratch/gpfs/tw8948/InRunResult'
+        self.result_folder = RESULT_ROOT
         self.setup_result_directories()
     
     def _is_bf16_supported(self):

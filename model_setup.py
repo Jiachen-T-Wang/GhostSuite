@@ -8,6 +8,9 @@ from transformers import GPT2Config, GPT2LMHeadModel as GPT # Import from transf
 def create_model(config):
     """Create and initialize the GPT model."""
 
+    # setting non-zero values for dropout parameters may cause deviations in training results between 'Regular' and 'Ghost' modes.
+    # this is okey for practical purposes
+    # but if you want to have exact the same results (e.g., for debugging), set all dropout parameters to 0.
     model_args = dict(
         n_layer=config.n_layer,
         n_head=config.n_head,
@@ -16,10 +19,10 @@ def create_model(config):
         bos_token_id=config.vocab_size,
         eos_token_id=config.vocab_size,
         vocab_size=config.vocab_size,
-        resid_pdrop=0,
-        embd_pdrop=0,
-        attn_pdrop=0,
-        summary_first_dropout=0,
+        # resid_pdrop=0,
+        # embd_pdrop=0,
+        # attn_pdrop=0,
+        # summary_first_dropout=0,
     )
     
     gptconf = GPT2Config(**model_args)
