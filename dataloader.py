@@ -18,8 +18,8 @@ def load_all_data():
 
         # Define file paths
         traindata_dir = f'{PILE_DATA_DIR}/train-{dom_amp}.bin'
-        valdata_dir = f'{PILE_DATA_DIR}/val/validation-{domain}.bin'
-        testdata_dir = f'{PILE_DATA_DIR}/test/test-{domain}.bin'
+        valdata_dir = f'{PILE_DATA_DIR}/val/validation-{dom_amp}.bin'
+        testdata_dir = f'{PILE_DATA_DIR}/test/test-{dom_amp}.bin'
         
         # Load data
         train_data = np.memmap(traindata_dir, dtype=np.uint16, mode='r')

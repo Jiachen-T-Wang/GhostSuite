@@ -7,7 +7,7 @@ from utils import build_result_dir
 
 
 # Directory configurations
-RESULTS_DIR = '/scratch/gpfs/tw8948/ghostTest/Results'
+RESULTS_DIR = '/scratch/gpfs/tw8948/GhostPub/GhostSuite/Results'
 
 # Dataset directories
 PILE_DATA_DIR = '/scratch/gpfs/tw8948/pile_tokenized'
