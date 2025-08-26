@@ -229,9 +229,6 @@ class GradDotProdEngine:
 
             self.dot_product_log.append(info_this_iter)
 
-            # debug: print the shape of the dot product
-            print(total_dot_product_iter)
-
         else:
             # If no dot products were computed, log a warning
             warnings.warn("No gradient dot products computed for this iteration.")

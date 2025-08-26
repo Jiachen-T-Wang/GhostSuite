@@ -27,18 +27,23 @@ Note: Adjust paths in `config_file.py` before running.
 - Keep imports ordered: stdlib, third-party, local.
 
 ## Testing Guidelines
-- No formal test suite yet. Use deterministic smoke runs with `--seed` and `--eval_only`.
-- Validate data paths and result artifacts under `RESULTS_DIR` created by `utils.build_result_dir`.
-- When adding tests, place under `tests/` and favor `pytest`-style unit tests mocking I/O.
 
-## Commit & Pull Request Guidelines
-- Commits: imperative mood, concise subject (≤72 chars), descriptive body if needed.
-- Reference issues using `Closes #123` when applicable.
-- PRs must include: summary of changes, rationale, run command(s) used, sample logs/metrics path (e.g., `.../GradDotProd_pile_*`), and any config updates.
-- For SLURM: include partition/account changes and expected GPU/precision (e.g., `bfloat16`).
+The following are the command lines for testing the codebase. 
 
-## Security & Configuration Tips
-- Review `Scripts/train.sh` SBATCH fields (email, partition, account, output paths) for your cluster.
-- Ensure GPUs support BF16 if using `--model_dtype/--train_dtype bfloat16`.
-- Large preprocessing can run for many hours; use screened/queued jobs and quota-aware `RESULTS_DIR`.
+**Important: (Let's only use GPT2-Small trained on Pile now, don't need to worry about LLAVA)**
+**Important: when running evaluation, always use --batch_size 2 due to our small GPU memory**
+```bash
+# Run training with default settings (GradDotProd method)
+./Scripts/train.sh --batch_size 2
+
+# Run regular training without gradient computation
+./Scripts/train.sh --batch_size 2 --method Regular
+
+# Specify custom parameters
+./Scripts/train.sh --batch_size 2 --learning_rate 1e-4 --max_steps 100000
+```
+
+# Code Length and Structure Guidelines
+- **Reuse code blocks whenever possible.** If similar functionality exists in previously generated files within this project, reference and extend that code rather than rewriting from scratch. Build incrementally on existing code patterns.
+- **Do not fallback anywhere.** Raise errors and terminate program rather than silently falling back to default values. Always require explicit configuration values rather than silently using defaults. 
 

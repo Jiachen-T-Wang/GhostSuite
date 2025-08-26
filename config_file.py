@@ -24,7 +24,7 @@ def parse_arguments():
     
     # Architecture parameters
     parser.add_argument('--architecture', type=str, default='GPT2-Small',
-                       choices=['GPT2-Small', 'GPT2-Medium', 'GPT2-Large', 'Pythia-410M', 'LLaVA-7B', 'LLaVA-13B'])
+                       choices=['GPT2-Small', 'GPT2-Medium', 'GPT2-Large', 'LLaVA-7B', 'LLaVA-13B'])
     
     # Training parameters
     parser.add_argument('--batch_size', type=int, default=16, help='Training batch size')
