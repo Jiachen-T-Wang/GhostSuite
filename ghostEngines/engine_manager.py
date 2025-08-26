@@ -70,7 +70,6 @@ class GhostEngineManager:
             module=self.model,
             val_batch_size=self.config.val_batch_size,
             loss_reduction='mean',
-            average_grad=True,
             use_dummy_bias=True,
             dot_prod_save_path=dot_prod_save_path
         )

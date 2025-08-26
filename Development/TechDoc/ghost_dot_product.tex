@@ -1,4 +1,24 @@
-\section{Technical Details}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\del}{\partial}
+\newcommand{\bs}{\textbf{s}}
+\newcommand{\ba}{\textbf{a}}
+\newcommand{\bb}{\textbf{b}}
+\newcommand{\bW}{\textbf{W}}
+\newcommand{\outerprod}{\otimes}
+\newcommand{\batch}{\mathcal{B}_t}
+\newcommand{\zval}{z^{(\test)}}
+\newcommand{\test}{\mathrm{val}}
+
+
+\section{Background}
+Computing per-sample gradient information and pair-wise gradient similarity is often the computational bottleneck for data-centric research. A naive approach would require setting the batch size to 1, backpropagating on the loss of each training sample, and storing all the huge gradient vectors. Consequently, this approach would be computationally prohibitive for practical applications. 
+
+We proposed a highly efficient method to obtain per-sample gradient information. It turns out that we can compute the gradient dot-product between every pair of data points within a large batch in just a single backpropagation. At high level, the technique exploits information that's already being computed during standard backpropagation with respect to the aggregated loss on a batch of data points. 
+
+Where does the per-sample gradient information come from? During standard backpropagation, we already compute (1) input activations and (2) output gradients (how the loss changes with respect to each sample's output) for each sample within the batch. Furthermore, to compute pair-wise gradient dot-product, we can directly leverage this gradient decomposition and first take the dot-product between their input activations and between their output gradients, respectively, and then multiply the results. In this way, we do not need to instantiate any huge, model-size vectors, which is both compute and memory-efficient. As a comparison, rather than needing $B$ separate backpropagation passes for $B$ samples, you can compute all pairwise gradient similarities in a single backpropagation pass by reusing the output gradients and input activations that are already being computed.
+
+
+\section{Technical Details for Linear Layers}
 \label{appendix:efficiency}
 
 \textbf{Notation review.} 
@@ -9,7 +29,7 @@ $
 \bb^{(i)} := \frac{\del \ell^{(i)}}{\del \bs}
 $. 
 
-\subsection{Ghost Dot-Product}
+\subsection{Ghost Dot-Product for Linear Layers}
 \label{appendix:efficiency-linear}
 
 By applying the chain rule, we can express the gradient of an individual loss $\ell^{(i)} := \ell(w, z_i)$ with respect to $\bW$ as
@@ -71,5 +91,4 @@ Hence, comparing with directly computing per-sample gradients, if $2T^2 < d_1 d_
 \subsection{Merging Batch Selection and Gradient Update in One Backpropagation}
 \label{appendix:efficiency-bookkeeping}
 
-By utilizing the Ghost Dot-Product technique developed in this paper, we can calculate or approximate all importance scores and correction terms in a single backpropagation pass, without materializing any model-sized vectors. To compute the gradient dot-product between each training point \(z_i \in \batch\) and the validation data \(\zval\), we propose including \(\zval\) in the backpropagation along with the training batch. Specifically, we can backpropagate with respect to $\left(\sum_{z_i \in \batch} \ell^{(i)}\right) + \ell^{(\zval)}$. 
-After computing the gradient dot-product scores for the current iteration, it may seem necessary to backpropagate with respect to \(\sum_{z_i \in \batch} \ell^{(i)}\) to compute the gradient for the parameter update. However, this is not required. We can simply reuse the output gradient \(\frac{\partial \ell^{(i)}}{\partial \bs^{(i)}}\) from the original backpropagation and aggregate the gradients for all selected data points.
+By utilizing the Ghost Dot-Product technique developed in this paper, we can calculate or approximate all importance scores and correction terms in a single backpropagation pass, without materializing any model-sized vectors. To compute the gradient dot-product between each training point \(z_i \in \batch\) and the validation data \(\zval\), we propose including \(\zval\) in the backpropagation along with the training batch. Specifically, we can backpropagate with respect to $\left(\sum_{z_i \in \batch} \ell^{(i)}\right) + \ell^{(\zval)}$. After computing the gradient dot-product scores for the current iteration, it may seem necessary to backpropagate with respect to \(\sum_{z_i \in \batch} \ell^{(i)}\) to compute the gradient for the parameter update. However, this is not required. We can simply reuse the output gradient \(\frac{\partial \ell^{(i)}}{\partial \bs^{(i)}}\) from the original backpropagation and aggregate the gradients for all selected data points.

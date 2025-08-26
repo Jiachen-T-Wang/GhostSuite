@@ -3,8 +3,6 @@ import transformers.pytorch_utils
 from torch import nn
 import torch.nn.functional as F
 
-from transformers.models.t5.modeling_t5 import T5LayerNorm
-import time
 
 def _should_use_ghost_computation(layer: nn.Module, A: torch.Tensor, B: torch.Tensor, conv: bool = False):
     """
@@ -459,22 +457,19 @@ def _compute_Conv1D_train_grad(
     A: torch.Tensor,
     B: torch.Tensor,
     val_batch_size: int,
-    average_grad: bool = False
 ) -> torch.Tensor:
     """
-    Computes the sum or average of gradients across the training data for a
-    Conv1D layer's weight.
-
+    Compute the training gradient for a Conv1D layer's weight and return the
+    averaged gradient across the training batch.
+    
     Args:
         layer: The Conv1D layer.
         A: The input activations from the combined (train + val) batch.
         B: The output gradients from the combined (train + val) batch.
         val_batch_size: The number of samples in the validation batch.
-        average_grad: If True, computes the average gradient.
-                      If False (default), computes the summed gradient.
-
+    
     Returns:
-        The summed or averaged gradient for the layer's weight parameter.
+        The averaged gradient for the layer's weight parameter.
     """
 
     # Determine training batch size from the total size and validation size.
@@ -488,12 +483,6 @@ def _compute_Conv1D_train_grad(
     grad_weight = torch.einsum('b...d,b...p->dp', A_train, B_train)
 
     grad_weight /= train_batch_size
-
-    # # If requested, compute the average gradient instead of the sum.
-    # if average_grad:
-    #     # Avoid division by zero if for some reason the training batch size is 0.
-    #     if train_batch_size > 0:
-    #         # grad_weight /= train_batch_size
 
     return grad_weight
 
@@ -560,9 +549,8 @@ def _compute_conv2d_train_grad(
     A: torch.Tensor,
     B: torch.Tensor,
     val_batch_size: int,
-    average_grad: bool = False,
 ) -> torch.Tensor:
-    """Compute training gradients for nn.Conv2d weight."""
+    """Compute averaged training gradients for nn.Conv2d weight."""
 
     train_batch_size = A.size(0) - val_batch_size
     A_train, _ = torch.split(A, [train_batch_size, val_batch_size], dim=0)
@@ -593,4 +581,3 @@ _supported_layers_dotprod = {
     transformers.pytorch_utils.Conv1D: (_compute_Conv1D_dot_product, _compute_Conv1D_train_grad),
     nn.Conv2d: (_compute_conv2d_dot_product, _compute_conv2d_train_grad),
 }
-
