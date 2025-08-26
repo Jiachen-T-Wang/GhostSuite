@@ -15,6 +15,17 @@ pip install -r requirements.txt
 
 ## Quick Start
 
+### Minimal Example on Two-layer MLP
+
+A self-contained demo lives in `Examples/ghost_mlp.py`. It trains a tiny two-layer MLP for 10 steps on synthetic data and prints per-iteration gradient dot-products between the validation batch and each training sample, plus an aggregated vector.
+
+Run it directly:
+```bash
+python Examples/ghost_mlp.py
+```
+
+### Language model training
+
 ### 1. Get Tokenized Dataset
 Process the Pile dataset by domain:
 ```bash

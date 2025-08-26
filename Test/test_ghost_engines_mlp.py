@@ -98,10 +98,12 @@ def _naive_linear_dotprod(A: torch.Tensor, B: torch.Tensor, train_bs: int, val_b
 
     # Materialize gradients
     grad_train = torch.einsum('b...p,b...d->bpd', B_train, A_train)  # [train_bs, p, d] (bf16)
+
     # Correct aggregated validation gradient: sum over (token) positions, no cross terms
     p = B.size(-1)
     d = A.size(-1)
     grad_val = torch.einsum('np,nd->pd', B_val.reshape(-1, p), A_val.reshape(-1, d))  # [p, d] (bf16)
+
     # Frobenius inner product for each training sample (accumulate in fp32)
     weight_dot = torch.einsum('pd,bpd->b', grad_val.float(), grad_train.float())
 
@@ -114,8 +116,85 @@ def _naive_linear_dotprod(A: torch.Tensor, B: torch.Tensor, train_bs: int, val_b
     return weight_dot, bias_dot
 
 
+def _naive_autograd_per_sample_dotprod(
+    model: nn.Module,
+    X_train: torch.Tensor,
+    Y_train: torch.Tensor,
+    X_val: torch.Tensor,
+    Y_val: torch.Tensor,
+) -> Dict[str, Tuple[torch.Tensor, torch.Tensor]]:
+    """
+    Extremely naive baseline using autograd gradients with batch_size=1 for train samples.
+
+    - Compute validation gradient once using reduction='sum' (sum over val set).
+    - For each training sample i, compute its gradient with reduction='sum'.
+    - For every Linear layer param (weight/bias), compute dot(param_grad_val, param_grad_train_i).
+
+    Returns a dict mapping layer base name (e.g., 'fc1') to a tuple of tensors:
+    (weight_dot_products[n_train], bias_dot_products[n_train or None]).
+    """
+
+    model = copy.deepcopy(model)
+    model.zero_grad(set_to_none=True)
+
+    n_train = X_train.size(0)
+
+    # 1) Validation gradient (sum over val set), then scale to match single-mean backward on train+val
+    val_logits = model(X_val)
+    val_loss = F.cross_entropy(val_logits, Y_val, reduction='sum')
+    val_loss.backward()
+
+    # Collect per-parameter validation grads by layer base name
+    val_grads: Dict[str, Dict[str, torch.Tensor]] = {}
+    n_total = n_train + X_val.size(0)
+    scale = 1.0 / float(n_total)
+
+    for name, p in model.named_parameters():
+        if p.grad is None:
+            continue
+        if name.endswith('.weight'):
+            lname = name[:-7]
+            val_grads.setdefault(lname, {})['weight'] = (p.grad.detach().clone() * scale)
+        elif name.endswith('.bias'):
+            lname = name[:-5]
+            val_grads.setdefault(lname, {})['bias'] = (p.grad.detach().clone() * scale)
+
+    # Prepare result containers
+    results: Dict[str, Tuple[torch.Tensor, torch.Tensor]] = {}
+    for lname, grads in val_grads.items():
+        w_len = n_train if 'weight' in grads else 0
+        b_len = n_train if 'bias' in grads else 0
+        w_vec = torch.zeros(w_len, dtype=torch.float32, device=X_train.device) if w_len else None
+        b_vec = torch.zeros(b_len, dtype=torch.float32, device=X_train.device) if b_len else None
+        results[lname] = (w_vec, b_vec)
+
+    # 2) For each training sample, compute per-sample gradient and dot with val grads
+    for i in range(n_train):
+        model.zero_grad(set_to_none=True)
+        tr_logits = model(X_train[i:i+1])
+        tr_loss = F.cross_entropy(tr_logits, Y_train[i:i+1], reduction='sum')
+        tr_loss.backward()
+
+        for name, p in model.named_parameters():
+            if p.grad is None:
+                continue
+            if name.endswith('.weight'):
+                lname = name[:-7]
+                if lname in val_grads and 'weight' in val_grads[lname]:
+                    dp = torch.dot(val_grads[lname]['weight'].reshape(-1), (p.grad * scale).reshape(-1))
+                    results[lname][0][i] = dp
+            elif name.endswith('.bias'):
+                lname = name[:-5]
+                if lname in val_grads and 'bias' in val_grads[lname] and results[lname][1] is not None:
+                    dp = torch.dot(val_grads[lname]['bias'].reshape(-1), (p.grad * scale).reshape(-1))
+                    results[lname][1][i] = dp
+
+    return results
+
+
 def test_grad_dotprod_linear_correctness():
     """Validate that engine-computed dot products match naive materialization on a 2-layer MLP."""
+
     _seed_everything(0)
     device = 'cpu'
 
@@ -189,6 +268,15 @@ def test_grad_dotprod_linear_correctness():
         if b_dp_engine is not None:  # bias exists
             assert torch.allclose(b_dp_naive, b_dp_engine, atol=5e-4, rtol=0), f"Bias DP mismatch in layer {lname}"
 
+    # Also compare with an even more naive autograd baseline (batch_size=1 per train sample)
+    autograd_dp = _naive_autograd_per_sample_dotprod(model_B, X_tr, Y_tr, X_val, Y_val)
+    for lname, (w_vec, b_vec) in autograd_dp.items():
+        w_dp_engine, b_dp_engine = engine_dps[lname]
+        if w_vec is not None:
+            assert torch.allclose(w_vec, w_dp_engine, atol=5e-4, rtol=0), f"Autograd weight DP mismatch in layer {lname}"
+        if b_vec is not None and b_dp_engine is not None:
+            assert torch.allclose(b_vec, b_dp_engine, atol=5e-4, rtol=0), f"Autograd bias DP mismatch in layer {lname}"
+
 
 def test_training_equivalence_validation_loss():
     """Ensure hooks and engine-based gradient application do not change training behavior.
@@ -200,7 +288,7 @@ def test_training_equivalence_validation_loss():
 
     in_dim, hidden_dim, out_dim = 10, 8, 4
     n_train, n_val = 8, 4
-    steps = 2
+    steps = 5
 
     X_tr, Y_tr, X_val, Y_val = _make_synth_data(n_train, n_val, in_dim, out_dim, device=device)
 
@@ -252,6 +340,6 @@ def test_training_equivalence_validation_loss():
 if __name__ == "__main__":
     # Run as a simple script
     test_grad_dotprod_linear_correctness()
-    print("[PASS] Gradient dot-product correctness for Linear layers.")
+    print("[PASS] Gradient dot-product is correct.")
     test_training_equivalence_validation_loss()
     print("[PASS] Training equivalence: validation loss matches exactly.")

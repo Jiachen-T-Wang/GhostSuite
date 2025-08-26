@@ -1,0 +1,75 @@
+\section{Technical Details}
+\label{appendix:efficiency}
+
+\textbf{Notation review.} 
+Consider a linear layer $\bs = \ba \bW$, where $\bW \in \R^{d_1 \times d_2}$ is the weight matrix, $\ba = (\ba^{(1)}, \ldots, \ba^{(B)})^\tp$ is the mini-batch input, and $\bs = (\bs^{(1)}, \ldots, \bs^{(B)})^{\tp}$ is the output (i.e., the pre-activation tensor). For non-sequential data, $\ba \in \R^{B \times d_1}, \bs \in \R^{B \times d_2}$. 
+For sequential data with sequence length $T$, $\ba \in \R^{B \times d_1 \times T}, \bs \in \R^{B \times d_2 \times T}$. 
+Let $\ell^{(i)} := \ell(w, z_i)$ denote the current model's individual loss on $z_i$. For notation convenience, we denote 
+$
+\bb^{(i)} := \frac{\del \ell^{(i)}}{\del \bs}
+$. 
+
+\subsection{Ghost Dot-Product}
+\label{appendix:efficiency-linear}
+
+By applying the chain rule, we can express the gradient of an individual loss $\ell^{(i)} := \ell(w, z_i)$ with respect to $\bW$ as
+\begin{align}
+\frac{\del \ell^{(i)}}{\del \bW} =
+\frac{\del \ell^{(i)}}{\del \bs^{(i)}}
+\frac{\del \bs^{(i)}}{\del \bW}
+= \frac{\del \ell^{(i)} }{\del \bs^{(i)}} \ba^{(i)}
+= \frac{\del \ell }{\del \bs^{(i)}} \ba^{(i)}
+= \ba^{(i)} \outerprod \bb^{(i)}
+\label{eq:linear-decompose}
+\end{align}
+where $\ell := \sum_{j=1}^B \ell^{(j)}$ is the aggregated loss. Note that the individual's output gradient $\bb^{(i)} = \frac{\partial \ell^{(i)}}{\partial \bs^{(i)}} = \frac{\partial \ell}{\partial \bs^{(i)}}$ is readily available during the backpropagation pass. 
+
+Suppose we are interested in computing the gradient dot-product $\frac{\del \ell^{(1)}}{\del \bW} \odot \frac{\del \ell^{(2)}}{\del \bW}$ between two data points $z_1, z_2$ in the same batch in the backpropagation. We first discuss the case for non-sequential data and then extend it to sequential data. 
+
+\textbf{Non-sequential data.} 
+For non-sequential data, we have each $\ba^{(i)} \in \R^{d_1 \times 1}$ and $\bb^{(i)} \in \R^{1 \times d_2}$. 
+By (\ref{eq:linear-decompose}), we have 
+\begin{align*}
+\frac{\del \ell^{(1)}}{\del \bW}
+\odot \frac{\del \ell^{(2)}}{\del \bW}
+= 
+\left( \ba^{(1)} \outerprod \bb^{(1)} \right) \odot 
+\left( \ba^{(2)} \outerprod \bb^{(2)} \right)
+=
+\left(\left(\bb^{(1)}\right)^{\tp} \left(\bb^{(2)}\right) \right)
+\left( \left( \ba^{(1)} \right)^\tp \ba^{(2)} \right)
+\end{align*}
+Hence, we can compute the dot-product between $\frac{\del \ell^{(1)}}{\del \bW}$ and $\frac{\del \ell^{(2)}}{\del \bW}$ without actually instantiating the gradient vector $\frac{\del \ell^{(1)}}{\del \bW}$ or $\frac{\del \ell^{(2)}}{\del \bW}$. 
+We can take the dot products between $\left(\bb^{(1)}\right)^{\tp} \left(\bb^{(2)}\right)$ and $\left( \ba^{(1)} \right)^\tp \ba^{(2)}$, and then multiply the results together. 
+Moreover, all of the materials $\ba^{(1)}, \ba^{(2)}, \bb^{(1)}, \bb^{(2)}$ that are required for computation are all already available in one backpropagation. 
+Hence, with a single backpropagation, we can efficiently compute the gradient dot-product between every pair of data points within the batch. 
+
+\textbf{Sequential data.} 
+For sequential data, we have each $\ba^{(i)} \in \R^{d_1 \times T}$ and $\bb^{(i)} \in \R^{T \times d_2}$. 
+By (\ref{eq:linear-decompose}), we have 
+\begin{align*}
+\frac{\del \ell^{(1)}}{\del \bW}
+\odot \frac{\del \ell^{(2)}}{\del \bW}
+= 
+\left( \ba^{(1)} \outerprod \bb^{(1)} \right) \odot 
+\left( \ba^{(2)} \outerprod \bb^{(2)} \right) 
+&= \sum_{j, k = 1}^{d_1, d_2} \left( \ba^{(1)} \outerprod \bb^{(1)} \right)_{j, k} \left( \ba^{(2)} \outerprod \bb^{(2)} \right)_{j, k} \\
+&= \sum_{j, k = 1}^{d_1, d_2} \left( \ba^{(1)}_{j} \bb^{(1)}_k \right) \left( \ba^{(2)}_{j} \bb^{(2)}_{k} \right) \\
+&= \sum_{j, k = 1}^{d_1, d_2} \left( \sum_{t=1}^T \ba^{(1)}_{jt} \bb^{(1)}_{tk} \right) \left( \sum_{t=1}^T \ba^{(2)}_{jt} \bb^{(2)}_{tk} \right) \\
+&= \sum_{t_1, t_2 = 1}^{T, T} \left(
+\sum_{j=1}^{d_1} \ba^{(1)}_{j t_1} \ba^{(2)}_{j t_2} 
+\right) \left(
+\sum_{k=1}^{d_2} \ba^{(1)}_{k t_1} \ba^{(2)}_{k t_2} 
+\right) \\
+&= \sum_{t_1, t_2 = 1}^{T, T} \left( \ba^{(1)}_{\cdot, t_1} \ba^{(2)}_{\cdot, t_2} \right) \left( \bb^{(1)}_{\cdot, t_1} \bb^{(2)}_{\cdot, t_2} \right) \\
+&=
+\left(\left(\bb^{(1)}\right) \left(\bb^{(2)}\right)^{\tp} \right) \odot \left( \left( \ba^{(1)} \right)^\tp \ba^{(2)} \right)
+\end{align*}
+
+Hence, comparing with directly computing per-sample gradients, if $2T^2 < d_1 d_2$, it is more memory-efficient to first multiply the matrices of $\left(\bb^{(1)}\right) \left(\bb^{(2)}\right)^{\tp}$ and $\left( \ba^{(1)} \right)^\tp \ba^{(2)}$, then take the inner product between the two $T \times T$ matrices. If $2 T^2 \ge d_1 d_2$, then we can first take the outer products $\ba^{(1)} \outerprod \bb^{(1)}$ and $\ba^{(2)} \outerprod \bb^{(2)}$, then take their inner product. In either case, we only need a single backpropagation to compute the gradient dot product between every pair of data points within the batch, similar to the case of non-sequential data. 
+
+\subsection{Merging Batch Selection and Gradient Update in One Backpropagation}
+\label{appendix:efficiency-bookkeeping}
+
+By utilizing the Ghost Dot-Product technique developed in this paper, we can calculate or approximate all importance scores and correction terms in a single backpropagation pass, without materializing any model-sized vectors. To compute the gradient dot-product between each training point \(z_i \in \batch\) and the validation data \(\zval\), we propose including \(\zval\) in the backpropagation along with the training batch. Specifically, we can backpropagate with respect to $\left(\sum_{z_i \in \batch} \ell^{(i)}\right) + \ell^{(\zval)}$. 
+After computing the gradient dot-product scores for the current iteration, it may seem necessary to backpropagate with respect to \(\sum_{z_i \in \batch} \ell^{(i)}\) to compute the gradient for the parameter update. However, this is not required. We can simply reuse the output gradient \(\frac{\partial \ell^{(i)}}{\partial \bs^{(i)}}\) from the original backpropagation and aggregate the gradients for all selected data points.
