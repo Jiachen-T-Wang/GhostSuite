@@ -79,7 +79,10 @@ def run_gpt2_projection(args):
     model, tokenizer = load_gpt2_model(args.model_name)
     model = model.to(device)
     model.eval()  # Use eval mode to avoid dropout
-    
+
+    # Disable caching for gradient computation
+    model.config.use_cache = False
+
     # Apply transformers support if available
     try:
         from ghostEngines import transformers_support
