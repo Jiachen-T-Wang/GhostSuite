@@ -3,14 +3,48 @@
 This folder contains small, runnable examples that demonstrate how to use the Ghost Engines in isolation from the full training stack.
 
 ## Files
+
+### Gradient Dot Product Engine
 - `ghost_mlp.py`: Minimal two‑layer MLP classification demo using `GradDotProdEngine`.
   - Trains for 10 steps on synthetic data (CPU by default).
   - Prints per‑parameter gradient dot‑products for each iteration and an aggregated vector.
   - Reports final validation loss at the end.
 
+### Gradient Projection Engine (NEW)
+- `ghost_gradproj_mlp.py`: MLP example with gradient projection using LoRA-style architecture.
+  - Three execution modes:
+    - `--mode project`: Compute and save projected gradients to disk
+    - `--mode non_interf`: Verify engine doesn't interfere with training
+    - `--mode naive_check`: Compare projections against naive computation
+  - Demonstrates efficient per-sample gradient storage without materializing full gradients
+  
+- `ghost_gradproj_lm.py`: GPT-2 language model gradient projection example.
+  - Projects gradients for transformer layers (attention, MLP)
+  - Shows how to load and compute similarities from saved projections
+  - Integrates with existing transformers_support utilities
+
 ## Quick Start
-- Install deps from repo root: `pip install -r requirements.txt`
-- Run the demo: `python Examples/ghost_mlp.py`
+
+### Gradient Dot Product
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run the demo
+python Examples/ghost_mlp.py
+```
+
+### Gradient Projection
+```bash
+# Run MLP projection example
+python Examples/ghost_gradproj_mlp.py --mode project --proj_rank_total 64
+
+# Test non-interference
+python Examples/ghost_gradproj_mlp.py --mode non_interf
+
+# Run GPT-2 projection
+python Examples/ghost_gradproj_lm.py --proj_layers "attn.c_attn,mlp.c_fc" --proj_rank_total 256
+```
 
 Expected output (abridged):
 
