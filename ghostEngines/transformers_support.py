@@ -43,6 +43,11 @@ def forward_swapper(module):
 
     Root cause is adding positional embedding with broadcasting.
     """
+
+    # For non-Transformers models (e.g., simple nn.Module MLPs), do nothing silently.
+    if not isinstance(module, transformers.PreTrainedModel):
+        return
+        
     if isinstance(module, (transformers.OpenAIGPTLMHeadModel, transformers.OpenAIGPTDoubleHeadsModel)):
         swap_openai_gpt_model_forward(module.transformer)
     if isinstance(module, (transformers.GPT2LMHeadModel, transformers.GPT2DoubleHeadsModel)):
