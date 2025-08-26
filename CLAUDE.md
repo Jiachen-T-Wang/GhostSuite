@@ -5,18 +5,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Core Commands
 
 ### Training (Let's only use GPT2-Small trained on Pile now, don't need to worry about LLAVA)
+**Important: when running evaluation, always use --batch_size 2 due to our small GPU memory**
 ```bash
 # Run training with default settings (GradDotProd method)
-./Scripts/train.sh
+./Scripts/train.sh --batch_size 2
 
 # Run regular training without gradient computation
-./Scripts/train.sh --method Regular
+./Scripts/train.sh --batch_size 2 --method Regular
 
 # Specify custom parameters
-./Scripts/train.sh --batch_size 32 --learning_rate 1e-4 --max_steps 100000
-
-# Run evaluation only (no training)
-./Scripts/train.sh --eval_only
+./Scripts/train.sh --batch_size 2 --learning_rate 1e-4 --max_steps 100000
 ```
 
 ### Environment Setup
