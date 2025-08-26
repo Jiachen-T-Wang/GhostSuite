@@ -75,93 +75,72 @@ def _create_or_accumulate_train_grad(param: torch.Tensor, grad: torch.Tensor) ->
 # #############################################################################
 
 def _compute_linear_dot_product(layer: nn.Linear, A: torch.Tensor, B: torch.Tensor, val_batch_size: int):
-    """Computes the gradient dot-product for an nn.Linear layer."""
+    """Computes the gradient dot-product for an nn.Linear layer.
+
+    Supports both 2D inputs (batch, d) and higher-rank inputs
+    (batch, ..., d) such as language models with a sequence dimension.
+    """
 
     if A is None:
         raise ValueError("Input activations A cannot be None.")
     if B is None:
         raise ValueError("Output gradients B cannot be None.")
 
-    # Detach the tensors to ensure they are not part of the computation graph.
+    # Detach to keep them out of autograd graph for efficiency/safety
     A = A.detach()
     B = B.detach()
 
-    # start_time = time.time()
+    # Cast to bfloat16 for the dot-product path; train-grad path uses original types
+    A_bf16 = A.to(torch.bfloat16)
+    B_bf16 = B.to(torch.bfloat16)
 
-    # Cast A and B to bfloat16 for efficiency.
-    A = A.to(torch.bfloat16)
-    B = B.to(torch.bfloat16)
-
-    train_batch_size = A.size(0) - val_batch_size
-    if train_batch_size <= 0:
+    total_bs = A.size(0)
+    train_bs = total_bs - val_batch_size
+    if train_bs <= 0:
         raise ValueError("No training samples to compute dot product, check batch sizes.")
 
+    # Decide whether to use ghost computation
     _should_use_ghost_computation(layer, A, B)
+
+    # Common split for bias computation and non-ghost fallback
+    A_train_full, A_val_full = torch.split(A, [train_bs, val_batch_size], dim=0)
+    B_train_full, B_val_full = torch.split(B, [train_bs, val_batch_size], dim=0)
 
     # --- Weight dot product ---
     if layer.use_ghost_computation:
+        # Flatten any non-batch, non-feature dims into a single token dimension
+        d = A_bf16.size(-1)
+        p = B_bf16.size(-1)
 
-        # mm_start_time = time.time()
+        # Reshape to [batch, T, feat]
+        T = int(A_bf16.numel() // (total_bs * d))
+        A_bf16 = A_bf16.reshape(total_bs, T, d)
+        B_bf16 = B_bf16.reshape(total_bs, T, p)
 
-        val_bs = val_batch_size
-        B_total, T, d = A.shape
-        p             = B.shape[-1]
-        train_bs      = B_total - val_bs
+        # Split train/val
+        A_train = A_bf16[:train_bs].reshape(-1, d).contiguous()  # [(train_bs·T), d]
+        A_val = A_bf16[train_bs:].reshape(-1, d).contiguous()    # [(val_bs  ·T), d]
+        B_train = B_bf16[:train_bs].reshape(-1, p).contiguous()  # [(train_bs·T), p]
+        B_val = B_bf16[train_bs:].reshape(-1, p).contiguous()    # [(val_bs  ·T), p]
 
-        # ------------------------------------------------------------------
-        # 1.  Flatten (batch, token) → 'token index' so that each example‑
-        #     token pair becomes one row.  This lets us use a single GEMM.
-        # ------------------------------------------------------------------
-        A_train = A[:train_bs].reshape(-1, d).contiguous()  # [(train_bs·T), d]
-        A_val   = A[train_bs:].reshape(-1, d).contiguous()  # [(val_bs  ·T), d]
-        B_train = B[:train_bs].reshape(-1, p).contiguous()  # [(train_bs·T), p]
-        B_val   = B[train_bs:].reshape(-1, p).contiguous()  # [(val_bs  ·T), p]
+        # Two GEMMs → (train_tokens × val_tokens)
+        a_dot = torch.matmul(A_train, A_val.T)
+        b_dot = torch.matmul(B_train, B_val.T)
 
-        # Optionally cast once (assumes you run AMP/bfloat16 in the forward)
-        A_train = A_train.to(torch.bfloat16)
-        A_val   = A_val  .to(torch.bfloat16)
-        B_train = B_train.to(torch.bfloat16)
-        B_val   = B_val  .to(torch.bfloat16)
-
-        # ------------------------------------------------------------------
-        # 2.  Two GEMMs →  (train_tokens × val_tokens)  matrices
-        # ------------------------------------------------------------------
-        #    Shapes:
-        #       A_train : (N_tr_tok, d)  @  A_val.T : (d, N_val_tok)  → (N_tr_tok, N_val_tok)
-        #       B_train : (N_tr_tok, p)  @  B_val.T : (p, N_val_tok)  → (N_tr_tok, N_val_tok)
-        a_dot = torch.matmul(A_train, A_val.T)        # 𝐀   (bf16)
-        b_dot = torch.matmul(B_train, B_val.T)        # 𝐁   (bf16)
-
-        # ------------------------------------------------------------------
-        # 3.  Hadamard product + reduction over *all* validation tokens
-        # ------------------------------------------------------------------
-        #    (N_tr_tok, N_val_tok)  →  (N_tr_tok,)  (float32 accumulator)
+        # Hadamard + reduce over validation tokens; fold back token dimension
         token_contrib = (a_dot * b_dot).sum(dim=1, dtype=torch.float32)
-
-        # ------------------------------------------------------------------
-        # 4.  Fold back token dimension → one scalar per training example
-        # ------------------------------------------------------------------
         layer.weight.grad_dot_prod = token_contrib.reshape(train_bs, T).sum(dim=1)
-
-
-        # A_train, A_val = A[:-val_batch_size].contiguous(), A[-val_batch_size:].contiguous()
-        # B_train, B_val = B[:-val_batch_size].contiguous(), B[-val_batch_size:].contiguous()
-        # A_val_sum = torch.sum(A_val, dim=0)
-        # B_val_sum = torch.sum(B_val, dim=0)
-        # AA = torch.matmul(A_val_sum.unsqueeze(0), A_train.transpose(-1, -2))
-        # BB = torch.matmul(B_val_sum.unsqueeze(0), B_train.transpose(-1, -2))
-        # layer.weight.grad_dot_prod = torch.sum(AA * BB, dim=[1, 2])
-
-        # torch.cuda.synchronize()  # Ensure all operations are complete
-        # print(f"Debug: Prepare Dotprod time for lm_head: {(time.time() - mm_start_time)*1000:.4f}ms")
-
     else:
-        grad_train = torch.einsum('b...d,b...p->bpd', A_train, B_train)
-        grad_val = torch.einsum('...d,...p->dp', torch.sum(A_val, dim=0), torch.sum(B_val, dim=0))
+        # Materialize grads and compute Frobenius inner product
+        grad_train = torch.einsum('b...d,b...p->bpd', A_train_full, B_train_full)
+        grad_val = torch.einsum('...d,...p->dp', A_val_full.sum(dim=0), B_val_full.sum(dim=0))
         layer.weight.grad_dot_prod = torch.einsum('dp,bpd->b', grad_val, grad_train)
 
     # --- Bias dot product ---
     if layer.bias is not None:
+        # Use original dtype tensors for bias path
+        B_train = B_train_full
+        B_val = B_val_full
         sum_dims_val = list(range(B_val.dim() - 1))
         grad_bias_val = B_val.sum(dim=sum_dims_val)
         sum_dims_train = list(range(1, B_train.dim() - 1))
@@ -614,5 +593,4 @@ _supported_layers_dotprod = {
     transformers.pytorch_utils.Conv1D: (_compute_Conv1D_dot_product, _compute_Conv1D_train_grad),
     nn.Conv2d: (_compute_conv2d_dot_product, _compute_conv2d_train_grad),
 }
-
 
