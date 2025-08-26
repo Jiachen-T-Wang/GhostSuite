@@ -190,7 +190,6 @@ You want a **near‑isometry** so inner products are preserved after projection.
 4. **The new code should be put in 'ghostEngines/gradProjection'. An existing file, 'lora_modules.py', is in 'ghostEngines/gradProjection'. Feel free to leverage and adapt it.**
 
 
-
 ### Goal of Implementation
 
 1. **Non-invasive**: Original model training unchanged
@@ -199,11 +198,211 @@ You want a **near‑isometry** so inner products are preserved after projection.
 4. **Make it integrate with the full ghostEngine package (user interface should be also through 'engine_manager.py')**.
 
 
-
-
-# Implementation Plan for "Gradient Projection with LoRA-style"
-
-As a starting point, we should just focus on Linear layers. After finishing the implementation, let's add a test in 'Test' which evaluate the gradient projection implementation on a two-layer MLP. The criterias are (1) the added LoRA module does not interfare with model training. The model training dynamics should be exactly the same with and without the added LoRA module. (2) the gradient projection value are the same as (or very close to, up to numerical error) the gradient projection computed naively. 
-
 ## Detailed plan and sample code
-TODO
+
+This section turns the design above into a concrete, implementation-ready plan with file layout, integration points, detailed steps, and sample code snippets. The new engine computes and stores per-sample projected gradients G for large datasets using LoRA-style projections without changing the model’s behavior or training dynamics.
+
+
+**Scope and Outputs**
+- Output: For each training example `u`, a single projected gradient vector `g_u` obtained by concatenating per-layer vec(dL/dG_ℓ) for all adapted layers ℓ. Stored as a memory-mapped array on disk plus a metadata sidecar describing the projection setup and layer ordering.
+- Non-invasive: Model forward/backward and optimizer behavior remain identical. The LoRA side branches are zero-impact (initialized to produce exact zeros) and not part of the optimizer param groups.
+- Efficiency: Projections use small ranks per layer. Hooks compute per-sample contributions in low dimension and stream to disk in shards to bound memory.
+
+
+**Files to Add (no core file modifications)**
+- Add: `ghostEngines/gradProjection/gradproj_engine.py` — Standalone engine (hooks, storage, orchestration). No dependency on training loop or config_file.
+- Add: `ghostEngines/gradProjection/autograd_gradproj.py` — Hook utilities for forward/backward capture and per-sample G-grad computation.
+- Add: `Examples/ghost_gradproj_mlp.py` — Example for MLP; includes non-interference and naive-equality routines.
+- Add: `Examples/ghost_gradproj_lm.py` — Example for a fixed pretrained LM checkpoint.
+- Add: `Test/test_gradproj_mlp.py` — Unit test verifying criteria on a two-layer MLP.
+
+Notes:
+- Do NOT modify `config_file.py`. Examples define and validate their own CLI.
+- Optional future integration with `engine_manager.py` can be considered later, but is out of scope now.
+
+
+**Configuration (local to examples in Folder 'Examples'; strict, no fallback)**
+- Required example flags (validated; raise on missing):
+  - `--proj_rank_total` (int), `--proj_rank_min` (int)
+  - `--proj_layers` (str)
+  - `--proj_dtype` (str: float16|bfloat16|float32)
+  - `--proj_seed` (int)
+  - `--proj_dir` (str)
+- Optional flags: `--proj_row_orthonormal`, `--proj_include_embeddings`, `--proj_include_conv2d`.
+The engine is constructed directly in examples and does not rely on training configs.
+
+
+**Layer coverage (GPT-2 priority)**
+- Support: `nn.Linear`, `transformers.pytorch_utils.Conv1D`, `nn.Embedding`, `nn.LayerNorm` (ignored for LoRA projection), and optionally `nn.Conv2d`.
+- For GPT-2, most dense layers are `Conv1D`; treat as Linear with weight `[out, in]`.
+
+
+### Step-by-step Implementation
+
+1) Projection shape helper
+- Implement `choose_ki_ko(n_i, n_o, k_total, k_min)` computing k_i,k_o using the ratio rule:
+  - r = sqrt(n_o / n_i); k_i = clamp(round(sqrt(k_total) * r), 1..n_i), k_o = max(1, k_total // k_i); adjust by ±1 to minimize |k_i·k_o − k_total| under bounds; enforce k_i ≥ k_min and k_o ≥ k_min (raise if impossible).
+
+Sample:
+```
+def choose_ki_ko(n_i: int, n_o: int, k_total: int, k_min: int) -> tuple[int, int]:
+    import math
+    if min(n_i, n_o) <= 0 or k_total <= 0:
+        raise ValueError("Invalid dims for projection")
+    root = int(math.sqrt(k_total))
+    r = math.sqrt(n_o / max(1, n_i))
+    k_i = max(k_min, min(n_i, max(1, int(round(root * r)))))
+    k_o = max(k_min, min(n_o, max(1, k_total // k_i)))
+    # Adjust to hit product near k_total under bounds
+    best = (k_i, k_o)
+    best_err = abs(k_i * k_o - k_total)
+    for di in (-1, 0, 1):
+        for dj in (-1, 0, 1):
+            ki, ko = k_i + di, k_o + dj
+            if k_min <= ki <= n_i and k_min <= ko <= n_o:
+                err = abs(ki * ko - k_total)
+                if err < best_err:
+                    best, best_err = (ki, ko), err
+    ki, ko = best
+    if ki < k_min or ko < k_min:
+        raise ValueError("Cannot satisfy k_min constraints")
+    return ki, ko
+```
+
+2) Non-invasive side-car projections (no forward modification)
+- Do NOT wrap or replace model layers. Build a projection bank per selected layer ℓ with fixed `P_i^ℓ ∈ R^{k_i×n_i}` and `P_o^ℓ ∈ R^{k_o×n_o}` stored in the engine (not the model).
+- Initialize via JL (reuse lora_modules initializers to generate matrices), set `requires_grad=False`. Store per-layer metadata and vector slices for concatenation.
+
+3) Hooking for per-sample projected gradients
+- Register hooks directly on base modules; compute projections with side-car `P_i, P_o`.
+- Shapes handling and core logic (Linear/Conv1D-like) follow the Kronecker derivation; Embedding uses index-gather for `A_proj`.
+
+Sample (autograd hook core):
+```
+# autograd_gradproj.py (core idea)
+import torch
+
+def _flatten_tokens(x):
+    if x.dim() <= 2:
+        return x.unsqueeze(1)
+    B, *mid, D = x.shape
+    T = int(torch.tensor(mid).prod().item())
+    return x.reshape(B, T, D)
+
+def fwd_hook_store_inputs(layer, inputs):
+    layer._ghost_A_raw = inputs[0].detach()
+
+def bwd_hook_compute_proj(layer, grad_input, grad_output, P_i, P_o):
+    B_out = grad_output[0].detach()
+    A_raw = getattr(layer, '_ghost_A_raw', None)
+    if A_raw is None:
+        raise RuntimeError('Missing cached activations for GradProjection')
+    A = _flatten_tokens(A_raw)
+    B = _flatten_tokens(B_out)
+    A_proj = torch.matmul(A, P_i.t())      # [B,T,k_i]
+    G_proj = torch.matmul(B, P_o.t())      # [B,T,k_o]
+    gradG = torch.einsum('btk,btj->bkj', G_proj, A_proj)  # [B,k_o,k_i]
+    layer._ghost_grad_proj = gradG.to(torch.float32)
+    delattr(layer, '_ghost_A_raw')
+    return None
+```
+
+4) Engine class (standalone) and lifecycle
+- `GradProjLoraEngine(module, **proj_kwargs)` builds projections and hooks without touching optimizer or training loop.
+- Key methods:
+  - `attach()`: register hooks on selected layers; `detach()`: remove handles and buffers.
+  - `collect_batch()`: concatenate per-layer `layer._ghost_grad_proj.reshape(B,-1)` into `[B,K_total]`, save shard to `--proj_dir` with `metadata.json` on first call, and return the tensor.
+- The engine never writes to `param.grad` or optimizer states.
+
+Skeleton:
+```
+# ghostEngines/gradProjection/gradproj_engine.py
+class GradProjLoraEngine:
+    def __init__(self, module, proj_layers, proj_rank_total, proj_rank_min, proj_seed,
+                 proj_dtype, proj_dir, proj_row_orthonormal=False,
+                 include_embeddings=False, include_conv2d=False):
+        ...
+    def attach(self):
+        ...
+    def detach(self):
+        ...
+    def collect_batch(self):
+        ...
+```
+
+5) Example scripts (no training loop/config changes)
+- `Examples/ghost_gradproj_mlp.py`:
+  - CLI adds projection args and `--mode {project,non_interf,naive_check}`.
+  - project: run forward+backward, `engine.collect_batch()` to save vectors.
+  - non_interf: enforce deterministic algorithms, run T steps twice (with/without engine), assert identical loss and parameters at each step.
+  - naive_check: compare `g_engine` to `g_naive` for one batch (see below for naive computation).
+- `Examples/ghost_gradproj_lm.py`:
+  - Load GPT-2 small (or local checkpoint); call `ghostEngines.transformers_support.forward_swapper(model)`; attach engine to selected layers; run one backward; collect and save vectors.
+
+6) Automated test (Test/test_gradproj_mlp.py)
+- Construct a two-layer MLP and synthetic batch(es) with fixed seed and deterministic flags.
+- Non-interference (criterion 1):
+  - Train T steps with SGD/Adam without engine; record loss series and parameter clones per step.
+  - Reset model/optimizer to identical initial state; attach engine; train same T steps; assert losses and parameters match exactly (`torch.equal`) under deterministic settings. If the platform cannot guarantee bitwise determinism, use `allclose` with tight tol and document the flags in the test.
+- Naive equality (criterion 2):
+  - After one backward with engine attached, compute `g_engine = engine.collect_batch()`.
+  - Compute `g_naive` by materializing per-sample grads for each adapted layer and projecting with `P = P_i ⊗ P_o`:
+    • Linear: `A_raw -> [B,T,d], B_out -> [B,T,p]`. Form `G_b = Σ_t A[b,t]^T @ B[b,t]` (or via einsum), then `vec_proj_b = (P_i ⊗ P_o) vec(G_b)`; or equivalently `Σ_t (P_i A[b,t]) ⊗ (P_o B[b,t])`.
+    • Embedding: build full grad via index_add over vocabulary then project.
+  - Assert `torch.allclose(g_engine, g_naive, rtol=1e-5, atol=1e-6)`.
+
+7) DDP and storage (as needed by examples)
+- Single-process by default. With DDP, write to `--proj_dir/rank{rank}` and merge offline.
+- Save shards as `.pt` with `{'proj': tensor, 'iter': i}` and write `metadata.json` on first save: layer names, `(k_i,k_o)`, dtype, seed.
+
+8) Precision and performance
+- Compute: Keep A_proj and G_proj in model/training dtype; accumulate `dL/dB` in FP32 to minimize rounding error; cast to `proj_dtype` only at disk write time.
+- Memory: Drop `_a_proj` immediately after use; never keep per-layer grads past `aggregate_and_log`.
+- Throughput: If overhead is high, gate the computation by a frequency flag `--proj_every` to only compute on every k-th iteration (raise error if not provided; or integrate with `proj_save_interval`).
+
+9) Testing and verification
+- Smoke test (GPT2-Small, Pile):
+  - Train with `--method GradProjLoRA --batch_size 2 --proj_rank_total 256 --proj_rank_min 8 --proj_layers 'attn.c_attn,mlp.c_fc,lm_head' --proj_dtype bfloat16 --proj_seed 1234 --proj_save_interval 10 --proj_dirname grad_proj`
+  - Confirm: a) Training loss/metrics identical to Regular training; b) Shard files appear under result dir; c) Metadata file lists layers and vector layout; d) Per-batch stored tensor has shape `[batch_size, K_total]`.
+- Unit check: For a single adapted Linear layer, verify that batch-summed `dL/dB` from hooks equals `autograd.grad(loss.sum(), B.weight)` up to dtype tolerance.
+
+10) Offline use example (pairwise similarities)
+```
+import torch, glob, json, os
+root = '<result_dir>/grad_proj/rank0'
+meta = json.load(open(os.path.join(root, 'metadata.json')))
+files = sorted(glob.glob(os.path.join(root, 'proj_iter_*.pt')))
+vecs = []
+idxs = []
+for f in files:
+    pack = torch.load(f, map_location='cpu')
+    vecs.append(pack['proj'].float())
+    idxs.extend(pack['batch_idx'])
+G = torch.cat(vecs, dim=0)  # [N, K_total]
+# Blockwise similarity to save RAM
+bs = 8192
+sims = torch.empty((G.size(0), G.size(0)))
+for i in range(0, G.size(0), bs):
+    Gi = G[i:i+bs]
+    sims[i:i+bs] = Gi @ G.t()
+```
+
+
+### Optional extension: rectangular G (ki×ko)
+- If exact `k_total = k_i·k_o` is required, extend `lora_modules` to support rectangular `B` by replacing the single `rank` with `(rank_i, rank_o)`; `logix_lora_B: Linear(rank_i, rank_o, bias=False)` and set `logix_lora_C: Linear(rank_o, out, ...)`, `logix_lora_A: Linear(in, rank_i, ...)`. The hook math remains unchanged; only shapes vary. Update `AdapterMeta` and vector layout accordingly.
+
+
+### Guardrails and errors (no fallback)
+- If no layer matches `proj_layers`, raise immediately.
+- If any required CLI arg is missing/empty under `GradProjLoRA`, raise in config initialization.
+- On hook execution, if `_a_proj` is missing or tensor ranks mismatch, raise to surface logic errors.
+- Disallow using this engine together with `GradDotProd` in the same run.
+
+
+### Notes on integration with existing utilities
+- Reuse `ghostEngines/transformers_support.forward_swapper` for GPT-2 to ensure correct per-sample gradient semantics, same as the dot-product engine.
+- Maintain code style: PEP 8, type hints for new public APIs, and respect project’s import ordering.
+
+
+This plan stays minimal, leverages the existing `lora_modules.py`, and leaves the model and optimizer unchanged while providing accurate, efficient projected per-sample gradients suitable for large-scale similarity analysis.
+
