@@ -127,77 +127,54 @@ Test/
 - Optimizations for very large models
 - Distributed training support
 
-## Code Review Summary
 
-### Tests Run & Results
-- Ran `python Test/test_gradproj_mlp.py -v` on CPU for determinism.
-  - Passed: `test_choose_ki_ko`, `test_projection_initialization`, `test_non_interference`, `test_metadata_saving`, `test_projection_saving`.
-  - Failed: `test_naive_equality` (engine projections vs naive materialization did not match).
-- Verified `GradDotProd` tests still pass: `python Test/test_ghost_engines_mlp.py` → PASS.
+
+
+
+# Code Review Summary
 
 ### Correctness Issues Found
-1. Per-layer block ordering in projections:
-   - In `autograd_gradproj.py::_compute_dense_proj`, the einsum uses `'btj,bti->bji'`, producing `[B, k_i, k_o]`.
-   - The naive reference flattens `[k_o, k_i]` (i.e., output-major then input-minor). The current engine flattens `[k_i, k_o]` which is effectively a blockwise transpose.
-   - Impact: Values are correct up to a transpose within each layer block; flatten order does not match the naive reference.
 
-2. Reduction scaling mismatch (factor 1/B):
-   - Engine path uses `nn.CrossEntropyLoss()` with reduction='mean' over the batch; autograd hooks see `grad_output` already scaled by `1/B`.
-   - Naive path in the test computes per-sample gradients with `reduction='none'` then `.mean()` over that single element (no `1/B` factor).
-   - Impact: Engine projections are exactly `1/B` of the naive projections (confirmed numerically).
-
-3. Embedding projection path is memory-heavy:
+1. Embedding projection path is memory-heavy:
    - `_compute_embedding_proj` materializes a full `[vocab_size, embed_dim]` weight-gradient per sample then applies `P_o @ grad @ P_i^T`.
    - Impact: For realistic `vocab_size`, this is O(V·D) per-sample in memory/time; not viable for large models.
 
-4. Rademacher initializer bug:
+2. Rademacher initializer bug:
    - `init_projection_matrix_rademacher` calls `torch.randint(..., dtype=dtype)` where `dtype` is float; `torch.randint` requires an integer dtype.
    - Impact: This path will raise at runtime if used.
 
-5. Conv1d/Conv2d support not implemented correctly:
+3. Conv1d/Conv2d support not implemented correctly:
    - `is_supported_layer` includes Conv1d/Conv2d (with flag), but `_compute_dense_proj` assumes last-dim features and simply flattens tokens.
    - Correct handling for Conv requires an im2col-like unfolding to map to `[B, T, n_i]` and aligned output-grad `[B, T, n_o]`.
    - Impact: Results will be incorrect for Conv layers as-is.
-
-6. Backward hook semantics:
-   - Uses `register_full_backward_hook`; PyTorch documents caveats for some modules/reentrant graphs. Probably fine for Linear/Embedding, but worth noting.
 
 ### Performance and Safety Notes
 - Orthonormal initializer does full QR on `[cols x cols]`; this is O(n^3) and memory-heavy for large `cols`. Consider an economy approach (e.g., QR on a `[cols x rows]` random Gaussian and transposition) when scaling up.
 - Current embedding path’s per-sample dense materialization will dominate both memory and runtime on large vocabs; must be reworked before using on GPT-2 scale.
 - Error handling is strict (no silent fallbacks) which matches the project guideline. Good.
 
-### Suggested Fixes (prioritized)
-1. Fix projected gradient shape and scaling to match naive reference:
-   - Change einsum to output `[B, k_o, k_i]` directly: `gradG = torch.einsum('bti,btj->bij', B_proj, A_proj)`.
-   - Multiply by batch size inside hooks to compensate for reduction='mean': `gradG = batch_size * gradG` (or require callers to use reduction='sum').
-   - With these two changes, `test_naive_equality` passes exactly (confirmed by scaling+transpose check in a scratch run).
 
-2. Implement memory-efficient embedding projection:
+### TODO Lists
+
+1. Implement memory-efficient embedding projection:
    - Avoid building a full `[V, D]` gradient per sample. For each token index `j` in the sample and its gradient vector `g_t`, accumulate `P_o @ g_t` outer `P_i[:, j]` into the per-sample `[k_o, k_i]` matrix. This is O(T·(k_o + k_i)) per sample.
 
-3. Fix Rademacher initializer:
+2. Fix Rademacher initializer:
    - Generate integer signs via `torch.randint(0, 2, (rows, cols), dtype=torch.int8, ...)`, cast to float, then scale by `1/sqrt(rows)`.
 
-4. Correct Conv1d/Conv2d handling or gate off:
+3. Correct Conv1d/Conv2d handling or gate off:
    - Either implement proper unfolding to `[B, T, n_i]` and align output-grad tokens, or raise a clear error if `include_conv2d`/Conv1d is requested.
+   - This might be the root cause for the error message when we run `python Examples/ghost_gradproj_lm.py --proj_layers "attn.c_attn,mlp.c_fc" --proj_rank_total 256`. 
 
-5. Orthonormal initializer scalability:
+4. Orthonormal initializer scalability:
    - Consider an economy QR or SVD-based method (e.g., sample `[cols x rows]` Gaussian `G`, compute `Q = orth(G)`, then take `Q^T` as row-orthonormal `P`).
 
-6. Minor consistency:
+5. Minor consistency:
    - Ensure block concatenation order and metadata `slice_ranges` remain strictly aligned by consistently sorting layer names in all places (already done in most call sites).
 
-### Integration Notes
+
+### Integration Notes (Later)
 - Not yet wired into `ghostEngines/engine_manager.py`. When integrating:
   - Add a new method name (e.g., `GradProj`) in config, plus the required projection options.
   - Expose `collect_batch()` and `aggregate_and_log()` hooks in the manager lifecycle.
   - Ensure evaluation phases call `detach()` to avoid unnecessary hook work.
-
-### What Works Well
-- Modular design: clean split between engine, hooks, layer support, and utils.
-- Non-invasive hooks: training equivalence and non-interference verified by tests.
-- Deterministic tests on CPU, thorough coverage of core flows, and robust metadata/storage handling.
-
-### TL;DR
-- The implementation is close: the primary mismatch is a transpose + 1/B scaling in the dense path that breaks equality with the naive baseline. Fixing the einsum ordering and scaling resolves it. The embedding and Conv paths need efficiency/correctness work before large-scale use.
