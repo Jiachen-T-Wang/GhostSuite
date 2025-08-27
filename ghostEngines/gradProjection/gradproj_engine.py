@@ -317,6 +317,117 @@ class GradProjLoraEngine:
         """Get metadata about the projection configuration."""
         return self.metadata.copy()
         
+    # === Compatibility methods for engine_manager integration ===
+    
+    def attach_train_batch(self, X_train, Y_train, iter_num, batch_idx=None):
+        """
+        Store training batch information (compatibility method).
+        
+        For GradProjLora, we track iteration number for saving purposes.
+        """
+        self.current_iter_num = iter_num
+        self.current_batch_idx = batch_idx
+        
+    def prepare_gradients(self):
+        """
+        Prepare gradients after backward pass (compatibility method).
+        
+        For GradProjLora, projections are computed during backward hooks,
+        so this is a no-op.
+        """
+        pass
+        
+    def aggregate_and_log(self):
+        """
+        Aggregate and log metrics after optimizer step (compatibility method).
+        
+        This calls collect_batch() to compute and save projections.
+        """
+        if hasattr(self, 'current_batch_idx') and self.current_batch_idx is not None:
+            # Collect with batch indices if available
+            self.collect_batch(batch_indices=self.current_batch_idx)
+        else:
+            # Collect without batch indices
+            self.collect_batch()
+            
+    def clear_gradients(self):
+        """
+        Clear gradients and cached data after optimizer step (compatibility method).
+        
+        This cleans up any cached activations or gradients.
+        """
+        # Clean up cached data in layers
+        for layer_name, layer in self.matched_layers.items():
+            if hasattr(layer, '_ghost_A_raw'):
+                delattr(layer, '_ghost_A_raw')
+            if hasattr(layer, '_ghost_grad_proj'):
+                delattr(layer, '_ghost_grad_proj')
+                
+    def attach_with_optimizer(self, optimizer):
+        """
+        Attach to optimizer (compatibility method for engine_manager).
+        
+        For GradProjLora, we don't need the optimizer, so this just
+        calls the regular attach() method.
+        """
+        self.attach()
+            
+    def detach_for_evaluation(self):
+        """
+        Detach during evaluation (compatibility method).
+        
+        Alias for the existing detach() method.
+        """
+        self.detach()
+        
+    def reattach_after_evaluation(self):
+        """
+        Reattach after evaluation (compatibility method).
+        
+        Re-attaches projection hooks after evaluation.
+        """
+        if not self.is_attached:
+            # Re-attach hooks
+            for layer_name, layer in self.matched_layers.items():
+                P_i, P_o = self.projection_matrices[layer_name]
+                
+                # Create and attach hooks
+                from .autograd_gradproj import create_projection_hooks
+                hooks = create_projection_hooks(layer, layer_name, P_i, P_o)
+                hooks.attach(layer)
+                self.hooks[layer_name] = hooks
+                
+            self.is_attached = True
+            
+    def cleanup(self):
+        """
+        Cleanup and save any remaining data (compatibility method).
+        
+        Ensures all projections are saved and cleans up resources.
+        """
+        # Save any pending projections
+        if hasattr(self, '_pending_projections'):
+            # Implementation depends on whether we buffer projections
+            pass
+            
+        # Detach all hooks
+        self.detach()
+        
+        # Clear projection matrices to free memory
+        self.projection_matrices.clear()
+        
+    def save_projections(self, iter_num: int):
+        """
+        Save projections at the given iteration (compatibility method).
+        
+        This is called by engine_manager's save_metrics().
+        For GradProjLora, projections are saved in collect_batch(),
+        so this can be a no-op or trigger a forced save.
+        """
+        # Projections are saved automatically in collect_batch()
+        # This method exists for compatibility
+        pass
+        
     def __repr__(self):
         return (f"GradProjLoraEngine(layers={len(self.matched_layers)}, "
                 f"total_dim={self.total_proj_dim}, "
