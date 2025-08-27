@@ -120,8 +120,10 @@ def init_projection_matrix_rademacher(rows: int, cols: int, dtype: torch.dtype =
     else:
         generator = None
     
-    # Generate random signs
-    signs = torch.randint(0, 2, (rows, cols), dtype=dtype, device=device, generator=generator) * 2 - 1
+    # Generate random signs as integers first
+    signs = torch.randint(0, 2, (rows, cols), dtype=torch.int8, device=device, generator=generator)
+    # Convert to ±1 floats
+    signs = (signs * 2 - 1).to(dtype)
     scale = 1.0 / math.sqrt(rows)
     P = signs * scale
     P.requires_grad_(False)
@@ -133,8 +135,12 @@ def init_projection_matrix_orthonormal(rows: int, cols: int, dtype: torch.dtype 
                                       device: torch.device = torch.device('cpu'),
                                       seed: Optional[int] = None) -> torch.Tensor:
     """
-    Initialize row-orthonormal projection matrix.
+    Initialize row-orthonormal projection matrix using economy QR decomposition.
     Satisfies P @ P^T = I_rows for exact energy preservation.
+    
+    Uses economy approach: Generate [cols x rows] Gaussian, compute QR, 
+    then transpose Q to get row-orthonormal [rows x cols] matrix.
+    This is more memory-efficient than full [cols x cols] QR.
     
     Args:
         rows: Number of rows (projection dimension)
@@ -155,12 +161,14 @@ def init_projection_matrix_orthonormal(rows: int, cols: int, dtype: torch.dtype 
     else:
         generator = None
     
-    # Generate random Gaussian matrix and orthonormalize
-    M = torch.randn(cols, cols, dtype=torch.float64, device=device, generator=generator)
-    Q, _ = torch.linalg.qr(M)
+    # Economy approach: Generate [cols x rows] matrix and compute QR
+    # This gives us Q with shape [cols x rows] where columns are orthonormal
+    M = torch.randn(cols, rows, dtype=torch.float64, device=device, generator=generator)
+    Q, _ = torch.linalg.qr(M, mode='reduced')  # Q is [cols x rows] with orthonormal columns
     
-    # Take first 'rows' rows and ensure row-orthonormal
-    P = Q[:rows, :].to(dtype)
+    # Transpose to get row-orthonormal matrix [rows x cols]
+    # Since Q has orthonormal columns, Q^T has orthonormal rows
+    P = Q.t().to(dtype)  # [rows x cols]
     P.requires_grad_(False)
     
     return P
