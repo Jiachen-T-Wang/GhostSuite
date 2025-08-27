@@ -21,6 +21,7 @@ from ghostEngines.gradProjection.gradproj_engine import GradProjLoraEngine
 from ghostEngines.gradProjection.projection_utils import (
     choose_ki_ko, 
     init_projection_matrix_gaussian,
+    init_projection_matrix_rademacher,
     init_projection_matrix_orthonormal
 )
 
@@ -357,6 +358,133 @@ class TestGradProjEngine(unittest.TestCase):
         # Check projection shape
         self.assertEqual(proj_data['proj'].shape[0], 4)  # batch size
         self.assertEqual(proj_data['proj'].shape[1], engine.total_proj_dim)
+
+    
+    def test_rademacher_initialization(self):
+        """Test that Rademacher initialization works correctly."""
+        # Test that we can create Rademacher projection matrices
+        P = init_projection_matrix_rademacher(10, 100, seed=42)
+        self.assertEqual(P.shape, (10, 100))
+        self.assertFalse(P.requires_grad)
+        
+        # Check that values are ±1/sqrt(10)
+        expected_val = 1.0 / np.sqrt(10)
+        unique_vals = torch.unique(torch.abs(P))
+        self.assertTrue(torch.allclose(unique_vals, torch.tensor([expected_val], dtype=P.dtype)))
+        
+        # Test with different dtypes
+        P_f16 = init_projection_matrix_rademacher(5, 20, dtype=torch.float16, seed=123)
+        self.assertEqual(P_f16.dtype, torch.float16)
+        
+        P_f32 = init_projection_matrix_rademacher(5, 20, dtype=torch.float32, seed=123)
+        self.assertEqual(P_f32.dtype, torch.float32)
+        
+    def test_orthonormal_initialization_economy(self):
+        """Test that orthonormal initialization uses economy QR."""
+        # Test small case
+        P = init_projection_matrix_orthonormal(10, 100, seed=42)
+        self.assertEqual(P.shape, (10, 100))
+        
+        # Check orthonormality: P @ P^T should be identity
+        PPT = P @ P.t()
+        I = torch.eye(10)
+        self.assertTrue(torch.allclose(PPT, I, atol=1e-5))
+        
+        # Test larger case to ensure economy approach is used
+        P_large = init_projection_matrix_orthonormal(50, 1000, seed=42)
+        self.assertEqual(P_large.shape, (50, 1000))
+        
+        # Check orthonormality
+        PPT_large = P_large @ P_large.t()
+        I_large = torch.eye(50)
+        self.assertTrue(torch.allclose(PPT_large, I_large, atol=1e-5))
+        
+    def test_embedding_projection_memory_efficiency(self):
+        """Test that embedding projection is memory-efficient."""
+        # Create a simple model with embedding
+        class ModelWithEmbedding(nn.Module):
+            def __init__(self, vocab_size=1000, embed_dim=128, hidden_dim=64):
+                super().__init__()
+                self.embedding = nn.Embedding(vocab_size, embed_dim)
+                self.fc = nn.Linear(embed_dim, hidden_dim)
+                self.output = nn.Linear(hidden_dim, 10)
+                
+            def forward(self, x):
+                x = self.embedding(x)  # [B, T] -> [B, T, D]
+                x = x.mean(dim=1)  # Pool over sequence
+                x = self.fc(x)
+                x = torch.relu(x)
+                x = self.output(x)
+                return x
+        
+        model = ModelWithEmbedding().to(self.device)
+        
+        engine_config = {
+            'proj_layers': 'embedding',
+            'proj_rank_total': 32,
+            'proj_rank_min': 2,
+            'proj_seed': 42,
+            'proj_dtype': 'float32',
+            'proj_dir': self.temp_dir,
+            'include_embeddings': True,
+        }
+        
+        engine = GradProjLoraEngine(model, **engine_config)
+        engine.attach()
+        
+        # Create input
+        batch_size = 4
+        seq_length = 20
+        indices = torch.randint(0, 1000, (batch_size, seq_length), device=self.device)
+        targets = torch.randint(0, 10, (batch_size,), device=self.device)
+        
+        # Forward/backward
+        output = model(indices)
+        loss = nn.CrossEntropyLoss()(output, targets)
+        loss.backward()
+        
+        # Collect projections - this should work without OOM even for large vocab
+        projections = engine.collect_batch([0, 1, 2, 3])
+        
+        # Check shape
+        self.assertEqual(projections.shape[0], batch_size)
+        self.assertGreater(projections.shape[1], 0)
+        
+        engine.detach()
+        
+    def test_conv1d_error_handling(self):
+        """Test that Conv1d layers raise appropriate error."""
+        class ModelWithConv1d(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.conv = nn.Conv1d(10, 20, kernel_size=3)
+                self.fc = nn.Linear(20, 5)
+                
+            def forward(self, x):
+                # x: [B, channels, length]
+                x = self.conv(x)
+                x = x.mean(dim=-1)  # Pool
+                x = self.fc(x)
+                return x
+                
+        model = ModelWithConv1d().to(self.device)
+        
+        engine_config = {
+            'proj_layers': 'conv',  # Will match Conv1d layer
+            'proj_rank_total': 32,
+            'proj_rank_min': 2,
+            'proj_seed': 42,
+            'proj_dtype': 'float32',
+            'proj_dir': self.temp_dir,
+        }
+        
+        # Should raise NotImplementedError for Conv1d when attaching
+        engine = GradProjLoraEngine(model, **engine_config)
+        
+        with self.assertRaises(NotImplementedError) as context:
+            engine.attach()
+            
+        self.assertIn("Conv1d layers are not yet supported", str(context.exception))
 
 
 if __name__ == '__main__':

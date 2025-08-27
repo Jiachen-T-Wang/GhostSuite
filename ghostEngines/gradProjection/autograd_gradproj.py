@@ -124,25 +124,41 @@ class GradProjHooks:
         
         The gradient for weight W is: dL/dW = sum_t B_t @ A_t^T
         We project this as: P_o @ dL/dW @ P_i^T = sum_t (P_o @ B_t) @ (P_i @ A_t)^T
+        
+        Special handling for Conv1D: The transformers Conv1D layer has transposed weight,
+        so we need to swap the projections accordingly.
         """
+        # Check if this is a Conv1D layer from transformers
+        is_conv1d = (module.__class__.__name__ == 'Conv1D')
+        
         # Flatten to [B, T, D] format
         A = _flatten_tokens(A_raw)  # [B, T, n_i]
         B = _flatten_tokens(B_out)  # [B, T, n_o]
         
         batch_size = A.shape[0]
         
-        # Project activations and gradients
-        # A_proj: [B, T, n_i] @ [n_i, k_i] -> [B, T, k_i]
-        A_proj = torch.matmul(A, self.P_i.t())
+        # For Conv1D, the weight is transposed, so we need to swap projections
+        if is_conv1d:
+            # Conv1D: weight is [n_out, n_in], gradient is B^T @ A (transposed)
+            # So we need to swap A and B for projection
+            A_proj = torch.matmul(B, self.P_i.t())  # Use B with P_i
+            B_proj = torch.matmul(A, self.P_o.t())  # Use A with P_o
+            # Compute gradG with swapped order
+            gradG = torch.einsum('bti,btj->bji', B_proj, A_proj)  # Note: bji instead of bij
+        else:
+            # Regular Linear layer
+            # A_proj: [B, T, n_i] @ [n_i, k_i] -> [B, T, k_i]
+            A_proj = torch.matmul(A, self.P_i.t())
+            
+            # B_proj: [B, T, n_o] @ [n_o, k_o] -> [B, T, k_o]  
+            B_proj = torch.matmul(B, self.P_o.t())
+            
+            # Compute per-sample projected gradients
+            # Align with naive reference: [B, k_o, k_i]
+            gradG = torch.einsum('bti,btj->bij', B_proj, A_proj)
         
-        # B_proj: [B, T, n_o] @ [n_o, k_o] -> [B, T, k_o]  
-        B_proj = torch.matmul(B, self.P_o.t())
-        
-        # Compute per-sample projected gradients
-        # Align with naive reference: [B, k_o, k_i]
         # Note: grad_output from CrossEntropyLoss(mean) carries a 1/B factor;
         # multiply by batch_size to match reduction='sum' naive computation.
-        gradG = torch.einsum('bti,btj->bij', B_proj, A_proj)
         gradG = gradG * batch_size
         
         # Store in float32 for precision
@@ -153,8 +169,11 @@ class GradProjHooks:
         """
         Compute projected gradients for embedding layers.
         
-        For embeddings, the gradient is sparse - only touched indices get gradients.
-        We accumulate the full gradient then project it.
+        Memory-efficient implementation that accumulates directly in projected space.
+        For each token index j with gradient g_t, we compute:
+        - P_o @ g_t (k_o-dimensional)
+        - P_i[:, j] (k_i-dimensional)
+        Then accumulate their outer product into [k_o, k_i] matrix.
         """
         # indices: [B, T] or [B, ..., T]
         # grad_output: [B, T, embedding_dim] or [B, ..., T, embedding_dim]
@@ -169,29 +188,33 @@ class GradProjHooks:
             grad_flat = grad_output  # [B, T, D]
             batch_size = indices.shape[0]
             
-        vocab_size = module.num_embeddings
-        embed_dim = module.embedding_dim
+        k_o, _ = self.P_o.shape  # [k_o, embed_dim]
+        k_i, _ = self.P_i.shape  # [k_i, vocab_size]
         
-        # Compute per-sample gradients
+        # Compute per-sample projected gradients efficiently
         per_sample_grads = []
         
         for b in range(batch_size):
-            # Initialize gradient accumulator
-            grad_weight = torch.zeros(vocab_size, embed_dim, 
-                                     dtype=grad_flat.dtype, device=grad_flat.device)
+            # Initialize projected gradient accumulator in low-dim space
+            grad_proj = torch.zeros(k_o, k_i, dtype=torch.float32, device=grad_flat.device)
             
-            # Accumulate gradients for this sample
             idx_b = indices_flat[b]  # [T]
             grad_b = grad_flat[b]    # [T, D]
             
-            # Use index_add to accumulate gradients
-            grad_weight.index_add_(0, idx_b, grad_b)
+            # Process each token
+            for t in range(idx_b.shape[0]):
+                token_idx = idx_b[t].item()
+                token_grad = grad_b[t]  # [D]
+                
+                # Project gradient: P_o @ g_t -> [k_o]
+                grad_o_proj = self.P_o @ token_grad  # [k_o]
+                
+                # Get projection for this token index: P_i[:, j] -> [k_i]
+                grad_i_proj = self.P_i[:, token_idx]  # [k_i]
+                
+                # Accumulate outer product: [k_o] x [k_i] -> [k_o, k_i]
+                grad_proj += grad_o_proj.unsqueeze(1) @ grad_i_proj.unsqueeze(0)
             
-            # Project the gradient
-            # grad_weight: [vocab_size, embed_dim]
-            # P_i: [k_i, vocab_size], P_o: [k_o, embed_dim]
-            # Result: [k_o, k_i]
-            grad_proj = self.P_o @ grad_weight.t() @ self.P_i.t()
             per_sample_grads.append(grad_proj)
             
         # Stack all per-sample gradients: [B, k_o, k_i]
@@ -235,7 +258,21 @@ def create_projection_hooks(module: nn.Module, layer_name: str,
         # Transformers Conv1D is like Linear with transposed weight
         layer_type = 'Linear'
     elif isinstance(module, nn.Conv1d):
-        layer_type = 'Conv1d'
+        # Conv1d requires proper unfolding - not yet implemented
+        raise NotImplementedError(
+            f"Conv1d layers are not yet supported for gradient projection. "
+            f"Layer '{layer_name}' is a Conv1d layer. "
+            f"Proper im2col unfolding is required for correct gradient computation. "
+            f"Please exclude Conv1d layers from proj_layers pattern."
+        )
+    elif isinstance(module, nn.Conv2d):
+        # Conv2d requires proper unfolding - not yet implemented
+        raise NotImplementedError(
+            f"Conv2d layers are not yet supported for gradient projection. "
+            f"Layer '{layer_name}' is a Conv2d layer. "
+            f"Proper im2col unfolding is required for correct gradient computation. "
+            f"Please exclude Conv2d layers from proj_layers pattern or set include_conv2d=False."
+        )
     elif isinstance(module, nn.Linear):
         layer_type = 'Linear'
     elif isinstance(module, nn.Embedding):
