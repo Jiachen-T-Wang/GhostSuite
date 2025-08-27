@@ -144,14 +144,3 @@ def compute_projections(model, engine, dataset, config, device, ctx, num_iterati
     with open(stats_path, 'w') as f:
         json.dump(stats, f, indent=2)
     print(f"\nSaved statistics to {stats_path}")
-
-
-def compute_projections_with_domains(model, engine, dataset, config, device, ctx):
-    """
-    Alternative function to compute projections organized by domain.
-    This is more complex and can be used if domain-specific processing is needed.
-    
-    Note: This function requires additional implementation to load data by domain,
-    which would need modifications to the dataloader.
-    """
-    raise NotImplementedError("Domain-specific processing not yet implemented. Use compute_projections() instead.")

@@ -47,3 +47,32 @@ The following are the command lines for testing the codebase.
 - **Reuse code blocks whenever possible.** If similar functionality exists in previously generated files within this project, reference and extend that code rather than rewriting from scratch. Build incrementally on existing code patterns.
 - **Do not fallback anywhere.** Raise errors and terminate program rather than silently falling back to default values. Always require explicit configuration values rather than silently using defaults. 
 
+
+
+# Code Review and Testing Guidelines
+
+### Core Principles
+- **Review-Only Mode**: When conducting code reviews, analyze and provide feedback without modifying the existing code
+- **Isolated Testing**: Write standalone, focused tests for individual components rather than executing the entire codebase
+- **Documentation**: Document all findings systematically for future reference
+
+### Review Process
+1. **Analysis Phase**
+   - Examine code structure, logic, and patterns
+   - Identify potential issues, bugs, or areas for improvement
+   - Assess code quality, readability, and maintainability
+   - **Mathematical Verification**: If the code implements mathematical derivations or formulas, carefully verify that the implementation faithfully represents the mathematical concepts, including:
+     - Correct formula translation
+     - Proper handling of edge cases and numerical stability
+     - Appropriate precision and rounding considerations
+     - Accurate implementation of mathematical operations and their order
+
+2. **Testing Phase**
+   - Create minimal, isolated test cases for specific functions or modules
+   - Focus on unit tests that validate individual pieces of functionality
+   - Avoid running the full application unless explicitly necessary
+
+3. **Documentation Phase**
+   - Summarize findings in a markdown file within `Development/CodeReview/`
+   - Use descriptive filenames that indicate the review scope (e.g., `dataloader-review-2025-08-27.md`)
+   - **Important**: Never overwrite existing review documents; always create new files with unique names
