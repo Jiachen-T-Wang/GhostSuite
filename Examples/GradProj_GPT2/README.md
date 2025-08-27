@@ -235,61 +235,75 @@ for layer in metadata['layers']:
 
 ### Plotting Gradient Projection Errors
 
-The `plot_error_with_dim.py` script analyzes how well lower-dimensional projections approximate the gradient dot products compared to higher dimensions.
+The `plot_error_with_dim.py` script analyzes how well lower-dimensional projections approximate gradient dot-products. It now provides a CLI and multiple reference modes.
 
-#### Usage
+#### CLI
 
+- `--results_dir`: Root directory containing result subfolders (e.g., `Examples/GradProj_GPT2/Results`).
+- `--results_pattern`: Regex to match subfolder names that only differ by `rank_total_K`.
+- `--num_ref`: Number of reference samples to average (default: 50).
+- `--max_iters`: Max number of `proj_iter_*.pt` files to load per folder (default: 100).
+- `--reference`: Reference mode:
+  - `rank=NNN`: Use projections at rank NNN (e.g., `rank=1024`).
+  - `full`: Use exact full-model gradients (see below).
+  - `full_layers`: Use exact gradients restricted to projected layers.
+  - `naive_proj_layers=NNN`: Rebuild P for rank NNN using metadata+seed, apply to exact per-layer grads.
+
+The script validates that all matched subfolders are identical except for the `rank_total_K` token.
+
+#### Examples
+
+- Compare ranks against 1024-D reference (mlp-only, seed 9, row_on False):
 ```bash
-# Analyze projection accuracy across different dimensions
-python plot_error_with_dim.py
+python Examples/GradProj_GPT2/plot_error_with_dim.py \
+  --results_dir Examples/GradProj_GPT2/Results \
+  --results_pattern '^proj_layers_mlp_rank_total_\\d+_rank_min_4_seed_9_dtype_bfloat16_row_on_False_emb_False$' \
+  --num_ref 50 --max_iters 100 --reference rank=1024
 ```
 
-#### What it Does
-
-1. **Loads gradient projections** from multiple experiments with different projection dimensions
-2. **Computes dot products** between reference samples and test samples
-3. **Calculates error metrics**:
-   - RMSE (Root Mean Square Error): Scale-independent error measure
-   - Relative Error: Error normalized by reference magnitude
-4. **Generates plots** showing how error decreases with increasing projection dimension
-
-#### Configuration
-
-Edit the script to modify:
-- `ranks`: List of projection dimensions to analyze (default: [16, 32, 64, 128, 256, 512, 1024])
-- `reference_rank`: Higher dimension to use as reference (default: 1024)
-- `max_iters`: Number of iteration files to load (None for all, or specify a number for testing)
-- `num_ref`: Number of reference samples for averaging (default: 10)
-
-#### Output Files
-
-The script generates:
-- `rmse_vs_dimension.{png,pdf}`: RMSE vs projection dimension
-- `relative_error_vs_dimension.{png,pdf}`: Relative error percentage vs dimension
-- `error_analysis_loglog.{png,pdf}`: Combined analysis with log scales
-- `error_vs_dimension_results.json`: Numerical results
-
-#### Example Results
-
-With default settings (using rank 1024 as reference):
-- Rank 16-64: ~21-22% relative error
-- Rank 128: ~16% relative error
-- Rank 256-512: ~9% relative error
-
-This shows that projection dimensions of 256-512 capture gradient dot products with ~90% accuracy.
-
-#### Customization
-
-To analyze a subset of data for faster testing:
-```python
-# In plot_error_with_dim.py, modify:
-max_iters = 100  # Load only first 100 iteration files
+- Compare against exact full gradients (requires full grads to be precomputed):
+```bash
+python Examples/GradProj_GPT2/plot_error_with_dim.py \
+  --results_dir Examples/GradProj_GPT2/Results \
+  --results_pattern '*min_4_seed_42_dtype_bfloat16_row_on_False_emb_False' \
+  --num_ref 1 --max_iters 10 --reference full
 ```
 
-To change reference samples for averaging:
-```python
-num_ref = 20  # Use 20 reference samples instead of 10
+#### Outputs
+
+Saved under `Examples/GradProj_GPT2/Plots/` with a base name that encodes the matched settings (using `rank_total_ALL`) and the reference tag:
+- `...__rmse_vs_dimension.pdf`
+- `...__relative_error_vs_dimension.pdf`
+- `...__error_analysis_loglog.pdf`
+- `...__error_vs_dimension_results.json`
+
+### Exact Full-Model Gradients
+
+Use `Examples/GradProj_GPT2/compute_full_gradients.py` to compute and store exact per-sample full-model gradients (flattened across all trainable parameters).
+
+Requirements
+- Use `--batch_size 1` (enforced).
+- Provide a positive `--max_samples` to bound runtime and disk usage.
+
+Example
+```bash
+python Examples/GradProj_GPT2/compute_full_gradients.py \
+  --architecture GPT2-Small \
+  --batch_size 1 \
+  --max_samples 10 \
+  --device cuda \
+  --model_dtype bfloat16 \
+  --train_dtype bfloat16 \
+  --output_dir ./Examples/GradProj_GPT2/Results
 ```
+
+Outputs
+- One file per sample: `fullgrad_iter_XXXXXX.pt` with `{'grad': float32 vector, 'iter': int, 'batch_size': 1}`.
+- Metadata: `fullgrad_meta.json` with `total_param_dim` and `param_slices` per parameter.
+- Directory: `Results/fullgrads_seed_{seed}_arch_{architecture}_dtype_{train_dtype}`.
+
+Notes
+- When using `plot_error_with_dim.py` with `--reference full` or `full_layers`, ensure full grads are generated in the same `--results_dir`. The script will auto-discover a `fullgrads*` folder.
 
 ## Related Documentation
 
