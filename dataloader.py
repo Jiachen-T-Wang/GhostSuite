@@ -2,17 +2,22 @@ import sys
 import numpy as np
 import torch
 
+# Local imports
 from domain_list import PILE_DOMAIN_LIST
 from config_file import PILE_DATA_DIR
 
 
-def load_all_data():
+def load_all_data(num_domains: int=1):
 
     mixed_train_data = []
     mixed_val_data = []
     mixed_test_data = []
 
-    for domain in PILE_DOMAIN_LIST:
+    # Get the list of domains to load
+    # The default is to load the first domain (Pile-CC)
+    domain_list = PILE_DOMAIN_LIST[:num_domains]
+
+    for domain in domain_list:
 
         dom_amp = domain.replace('/', '-').replace(' ', '_').replace('(', '').replace(')', '')
 
