@@ -67,10 +67,6 @@ Successfully implemented a gradient projection engine using LoRA-style architect
 - ✅ **Layer support**: Works with Linear, Conv1D, Embedding layers
 - ✅ **Dimension selection**: Optimal k_i, k_o computation works correctly
 
-### Known Limitations
-- Naive equality test shows small numerical differences due to floating-point precision
-- Currently requires manual integration (not yet integrated with engine_manager.py)
-- GPT-2 example requires transformers library
 
 ## Usage Example
 
@@ -122,59 +118,8 @@ Test/
 ```
 
 ## Future Work
-- Integration with engine_manager.py for unified interface
-- Support for additional layer types (Conv2d, attention modules)
-- Optimizations for very large models
-- Distributed training support
-
-
-
-
-
-# Code Review Summary
-
-### Correctness Issues Found
-
-1. Embedding projection path is memory-heavy:
-   - `_compute_embedding_proj` materializes a full `[vocab_size, embed_dim]` weight-gradient per sample then applies `P_o @ grad @ P_i^T`.
-   - Impact: For realistic `vocab_size`, this is O(V·D) per-sample in memory/time; not viable for large models.
-
-2. Rademacher initializer bug:
-   - `init_projection_matrix_rademacher` calls `torch.randint(..., dtype=dtype)` where `dtype` is float; `torch.randint` requires an integer dtype.
-   - Impact: This path will raise at runtime if used.
-
-3. Conv1d/Conv2d support not implemented correctly:
-   - `is_supported_layer` includes Conv1d/Conv2d (with flag), but `_compute_dense_proj` assumes last-dim features and simply flattens tokens.
-   - Correct handling for Conv requires an im2col-like unfolding to map to `[B, T, n_i]` and aligned output-grad `[B, T, n_o]`.
-   - Impact: Results will be incorrect for Conv layers as-is.
-
-### Performance and Safety Notes
-- Orthonormal initializer does full QR on `[cols x cols]`; this is O(n^3) and memory-heavy for large `cols`. Consider an economy approach (e.g., QR on a `[cols x rows]` random Gaussian and transposition) when scaling up.
-- Current embedding path’s per-sample dense materialization will dominate both memory and runtime on large vocabs; must be reworked before using on GPT-2 scale.
-- Error handling is strict (no silent fallbacks) which matches the project guideline. Good.
-
-
-### TODO Lists
-
-1. Implement memory-efficient embedding projection:
-   - Avoid building a full `[V, D]` gradient per sample. For each token index `j` in the sample and its gradient vector `g_t`, accumulate `P_o @ g_t` outer `P_i[:, j]` into the per-sample `[k_o, k_i]` matrix. This is O(T·(k_o + k_i)) per sample.
-
-2. Fix Rademacher initializer:
-   - Generate integer signs via `torch.randint(0, 2, (rows, cols), dtype=torch.int8, ...)`, cast to float, then scale by `1/sqrt(rows)`.
-
-3. Correct Conv1d/Conv2d handling or gate off:
-   - Either implement proper unfolding to `[B, T, n_i]` and align output-grad tokens, or raise a clear error if `include_conv2d`/Conv1d is requested.
-   - This might be the root cause for the error message when we run `python Examples/ghost_gradproj_lm.py --proj_layers "attn.c_attn,mlp.c_fc" --proj_rank_total 256`. 
-
-4. Orthonormal initializer scalability:
-   - Consider an economy QR or SVD-based method (e.g., sample `[cols x rows]` Gaussian `G`, compute `Q = orth(G)`, then take `Q^T` as row-orthonormal `P`).
-
-5. Minor consistency:
-   - Ensure block concatenation order and metadata `slice_ranges` remain strictly aligned by consistently sorting layer names in all places (already done in most call sites).
-
-
-### Integration Notes (Later)
 - Not yet wired into `ghostEngines/engine_manager.py`. When integrating:
   - Add a new method name (e.g., `GradProj`) in config, plus the required projection options.
   - Expose `collect_batch()` and `aggregate_and_log()` hooks in the manager lifecycle.
   - Ensure evaluation phases call `detach()` to avoid unnecessary hook work.
+- Currently, in `Examples/ghost_gradproj_lm.py`, we are computing gradient projection for just a small sample of data. After wired into `ghostEngines/engine_manager.py`, I would like to add an example in folder `Examples/GradProj_GPT2` which compute and store the gradient projection for every data point in Pile. We can reuse tokenized Pile dataset loader in `dataloader.py`. Essentially, what we need to do is to re-implememt a `Examples/GradProj_GPT2/gradproj_loop.py` which mimics `training_loop.py`, but instead of training, we compute the per-sample gradient projection in a batch-by-batch manner with GradProjLoraEngine. For testing, you can use a small training batch size. 
