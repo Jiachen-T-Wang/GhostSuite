@@ -6,17 +6,25 @@ This script provides a clean interface for training GPT models with optional
 In-Run Data Shapley value computation.
 """
 
+import os
+import sys
+
+# Add parent directories to path for imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+
 from config_file import parse_arguments, TrainingConfig
-from training_utils import (
+from shared.training_utils import (
     setup_distributed,
     setup_torch_backend,
     cleanup_distributed,
-    print_training_info
+    print_training_info,
+    setup_data_functions,
+    load_dataset_main
 )
-from model_setup import setup_model_and_optimizer
+from shared.model_setup import setup_model_and_optimizer
 from training_loop import Trainer
-from training_utils import setup_data_functions, load_dataset_main
-from utils import set_seed
+from shared.utils import set_seed
 
 
 def main():

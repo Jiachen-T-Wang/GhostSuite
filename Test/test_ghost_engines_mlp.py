@@ -209,7 +209,7 @@ def test_grad_dotprod_linear_correctness():
     _seed_everything(42)
     model_A = TwoLayerMLP(in_dim, hidden_dim, out_dim).to(device)
     opt_A = torch.optim.SGD(model_A.parameters(), lr=1e-2)
-    engine = GradDotProdEngine(module=model_A, val_batch_size=n_val, loss_reduction='mean', average_grad=True, use_dummy_bias=False)
+    engine = GradDotProdEngine(module=model_A, val_batch_size=n_val, loss_reduction='mean', use_dummy_bias=False)
     engine.attach(opt_A)
 
     logits = model_A(X_cat)
@@ -312,7 +312,7 @@ def test_training_equivalence_validation_loss():
     _seed_everything(100)
     model_eng = TwoLayerMLP(in_dim, hidden_dim, out_dim).to(device)
     opt_eng = torch.optim.SGD(model_eng.parameters(), lr=1e-1)
-    engine = GradDotProdEngine(module=model_eng, val_batch_size=n_val, loss_reduction='mean', average_grad=True, use_dummy_bias=False)
+    engine = GradDotProdEngine(module=model_eng, val_batch_size=n_val, loss_reduction='mean', use_dummy_bias=False)
     engine.attach(opt_eng)
 
     X_cat = torch.cat([X_tr, X_val], dim=0)

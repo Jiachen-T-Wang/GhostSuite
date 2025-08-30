@@ -4,9 +4,14 @@ import time
 import numpy as np
 import torch
 import os
+import sys
+
+# Add parent directories to path for imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 # Local imports
-from training_utils import (
+from shared.training_utils import (
     get_learning_rate,
     update_learning_rate,
     estimate_loss,

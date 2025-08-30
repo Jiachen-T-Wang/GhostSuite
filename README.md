@@ -1,11 +1,29 @@
 # "Ghost" Suites for Fast Gradient Information Calculation
 
+
 ## Introduction
 Computing per-sample gradient information and pair-wise gradient similarity is often the computational bottleneck for data-centric research (e.g., data selection, synthetic data generation). A naive approach would require setting the batch size to 1, backpropagating on the loss of each training sample, and storing all the huge gradient vectors. Consequently, this approach would be computationally prohibitive for practical applications. 
 
 In [Data Shapley in One Training Run](https://openreview.net/pdf?id=HD6bWcj87Y) (ICLR'25 Outstanding Paper Runner-up), we proposed a highly efficient method to obtain per-sample gradient information. It turns out that we can compute the gradient dot-product between every pair of data points within a large batch in just a single backpropagation. At high level, the technique exploits information that's already being computed during standard backpropagation with respect to the aggregated loss on a batch of data points. 
 
-This repository provides a clean implementation for "ghost"-based techniques for fast gradient information calculation during language model training. The "ghost" engines enable efficient computation of gradient dot-products between validation loss and individual training samples without fully materializing intermediate gradients.
+This repository provides a clean, drop-in implementation of "ghost"-based techniques for fast per-sample gradient information calculation. Our goal is to enable per-sample gradient computation and extraction with **minimal code changes**—often just a few lines added to your existing model training loop.
+
+
+## Available Engines
+- `GradDotProdEngine`
+  - Purpose: Online computation of gradient similarities between validation loss and individual training samples in a single backprop pass.
+  - Core idea: Reuse activations and output gradients already computed during backprop to obtain per‑parameter dot products without materializing model‑sized gradients; typically concatenates a small validation batch with the training batch.
+  - Best for: computing pair-wise gradient similarities through the entire training process (e.g., online data selection, reweighting, curriculum learning, or analyzing training dynamics). 
+
+- `GradProjLoRAEngine`
+  - Purpose: Offline, corpus‑scale analysis by storing low‑dimensional per‑sample gradient projections to disk for later similarity analysis.
+  - Core idea: Similar to `GradDotProdEngine`, we can reuse activations and output gradients already computed during backprop. Instead of directly computing gradient similarity, we store these per-sample info to disks. Specifically, we can apply a Kronecker‑structured random projection \(P = P_i \otimes P_o\). This can be elegantly implemented through a zero‑impact [LoRA‑style side branch](https://arxiv.org/pdf/2405.13954) so \(\partial\ell/\partial G\) equals the projected per‑sample gradient; no changes to model behavior.
+  - Best for: computing pair-wise gradient similarities for a large dataset w.r.t. a fixed model checkpoint.  
+
+Logic and when to use which
+- Both engines exploit the same gradient structure to avoid instantiating full gradients and add minimal training overhead.
+- Use GradDotProd when you need on‑the‑fly similarities within a step (e.g., *online data selection or reweighting, curriculum learning, auditing training dynamics*).
+- Use GradProjLoRA when you need reusable per‑sample representations across many batches or the whole corpus (e.g., *offline data selection, clustering, etc*). These projections preserve inner products up to JL distortion. 
 
 
 ## Installation
@@ -13,40 +31,53 @@ This repository provides a clean implementation for "ghost"-based techniques for
 pip install -r requirements.txt
 ```
 
+
 ## Quick Start
 
-### Minimal Example on Two-layer MLP
+In `Examples/`, we provide three minimal examples for demonstrating core usage of GhostEngines:
 
-A self-contained demo lives in `Examples/ghost_mlp.py`. It trains a tiny two-layer MLP for 10 steps on synthetic data and prints per-iteration gradient dot-products between the validation batch and each training sample, plus an aggregated vector.
+- **`ghost_mlp.py`**: Basic GradDotProd usage for MLP models
+  - Trains for 10 steps on synthetic data
+  - Prints per-parameter gradient dot-products
 
-Run it directly:
-```bash
-python Examples/ghost_mlp.py
-```
+- **`ghost_gradproj_mlp.py`**: Per-sample gradient projection computation and storage for MLP
 
-### Language model training
+- **`ghost_gradproj_lm.py`**: Per-sample gradient projection computation and storage for language models
+  - Projects gradients for transformer layers
+  - Demonstrates similarity computation from saved projections
 
-### 1. Get Tokenized Dataset
-Process the Pile dataset by domain:
-```bash
-python data_processing/tokenize_pile_by_domain.py
-```
-*Note: This process can take ~24 hours depending on your system.*
 
-### 2. Configure Training
-Adjust the paths and settings in `config_file.py`:
-- `RESULTS_DIR`: Directory where training results and gradient metrics will be saved
-- `PILE_DATA_DIR`: Path to your tokenized dataset
 
-### 3. Launch Training
-Run training with gradient dot product computation:
-```bash
-./Scripts/train.sh
-```
+## Full examples for language models
 
-During training, the engine automatically:
-- Logs gradient dot products at specified intervals
-- Saves metrics under `{RESULTS_DIR}`
+### 1. GradDotProd Language Model (`Examples/GradDotProd_LM/`)
+Full demonstration of pair-wise gradient dot product computation during language model training on the Pile dataset. Useful for research projects such as online data selection that requires computing gradient similarities during the model training. 
+
+See `Examples/GradDotProd_LM/README.md` for detailed instructions. 
+
+
+### 2. Gradient Projection Language Model (`Examples/GradProj_LM/`)
+Full demonstration of per-sample gradient projection computation and storage for a languagem model checkpoint. Useful for research projects such as offline data selection that requires computing gradient similarities for a *fixed* model checkpoint. 
+
+See `Examples/GradProj_LM/README.md` for detailed instructions. 
+
+
+## How the Ghost Engines Work
+
+### GradDotProd Engine
+1. **Batch Concatenation**: Training and validation batches are concatenated for a single forward pass
+2. **Gradient Computation**: During backpropagation, the engine computes:
+   - Per-parameter gradient dot products between validation and training samples. 
+   - Aggregated training gradients are recovered seperately and stored in `.grad` before optimizer step. 
+
+### GradProj Engine
+- Uses LoRA-style low-rank projection matrices
+- Projects high-dimensional gradients to lower-dimensional space
+- Enables efficient per-sample gradient storage without materializing full gradients
+- Supports both MLP and attention layer projections
+
+See individual example directories for detailed documentation and configuration options.
+
 
 
 ## Integrating Ghost Engine with Your Training Loop

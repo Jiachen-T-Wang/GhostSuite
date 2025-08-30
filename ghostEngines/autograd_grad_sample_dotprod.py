@@ -34,14 +34,14 @@ def add_hooks(
     2. In the backward pass:
         a. Compute the gradient dot product between the validation batch
            gradient and each training sample's gradient.
-        b. Compute and accumulate the summed or averaged gradient for the
+        b. Compute and accumulate the averaged gradient for the
            training batch into `param.train_grad`.
 
     Args:
         model: The PyTorch model to which hooks are added.
         val_batch_size: The number of samples in the validation set.
         loss_reduction: The loss reduction type, 'mean' or 'sum'.
-        average_grad: Flag to compute average vs. summed gradients for the update.
+        Note: Train gradients are always averaged over the training portion of the batch.
     """
     if hasattr(model, "autograd_grad_sample_hooks"):
         raise ValueError("Trying to add hooks twice to the same model")
