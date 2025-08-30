@@ -3,8 +3,10 @@ import numpy as np
 import torch
 
 # Local imports
-from domain_list import PILE_DOMAIN_LIST
-from config_file import PILE_DATA_DIR
+from .domain_list import PILE_DOMAIN_LIST
+
+# Data directory
+PILE_DATA_DIR = '/scratch/gpfs/tw8948/pile_tokenized'
 
 
 def load_all_data(num_domains: int=1):

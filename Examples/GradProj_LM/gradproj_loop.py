@@ -6,11 +6,11 @@ import time
 from tqdm import tqdm
 import gc
 
-# Import from main codebase
+# Import from shared modules
 import sys
 import os
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from dataloader import get_batch_from_dataset
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from shared.dataloader import get_batch_from_dataset
 
 
 def compute_projections(model, engine, dataset, config, device, ctx, num_iterations):

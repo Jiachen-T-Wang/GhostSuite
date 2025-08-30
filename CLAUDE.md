@@ -4,18 +4,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Core Commands
 
-### Training (Let's only use GPT2-Small trained on Pile now, don't need to worry about LLAVA)
-**Important: when running evaluation, always use --batch_size 2 due to our small GPU memory**
+### Training Examples
+
+The codebase is organized with all training examples under the `Examples/` directory:
+
+#### GradDotProd Language Model Training
 ```bash
-# Run training with default settings (GradDotProd method)
-./Scripts/train.sh --batch_size 2
-
-# Run regular training without gradient computation
-./Scripts/train.sh --batch_size 2 --method Regular
-
-# Specify custom parameters
-./Scripts/train.sh --batch_size 2 --learning_rate 1e-4 --max_steps 100000
+cd Examples/GradDotProd_LM
+./train.sh --batch_size 2  # Run with default GradDotProd method
+./train.sh --batch_size 2 --method Regular  # Run without gradient computation
+./train.sh --batch_size 2 --learning_rate 1e-4 --max_steps 100000  # Custom parameters
 ```
+
+#### Gradient Projection Language Model
+```bash
+cd Examples/GradProj_LM
+./train.sh  # Run gradient projection computation
+```
+
+**Important: when running evaluation, always use --batch_size 2 due to our small GPU memory**
 
 ### Environment Setup
 ```bash
@@ -37,32 +44,64 @@ The core innovation is the "ghost" engine framework for efficient gradient compu
 
 - **Integration Pattern**: Ghost engines attach to the model and optimizer, intercepting gradient computation without modifying the core training loop.
 
-### Training Pipeline
+### Project Structure
 
-1. **Configuration** (`config_file.py`): 
+```
+GhostSuite/
+├── ghostEngines/           # Core ghost engine library
+│   ├── graddotprod_engine.py
+│   ├── gradProjection/
+│   └── engine_manager.py
+├── Examples/
+│   ├── shared/            # Shared utilities across examples
+│   │   ├── dataloader.py
+│   │   ├── model_setup.py
+│   │   ├── training_utils.py
+│   │   ├── utils.py
+│   │   ├── domain_list.py
+│   │   └── data_processing/
+│   ├── GradDotProd_LM/    # GradDotProd language model example
+│   │   ├── main.py
+│   │   ├── config_file.py
+│   │   ├── training_loop.py
+│   │   └── train.sh
+│   ├── GradProj_LM/       # Gradient projection LM example
+│   │   ├── main.py
+│   │   ├── config_file.py
+│   │   ├── gradproj_loop.py
+│   │   └── train.sh
+│   └── [Minimal MLP examples]
+└── Test/                  # Unit tests
+```
+
+### Training Pipeline (GradDotProd_LM Example)
+
+1. **Configuration** (`Examples/GradDotProd_LM/config_file.py`): 
    - Manages all training parameters via `TrainingConfig` class
    - Key paths: `RESULTS_DIR` for outputs, `PILE_DATA_DIR` for tokenized data
    - Supports multiple model architectures (GPT2, Pythia, LLaVA)
 
-2. **Main Entry** (`main.py`):
+2. **Main Entry** (`Examples/GradDotProd_LM/main.py`):
    - Orchestrates setup: distributed training, data loading, model initialization
    - Creates `Trainer` instance with configured ghost engine
 
-3. **Training Loop** (`training_loop.py`):
+3. **Training Loop** (`Examples/GradDotProd_LM/training_loop.py`):
    - Integrates ghost engine via simple hooks:
      - `attach_train_batch()`: Register current batch
      - `prepare_forward_input()`: Concatenate validation data if needed  
      - `prepare_gradients()`: Move accumulated gradients to `.grad`
      - `aggregate_and_log()`: Compute and save gradient metrics
 
-4. **Model Setup** (`model_setup.py`):
-   - Handles model initialization for different architectures
-   - Configures precision (bfloat16/float32) and distributed training
+4. **Shared Components** (`Examples/shared/`):
+   - `model_setup.py`: Handles model initialization for different architectures
+   - `dataloader.py`: Manages tokenized datasets with domain-specific sampling
+   - `training_utils.py`: Common training utilities and helper functions
 
 ### Data Processing
 
-- **Dataloader** (`dataloader.py`, `llava_dataloader.py`): Handles tokenized datasets with domain-specific sampling
-- **Processing Scripts** (`data_processing/`): Convert raw datasets to tokenized format organized by domain
+- **Dataloader** (`Examples/shared/dataloader.py`): Handles tokenized datasets with domain-specific sampling
+- **LLaVA Dataloader** (`llava_dataloader.py`): Specialized loader for LLaVA dataset (kept in main workspace)
+- **Processing Scripts** (`Examples/shared/data_processing/`): Convert raw datasets to tokenized format organized by domain
 
 ### Key Configuration Variables
 

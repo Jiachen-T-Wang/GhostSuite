@@ -15,16 +15,17 @@ from contextlib import nullcontext
 
 
 # Data loaders for language datasets
-from dataloader import (
+from .dataloader import (
     load_all_data,
     get_batch_from_dataset,
 )
 
-# Data loaders for LLaVA dataset
-from llava_dataloader import (
-    load_llava_dataset,
-    get_llava_batch
-)
+# Note: llava_dataloader would need to be moved to shared/ or handled separately
+# For now, we'll comment it out as it's not in shared/
+# from .llava_dataloader import (
+#     load_llava_dataset,
+#     get_llava_batch
+# )
 
 
 LLAVA_LIST = ["conversation_58k", "complex_reasoning_77k", "detail_23k", "llava_instruct_80k", "llava_instruct_150k"]
@@ -37,6 +38,12 @@ def load_dataset_main(train_set, val_set):
     print(f"[INFO] Loading {train_set} dataset ...")
 
     if train_set in LLAVA_LIST:
+        # Dynamically import llava_dataloader only when needed
+        import sys
+        import os
+        sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        from llava_dataloader import load_llava_dataset
+        
         dataset = load_llava_dataset(
             dataset_name=train_set,
             tokenizer_name="llava-hf/llava-1.5-7b-hf", 
@@ -77,6 +84,11 @@ def setup_data_functions(dataset, config, device):
             return get_batch('val', batch_size, return_idx=return_idx)
         
     elif config.args.train_set in LLAVA_LIST:
+        # Dynamically import llava_dataloader only when needed
+        import sys
+        import os
+        sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+        from llava_dataloader import get_llava_batch
 
         def get_batch(split, batch_size, return_idx=False):
 
