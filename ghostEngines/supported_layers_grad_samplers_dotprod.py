@@ -3,8 +3,6 @@ import transformers.pytorch_utils
 from torch import nn
 import torch.nn.functional as F
 
-from transformers.models.t5.modeling_t5 import T5LayerNorm
-import time
 
 def _should_use_ghost_computation(layer: nn.Module, A: torch.Tensor, B: torch.Tensor, conv: bool = False):
     """
@@ -267,20 +265,39 @@ def _compute_layernorm_dot_product(layer: nn.LayerNorm, A: torch.Tensor, B: torc
     grad_weight_train = B_train * normalized_A_train
     grad_weight_val = B_val * normalized_A_val
 
-    # Sum over all dimensions except batch to get per-sample grad
-    sum_dims = list(range(1, grad_weight_train.dim()))
-    per_sample_grad_weight = grad_weight_train.sum(dim=sum_dims)
-    total_grad_weight_val = grad_weight_val.sum(dim=list(range(grad_weight_val.dim())))
-    
-    layer.weight.grad_dot_prod = per_sample_grad_weight * total_grad_weight_val
+    # Reduce training per-sample gradients over non-feature dims only → [B_train, F]
+    # Keep the last dim (feature) intact for a correct dot with validation vector.
+    if grad_weight_train.dim() >= 2:
+        sum_dims_train = list(range(1, grad_weight_train.dim() - 1))
+        per_sample_grad_weight = grad_weight_train.sum(dim=sum_dims_train) if sum_dims_train else grad_weight_train
+    else:
+        per_sample_grad_weight = grad_weight_train
+
+    # Aggregate validation gradient over batch and token dims only → [F]
+    sum_dims_val = list(range(grad_weight_val.dim() - 1))
+    total_grad_weight_val = grad_weight_val.sum(dim=sum_dims_val)
+
+    # Feature-wise inner product to obtain per-sample scalars → [B_train]
+    layer.weight.grad_dot_prod = torch.einsum(
+        'bf,f->b', per_sample_grad_weight.float(), total_grad_weight_val.float()
+    )
 
     # --- Bias dot product ---
     if layer.bias is not None:
-        # The gradient for the bias is just B
-        sum_dims = list(range(1, B_train.dim()))
-        per_sample_grad_bias = B_train.sum(dim=sum_dims)
-        total_grad_bias_val = B_val.sum(dim=list(range(B_val.dim())))
-        layer.bias.grad_dot_prod = per_sample_grad_bias * total_grad_bias_val
+        # Bias gradient is B; reduce non-feature dims for train → [B_train, F]
+        if B_train.dim() >= 2:
+            sum_dims_train = list(range(1, B_train.dim() - 1))
+            per_sample_grad_bias = B_train.sum(dim=sum_dims_train) if sum_dims_train else B_train
+        else:
+            per_sample_grad_bias = B_train
+
+        # Validation aggregate over batch and token dims only → [F]
+        sum_dims_val = list(range(B_val.dim() - 1))
+        total_grad_bias_val = B_val.sum(dim=sum_dims_val)
+
+        layer.bias.grad_dot_prod = torch.einsum(
+            'bf,f->b', per_sample_grad_bias.float(), total_grad_bias_val.float()
+        )
 
 
 def _compute_layernorm_train_grad(
@@ -459,22 +476,19 @@ def _compute_Conv1D_train_grad(
     A: torch.Tensor,
     B: torch.Tensor,
     val_batch_size: int,
-    average_grad: bool = False
 ) -> torch.Tensor:
     """
-    Computes the sum or average of gradients across the training data for a
-    Conv1D layer's weight.
-
+    Compute the training gradient for a Conv1D layer's weight and return the
+    averaged gradient across the training batch.
+    
     Args:
         layer: The Conv1D layer.
         A: The input activations from the combined (train + val) batch.
         B: The output gradients from the combined (train + val) batch.
         val_batch_size: The number of samples in the validation batch.
-        average_grad: If True, computes the average gradient.
-                      If False (default), computes the summed gradient.
-
+    
     Returns:
-        The summed or averaged gradient for the layer's weight parameter.
+        The averaged gradient for the layer's weight parameter.
     """
 
     # Determine training batch size from the total size and validation size.
@@ -488,12 +502,6 @@ def _compute_Conv1D_train_grad(
     grad_weight = torch.einsum('b...d,b...p->dp', A_train, B_train)
 
     grad_weight /= train_batch_size
-
-    # # If requested, compute the average gradient instead of the sum.
-    # if average_grad:
-    #     # Avoid division by zero if for some reason the training batch size is 0.
-    #     if train_batch_size > 0:
-    #         # grad_weight /= train_batch_size
 
     return grad_weight
 
@@ -560,9 +568,8 @@ def _compute_conv2d_train_grad(
     A: torch.Tensor,
     B: torch.Tensor,
     val_batch_size: int,
-    average_grad: bool = False,
 ) -> torch.Tensor:
-    """Compute training gradients for nn.Conv2d weight."""
+    """Compute averaged training gradients for nn.Conv2d weight."""
 
     train_batch_size = A.size(0) - val_batch_size
     A_train, _ = torch.split(A, [train_batch_size, val_batch_size], dim=0)
@@ -593,4 +600,3 @@ _supported_layers_dotprod = {
     transformers.pytorch_utils.Conv1D: (_compute_Conv1D_dot_product, _compute_Conv1D_train_grad),
     nn.Conv2d: (_compute_conv2d_dot_product, _compute_conv2d_train_grad),
 }
-

@@ -81,7 +81,6 @@ def demo_train_with_engine() -> None:
         module=model,
         val_batch_size=n_val,
         loss_reduction="mean",
-        average_grad=True,
         use_dummy_bias=False,
     )
     engine.attach(optimizer)

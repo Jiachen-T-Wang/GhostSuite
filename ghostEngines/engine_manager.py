@@ -12,6 +12,7 @@ import torch
 from torch import nn
 
 from .graddotprod_engine import GradDotProdEngine
+from .gradProjection.gradproj_engine import GradProjLoraEngine
 
 
 class GhostEngineManager:
@@ -50,6 +51,8 @@ class GhostEngineManager:
         """Initialize the appropriate engine based on config.method."""
         if self.config.method == 'GradDotProd':
             self._initialize_graddotprod_engine()
+        elif self.config.method == 'GradProjLora':
+            self._initialize_gradproj_engine()
         elif self.config.method == 'Regular':
             # No engine needed for regular training
             print("[INFO] Regular training mode - no ghost engine required.")
@@ -70,7 +73,6 @@ class GhostEngineManager:
             module=self.model,
             val_batch_size=self.config.val_batch_size,
             loss_reduction='mean',
-            average_grad=True,
             use_dummy_bias=True,
             dot_prod_save_path=dot_prod_save_path
         )
@@ -86,6 +88,43 @@ class GhostEngineManager:
         self.engine.attach_and_store_valset(self.X_val, self.Y_val)
         
         print("[INFO] GradDotProdEngine initialized successfully.")
+    
+    def _initialize_gradproj_engine(self):
+        """Initialize GradProjLoraEngine with projection setup."""
+        print("[INFO] Initializing GradProjLoraEngine ...")
+        
+        # Prepare directory for saving projections
+        proj_dir = os.path.join(self.config.result_dir, "projections")
+        if self.ddp_info['master_process']:
+            os.makedirs(proj_dir, exist_ok=True)
+        
+        # Get projection parameters from config or use defaults
+        proj_layers = getattr(self.config, 'proj_layers', 'mlp,attn')
+        proj_rank_total = getattr(self.config, 'proj_rank_total', 256)
+        proj_rank_min = getattr(self.config, 'proj_rank_min', 8)
+        proj_seed = getattr(self.config, 'proj_seed', 42)
+        proj_dtype = getattr(self.config, 'proj_dtype', self.config.train_dtype)
+        proj_save_interval = getattr(self.config, 'proj_save_interval', 
+                                    self.config.dot_prod_save_interval)
+        include_embeddings = getattr(self.config, 'include_embeddings', False)
+        
+        # Initialize the engine
+        self.engine = GradProjLoraEngine(
+            module=self.model,
+            proj_layers=proj_layers,
+            proj_rank_total=proj_rank_total,
+            proj_rank_min=proj_rank_min,
+            proj_seed=proj_seed,
+            proj_dtype=proj_dtype,
+            proj_dir=proj_dir,
+            proj_save_interval=proj_save_interval,
+            include_embeddings=include_embeddings
+        )
+        
+        # Attach the engine
+        self.engine.attach()
+        
+        print("[INFO] GradProjLoraEngine initialized successfully.")
     
 
     def is_active(self) -> bool:
@@ -120,6 +159,10 @@ class GhostEngineManager:
         """Check if metrics should be saved at this iteration."""
         if self.config.method == 'GradDotProd' and iter_num > 0:
             return iter_num % self.config.dot_prod_save_interval == 0
+        elif self.config.method == 'GradProjLora' and iter_num > 0:
+            save_interval = getattr(self.config, 'proj_save_interval', 
+                                   self.config.dot_prod_save_interval)
+            return iter_num % save_interval == 0
         # Add other engine-specific save intervals here
         return False
     
@@ -127,6 +170,10 @@ class GhostEngineManager:
         """Save metrics to disk (if applicable)."""
         if self.config.method == 'GradDotProd' and self.engine:
             self.engine.save_dot_product_log(iter_num=iter_num)
+        elif self.config.method == 'GradProjLora' and self.engine:
+            # For GradProjLora, collect_batch handles saving internally
+            if hasattr(self.engine, 'save_projections'):
+                self.engine.save_projections(iter_num=iter_num)
     
     def get_validation_data(self):
         """Get validation data for methods that need it."""
@@ -188,6 +235,13 @@ class GhostEngineManager:
                 self.engine.save_dot_product_log(iter_num=-1)
             except Exception as e:
                 print(f"Error saving remaining dot products during cleanup: {e}")
+        elif self.config.method == 'GradProjLora':
+            # GradProjLora saves projections incrementally, just ensure cleanup
+            if hasattr(self.engine, 'cleanup'):
+                try:
+                    self.engine.cleanup()
+                except Exception as e:
+                    print(f"Error during GradProjLora cleanup: {e}")
         
         # Detach the engine
         try:

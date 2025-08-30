@@ -24,7 +24,6 @@ class GradDotProdEngine:
         module: nn.Module,
         val_batch_size: int,
         loss_reduction: str = 'mean',
-        average_grad: bool = True,
         use_dummy_bias: bool = False,
         dot_prod_save_path: Optional[str] = None,
     ):
@@ -36,8 +35,6 @@ class GradDotProdEngine:
             val_batch_size: The number of samples in the fixed validation batch.
             loss_reduction: The reduction used for the loss function ('mean' or 'sum').
                           This is needed to correctly scale the backpropagated gradients.
-            average_grad: If True, the model is updated with the average of the
-                          training gradients. If False (default), the sum is used.
             use_dummy_bias: If True, the bias parameters are set to not require gradients.
             dot_prod_save_path: The directory where the dot product log will be saved.
         """
@@ -46,7 +43,6 @@ class GradDotProdEngine:
         self.module = module
         self.val_batch_size = val_batch_size
         self.loss_reduction = loss_reduction
-        self.average_grad = average_grad
         self.dot_prod_save_path = dot_prod_save_path
 
         self.named_params = list(
