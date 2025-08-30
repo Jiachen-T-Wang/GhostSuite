@@ -223,8 +223,6 @@ class GradDotProdEngine:
                 'batch_idx': self.batch_idx
             }
 
-            print(f"Dot product info for this iteration: {total_dot_product_iter}")
-
             self.dot_product_log.append(info_this_iter)
 
         else:
