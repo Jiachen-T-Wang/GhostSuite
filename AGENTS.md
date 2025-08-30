@@ -11,14 +11,12 @@
 - `Scripts/`: SLURM launcher (`train.sh`).
 - `Demo/`: Notebook and example scripts.
 
+
 ## Build, Test, and Development Commands
 - Install deps: `pip install -r requirements.txt`
 - Tokenize Pile: `python data_processing/tokenize_pile_by_domain.py`
-- Quick smoke eval (no training): `python main.py --eval_only --eval_iter 5 --eval_bs 8 --train_set pile`
-- Train locally (example):
-  `python main.py --method GradDotProd --architecture GPT2-Small --batch_size 16 --max_steps 1000`
-- SLURM job: `./Scripts/train.sh --method GradDotProd --max_steps 50000`
-Note: Adjust paths in `config_file.py` before running.
+- Quick smoke eval: `Examples/ghost_mlp.py`, `Examples/ghost_gradproj_mlp.py` and `Examples/ghost_gradproj_lm.py` provide minimal examples for using `GradDotProdEngine` and `GradProjLoraEngine`. 
+
 
 ## Coding Style & Naming Conventions
 - Python, PEP 8, 4-space indentation; wrap lines ~100 chars.
@@ -26,21 +24,26 @@ Note: Adjust paths in `config_file.py` before running.
 - Add docstrings for public functions; prefer type hints for new/edited APIs.
 - Keep imports ordered: stdlib, third-party, local.
 
+
 ## Testing Guidelines
 
 The following are the command lines for testing the codebase. 
 
 **Important: (Let's only use GPT2-Small trained on Pile now, don't need to worry about LLAVA)**
 **Important: when running evaluation, always use --batch_size 2 due to our small GPU memory**
+
+#### GradDotProd Language Model Training
 ```bash
-# Run training with default settings (GradDotProd method)
-./Scripts/train.sh --batch_size 2
+cd Examples/GradDotProd_LM
+./train.sh --batch_size 2  # Run with default GradDotProd method
+./train.sh --batch_size 2 --method Regular  # Run without gradient computation
+./train.sh --batch_size 2 --learning_rate 1e-4 --max_steps 100000  # Custom parameters
+```
 
-# Run regular training without gradient computation
-./Scripts/train.sh --batch_size 2 --method Regular
-
-# Specify custom parameters
-./Scripts/train.sh --batch_size 2 --learning_rate 1e-4 --max_steps 100000
+#### Gradient Projection Language Model
+```bash
+cd Examples/GradProj_LM
+./train.sh  # Run gradient projection computation
 ```
 
 # Code Length and Structure Guidelines
@@ -68,7 +71,7 @@ The following are the command lines for testing the codebase.
      - Accurate implementation of mathematical operations and their order
 
 2. **Testing Phase**
-   - Create minimal, isolated test cases for specific functions or modules
+   - Create minimal, isolated test cases for specific functions or modules in `Test/`. 
    - Focus on unit tests that validate individual pieces of functionality
    - Avoid running the full application unless explicitly necessary
 
