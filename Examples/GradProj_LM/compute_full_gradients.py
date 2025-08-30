@@ -19,12 +19,12 @@ from typing import Dict, Tuple
 import torch
 import numpy as np
 
-# Make project paths available (same strategy as Examples/GradProj_GPT2/main.py)
+# Make project paths available
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from dataloader import load_all_data, get_batch_from_dataset
-from model_setup import create_GPT_model
+from shared.dataloader import load_all_data, get_batch_from_dataset
+from shared.model_setup import create_GPT_model
 import importlib.util
 _cfg_spec = importlib.util.spec_from_file_location(
     "examples_gradproj_config",

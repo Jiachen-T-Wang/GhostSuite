@@ -14,9 +14,9 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 # Import from local config
 from config_file import parse_arguments, ProjectionConfig
 
-# Import from main codebase
-from dataloader import load_all_data
-from model_setup import create_GPT_model
+# Import from shared modules
+from shared.dataloader import load_all_data
+from shared.model_setup import create_GPT_model
 from ghostEngines.gradProjection.gradproj_engine import GradProjLoraEngine
 
 

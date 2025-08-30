@@ -1,6 +1,6 @@
-# Gradient Projection Computation for GPT-2 on Pile Dataset
+# Gradient Projection Language Model
 
-This standalone system computes per-sample gradient projections for GPT-2 models on the Pile dataset using the GradProjLoraEngine.
+This example demonstrates efficient gradient projection computation for GPT-2 models on the Pile dataset using the GradProjLoraEngine.
 
 ## Overview
 
@@ -17,12 +17,15 @@ This tool processes the Pile dataset through a GPT-2 model and computes low-dime
 
 ## Installation
 
-No additional installation needed - uses the main GhostSuite environment.
+No additional installation needed - uses the main GhostSuite environment. Ensure you're in the `Examples/GradProj_LM/` directory when running commands.
 
 ## Quick Start
 
 ```bash
-# Compute projections for a small subset (testing)
+# Using the launch script (recommended)
+./train.sh --batch_size 2 --max_samples 1000
+
+# Or run directly with Python
 python main.py --batch_size 2 --max_samples 10 --proj_layers "mlp"
 
 # Process more data with specific configuration
@@ -228,8 +231,8 @@ for layer in metadata['layers']:
 - Ensure using GPU with `--device cuda`
 
 ### Import Errors
-- Ensure running from GhostSuite base directory
-- Check that main codebase modules are accessible
+- Ensure running from the `Examples/GradProj_LM/` directory
+- Check that shared modules and ghostEngines are accessible
 
 
 
@@ -242,7 +245,7 @@ for layer in metadata['layers']:
 
 ### Plotting Gradient Projection Errors
 
-The `plot_error_with_dim.py` script analyzes how well lower-dimensional projections approximate gradient dot-products. It now provides a CLI and multiple reference modes.
+The `plot_error_with_dim.py` script analyzes how well lower-dimensional projections approximate gradient dot-products. It provides a CLI and multiple reference modes.
 
 #### CLI
 
@@ -263,16 +266,16 @@ The script validates that all matched subfolders are identical except for the `r
 
 - Compare ranks against 1024-D reference (mlp-only, seed 9, row_on False):
 ```bash
-python Examples/GradProj_GPT2/plot_error_with_dim.py \
-  --results_dir Examples/GradProj_GPT2/Results \
+python plot_error_with_dim.py \
+  --results_dir Results \
   --results_pattern '^proj_layers_mlp_rank_total_\\d+_rank_min_4_seed_9_dtype_bfloat16_row_on_False_emb_False$' \
   --num_ref 50 --max_iters 100 --reference rank=1024
 ```
 
 - Compare against exact full gradients (requires full grads to be precomputed):
 ```bash
-python Examples/GradProj_GPT2/plot_error_with_dim.py \
-  --results_dir Examples/GradProj_GPT2/Results \
+python plot_error_with_dim.py \
+  --results_dir Results \
   --results_pattern '*min_4_seed_42_dtype_bfloat16_row_on_False_emb_False' \
   --pattern_type glob \
   --num_ref 1 --max_iters 10 --reference full
@@ -280,7 +283,7 @@ python Examples/GradProj_GPT2/plot_error_with_dim.py \
 
 #### Outputs
 
-Saved under `Examples/GradProj_GPT2/Plots/` with a base name that encodes the matched settings (using `rank_total_ALL`) and the reference tag:
+Saved under `Plots/` with a base name that encodes the matched settings (using `rank_total_ALL`) and the reference tag:
 - `...__rmse_vs_dimension.pdf`
 - `...__relative_error_vs_dimension.pdf`
 - `...__error_analysis_loglog.pdf`
@@ -288,7 +291,7 @@ Saved under `Examples/GradProj_GPT2/Plots/` with a base name that encodes the ma
 
 ### Exact Full-Model Gradients
 
-Use `Examples/GradProj_GPT2/compute_full_gradients.py` to compute and store exact per-sample full-model gradients (flattened across all trainable parameters).
+Use `compute_full_gradients.py` to compute and store exact per-sample full-model gradients (flattened across all trainable parameters).
 
 Requirements
 - Use `--batch_size 1` (enforced).
@@ -296,14 +299,14 @@ Requirements
 
 Example
 ```bash
-python Examples/GradProj_GPT2/compute_full_gradients.py \
+python compute_full_gradients.py \
   --architecture GPT2-Small \
   --batch_size 1 \
   --max_samples 10 \
   --device cuda \
   --model_dtype bfloat16 \
   --train_dtype bfloat16 \
-  --output_dir ./Examples/GradProj_GPT2/Results
+  --output_dir ./Results
 ```
 
 Outputs

@@ -8,12 +8,8 @@ import sys
 parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, parent_dir)
 
-# Import from main config (avoiding name conflict)
-import importlib.util
-spec = importlib.util.spec_from_file_location("main_config", os.path.join(parent_dir, "config_file.py"))
-main_config = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(main_config)
-PILE_DATA_DIR = main_config.PILE_DATA_DIR
+# Define data directory directly
+PILE_DATA_DIR = '/scratch/gpfs/tw8948/pile_tokenized'
 
 
 def parse_arguments():

@@ -2,8 +2,12 @@
 
 import argparse
 import os
+import sys
 
-from utils import build_result_dir
+# Add parent directories to path for imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from shared.utils import build_result_dir
 
 
 # Directory configurations
