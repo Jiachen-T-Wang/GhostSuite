@@ -77,7 +77,7 @@ Bottom line
 
 
 
-## TODO
+## TODO (finished)
 1. Add a CLI to `plot_error_with_dim.py`.
    - Add flags: `--results_dir`, `--results_pattern`, `--num_ref`, `--max_iters`, `--reference`. 
    - For `--results_pattern`, it will take a regex as input and we will examine all the files found in `--results_dir` that match it. The matched files should only differ in terms of the projection dimension. Raise error if there are other differing parameters in their names. 
