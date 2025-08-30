@@ -22,8 +22,8 @@ This repository provides a clean, drop-in implementation of "ghost"-based techni
 
 Logic and when to use which
 - Both engines exploit the same gradient structure to avoid instantiating full gradients and add minimal training overhead.
-- Use GradDotProd when you need on‑the‑fly similarities within a step (e.g., select or reweight samples now).
-- Use GradProjLoRA when you need reusable per‑sample representations across many batches or the whole corpus (e.g., offline selection, influence, clustering, retrieval). These projections preserve inner products up to JL distortion. 
+- Use GradDotProd when you need on‑the‑fly similarities within a step (e.g., *online data selection or reweighting, curriculum learning, auditing training dynamics*).
+- Use GradProjLoRA when you need reusable per‑sample representations across many batches or the whole corpus (e.g., *offline data selection, clustering, etc*). These projections preserve inner products up to JL distortion. 
 
 
 ## Installation
