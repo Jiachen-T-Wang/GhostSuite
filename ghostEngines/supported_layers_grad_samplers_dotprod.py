@@ -265,20 +265,39 @@ def _compute_layernorm_dot_product(layer: nn.LayerNorm, A: torch.Tensor, B: torc
     grad_weight_train = B_train * normalized_A_train
     grad_weight_val = B_val * normalized_A_val
 
-    # Sum over all dimensions except batch to get per-sample grad
-    sum_dims = list(range(1, grad_weight_train.dim()))
-    per_sample_grad_weight = grad_weight_train.sum(dim=sum_dims)
-    total_grad_weight_val = grad_weight_val.sum(dim=list(range(grad_weight_val.dim())))
-    
-    layer.weight.grad_dot_prod = per_sample_grad_weight * total_grad_weight_val
+    # Reduce training per-sample gradients over non-feature dims only → [B_train, F]
+    # Keep the last dim (feature) intact for a correct dot with validation vector.
+    if grad_weight_train.dim() >= 2:
+        sum_dims_train = list(range(1, grad_weight_train.dim() - 1))
+        per_sample_grad_weight = grad_weight_train.sum(dim=sum_dims_train) if sum_dims_train else grad_weight_train
+    else:
+        per_sample_grad_weight = grad_weight_train
+
+    # Aggregate validation gradient over batch and token dims only → [F]
+    sum_dims_val = list(range(grad_weight_val.dim() - 1))
+    total_grad_weight_val = grad_weight_val.sum(dim=sum_dims_val)
+
+    # Feature-wise inner product to obtain per-sample scalars → [B_train]
+    layer.weight.grad_dot_prod = torch.einsum(
+        'bf,f->b', per_sample_grad_weight.float(), total_grad_weight_val.float()
+    )
 
     # --- Bias dot product ---
     if layer.bias is not None:
-        # The gradient for the bias is just B
-        sum_dims = list(range(1, B_train.dim()))
-        per_sample_grad_bias = B_train.sum(dim=sum_dims)
-        total_grad_bias_val = B_val.sum(dim=list(range(B_val.dim())))
-        layer.bias.grad_dot_prod = per_sample_grad_bias * total_grad_bias_val
+        # Bias gradient is B; reduce non-feature dims for train → [B_train, F]
+        if B_train.dim() >= 2:
+            sum_dims_train = list(range(1, B_train.dim() - 1))
+            per_sample_grad_bias = B_train.sum(dim=sum_dims_train) if sum_dims_train else B_train
+        else:
+            per_sample_grad_bias = B_train
+
+        # Validation aggregate over batch and token dims only → [F]
+        sum_dims_val = list(range(B_val.dim() - 1))
+        total_grad_bias_val = B_val.sum(dim=sum_dims_val)
+
+        layer.bias.grad_dot_prod = torch.einsum(
+            'bf,f->b', per_sample_grad_bias.float(), total_grad_bias_val.float()
+        )
 
 
 def _compute_layernorm_train_grad(
