@@ -6,6 +6,15 @@ This example demonstrates efficient gradient dot product computation during lang
 
 The GradDotProd engine enables computation of gradient similarities between validation loss and individual training samples in a single backpropagation pass, eliminating the need to materialize any model-sized vectors. At a high-level, this is achieved by cleverly exploiting information already computed during standard backpropagation. For technical details, please refer to Section 4.2 in [Data Shapley in One Training Run](https://openreview.net/pdf?id=HD6bWcj87Y).
 
+
+## How the Engine Works
+
+1. **Batch Concatenation**: Training and validation batches are concatenated for a single forward pass
+2. **Gradient Computation**: During backpropagation, the engine computes:
+   - Per-parameter gradient dot products between validation and training samples. 
+   - Aggregated training gradients are recovered seperately and stored in `.grad` before optimizer step. 
+
+
 ## Quick Start
 
 ### Get Tokenized Dataset
@@ -43,13 +52,6 @@ cd Examples/GradDotProd_LM
 Edit `config_file.py` to adjust:
 - `RESULTS_DIR`: Where training results and metrics are saved
 - `PILE_DATA_DIR`: Path to tokenized Pile dataset
-
-## How It Works
-
-1. **Batch Concatenation**: Training and validation batches are concatenated for a single forward pass
-2. **Gradient Computation**: During backpropagation, the engine computes:
-   - Per-parameter gradient dot products between validation and training samples. 
-   - Aggregated training gradients are recovered seperately and stored in `.grad` before optimizer step. 
 
 
 ## Training Loop Integration
