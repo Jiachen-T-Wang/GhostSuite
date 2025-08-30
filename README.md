@@ -17,7 +17,7 @@ This repository provides a clean, drop-in implementation of "ghost"-based techni
 
 - `GradProjLoRAEngine`
   - Purpose: Offline, corpus‑scale analysis by storing low‑dimensional per‑sample gradient projections to disk for later similarity analysis.
-  - Core idea: Similar to `GradDotProdEngine`, we can reuse activations and output gradients already computed during backprop. Instead of directly computing gradient similarity, we store these per-sample info to disks. Specifically, we can apply a Kronecker‑structured random projection \(P = P_i \otimes P_o\). This can be elegantly implemented through a zero‑impact [LoRA‑style side branch](https://arxiv.org/pdf/2405.13954) so \(\partial\ell/\partial G\) equals the projected per‑sample gradient; no changes to model behavior.
+  - Core idea: Similar to `GradDotProdEngine`, we can reuse activations and output gradients already computed during backprop. Instead of directly computing gradient similarity, we store these per-sample info to disks. Specifically, we can apply a Kronecker‑structured random projection $P = P_i \otimes P_o$. This can be elegantly implemented through a zero‑impact [LoRA‑style side branch](https://arxiv.org/pdf/2405.13954); no changes to model behavior.
   - Best for: computing pair-wise gradient similarities for a large dataset w.r.t. a fixed model checkpoint.  
 
 Logic and when to use which
