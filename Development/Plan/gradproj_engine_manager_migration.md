@@ -15,16 +15,12 @@ All three files directly import:
 ```python
 from ghostEngines.gradProjection.gradproj_engine import GradProjLoraEngine
 ```
-
-### Manual Engine Configuration
 Each file manually constructs engine configuration dictionaries and directly instantiates the engine:
 ```python
 engine = GradProjLoraEngine(model, **engine_config)
 engine.attach()
 ```
-
-### Inconsistent with GradDotProd Pattern
-The GradDotProd examples already use GhostEngineManager successfully, creating an inconsistency in the codebase.
+This is inconsistent with GradDotProd Pattern. The GradDotProd examples already use GhostEngineManager successfully, creating an inconsistency in the codebase.
 
 ## Migration Strategy
 
@@ -39,7 +35,7 @@ The `GhostEngineManager` already has support for `GradProjLora` method (lines 54
 ### Phase 2: Create Migration Helper
 Create a utility function to ease migration from direct engine usage to manager-based approach.
 
-**Location:** `ghostEngines/migration_utils.py`
+**Location:** `ghostEngines/utils.py`
 
 **Function:** `create_gradproj_manager(model, engine_config, optimizer=None)`
 - Convert existing engine_config dict to manager-compatible config object
@@ -94,91 +90,33 @@ Create a utility function to ease migration from direct engine usage to manager-
    ```
 4. Update engine method calls throughout the gradient computation loop
 
-### Phase 4: Add Compatibility Layer
-For backward compatibility and gradual migration:
 
-**Location:** `ghostEngines/gradProjection/gradproj_engine.py`
+### Phase 4: Testing and Validation
 
-Add deprecation warning to direct instantiation:
-```python
-def __init__(self, *args, **kwargs):
-    import warnings
-    warnings.warn(
-        "Direct instantiation of GradProjLoraEngine is deprecated. "
-        "Please use GhostEngineManager with method='GradProjLora' instead.",
-        DeprecationWarning,
-        stacklevel=2
-    )
-    super().__init__(*args, **kwargs)
-```
-
-### Phase 5: Testing and Validation
-
-#### 5.1 Unit Tests
+#### Unit Tests
 Create new tests in `Test/test_engine_manager_gradproj.py`:
 - Test manager initialization with GradProjLora method
 - Test projection computation through manager interface
 - Test cleanup and lifecycle management
 
-#### 5.2 Integration Tests
+#### Integration Tests
 For each migrated example:
 1. Run original version and save outputs
 2. Run migrated version and compare outputs
-3. Ensure projections are identical (within numerical tolerance)
+3. Ensure projections are identical (within numerical error tolerance)
 4. Verify memory usage and performance are similar
 
 #### 5.3 Regression Tests
 - Ensure GradDotProd examples still work correctly
 - Verify no interference between different engine types
 
-## Implementation Order
 
-1. **Week 1:** Phase 1 - Review and enhance GhostEngineManager
-2. **Week 1:** Phase 2 - Create migration utilities
-3. **Week 2:** Phase 3.1 - Migrate ghost_gradproj_mlp.py (simplest case)
-4. **Week 2:** Phase 3.2 - Migrate ghost_gradproj_lm.py
-5. **Week 3:** Phase 3.3 - Migrate GradProj_LM/main.py (most complex)
-6. **Week 3:** Phase 4 - Add compatibility layer
-7. **Week 4:** Phase 5 - Complete testing and validation
-
-## Benefits of Migration
-
-1. **Consistency:** All ghost engines use the same interface pattern
-2. **Maintainability:** Centralized engine management and configuration
-3. **Flexibility:** Easier to switch between methods or add new engines
-4. **Simplification:** Training loops don't need method-specific code
-5. **Future-proofing:** New ghost engines can be added without changing user code
-
-## Potential Challenges
+## Tips
 
 1. **Optimizer Dependency:** GradProjLora doesn't require an optimizer, but GhostEngineManager expects one
    - **Solution:** Allow None optimizer for projection-only workflows
 
-2. **Configuration Mapping:** Different config structures between examples
-   - **Solution:** Create adapter classes or migration utilities
-
-3. **Method-specific Operations:** Some operations like `collect_batch()` are specific to GradProjLora
+2. **Method-specific Operations:** Some operations like `collect_batch()` are specific to GradProjLora
    - **Solution:** Access through `manager.engine` when needed
 
-4. **Backward Compatibility:** Existing code depends on direct engine usage
-   - **Solution:** Deprecation warnings and gradual migration
-
-## Success Criteria
-
-- [ ] All three example files use GhostEngineManager
-- [ ] No direct imports of gradproj_engine in example code
-- [ ] All tests pass with identical outputs
-- [ ] Documentation updated to reflect new usage pattern
-- [ ] Performance metrics remain unchanged
-- [ ] Clear migration guide for external users
-
-## Timeline
-- **Estimated Duration:** 4 weeks
-- **Priority:** High (architectural consistency)
-- **Dependencies:** None (can proceed immediately)
-
-## Next Steps
-1. Review this plan with the team
-2. Create feature branch for migration
-3. Begin with Phase 1 implementation
-4. Set up continuous testing during migration
+3. These examples have not been published yet. We do not need backward-compatibility. 
