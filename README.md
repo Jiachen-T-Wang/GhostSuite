@@ -1,11 +1,13 @@
 # "Ghost" Suites for Fast Gradient Information Calculation
 
+
 ## Introduction
 Computing per-sample gradient information and pair-wise gradient similarity is often the computational bottleneck for data-centric research (e.g., data selection, synthetic data generation). A naive approach would require setting the batch size to 1, backpropagating on the loss of each training sample, and storing all the huge gradient vectors. Consequently, this approach would be computationally prohibitive for practical applications. 
 
 In [Data Shapley in One Training Run](https://openreview.net/pdf?id=HD6bWcj87Y) (ICLR'25 Outstanding Paper Runner-up), we proposed a highly efficient method to obtain per-sample gradient information. It turns out that we can compute the gradient dot-product between every pair of data points within a large batch in just a single backpropagation. At high level, the technique exploits information that's already being computed during standard backpropagation with respect to the aggregated loss on a batch of data points. 
 
-This repository provides a clean implementation for "ghost"-based techniques for fast gradient information calculation during language model training. The "ghost" engines enable efficient computation of gradient dot-products between validation loss and individual training samples without fully materializing intermediate gradients.
+This repository provides a clean, drop-in implementation of "ghost"-based techniques for fast per-sample gradient information calculation. Our goal is to enable per-sample gradient computation and extraction with **minimal code changes**—often just a few lines added to your existing model training loop.
+
 
 ## Available Engines
 - `GradDotProdEngine`
