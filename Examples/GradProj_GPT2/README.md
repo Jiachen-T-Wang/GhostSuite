@@ -231,6 +231,13 @@ for layer in metadata['layers']:
 - Ensure running from GhostSuite base directory
 - Check that main codebase modules are accessible
 
+
+
+
+
+
+
+
 ## Analysis and Visualization
 
 ### Plotting Gradient Projection Errors
@@ -240,7 +247,8 @@ The `plot_error_with_dim.py` script analyzes how well lower-dimensional projecti
 #### CLI
 
 - `--results_dir`: Root directory containing result subfolders (e.g., `Examples/GradProj_GPT2/Results`).
-- `--results_pattern`: Regex to match subfolder names that only differ by `rank_total_K`.
+- `--results_pattern`: Pattern to match subfolder names that only differ by `rank_total_K`.
+- `--pattern_type`: Interpretation of `--results_pattern` (`regex`|`glob`, default: `regex`).
 - `--num_ref`: Number of reference samples to average (default: 50).
 - `--max_iters`: Max number of `proj_iter_*.pt` files to load per folder (default: 100).
 - `--reference`: Reference mode:
@@ -266,6 +274,7 @@ python Examples/GradProj_GPT2/plot_error_with_dim.py \
 python Examples/GradProj_GPT2/plot_error_with_dim.py \
   --results_dir Examples/GradProj_GPT2/Results \
   --results_pattern '*min_4_seed_42_dtype_bfloat16_row_on_False_emb_False' \
+  --pattern_type glob \
   --num_ref 1 --max_iters 10 --reference full
 ```
 

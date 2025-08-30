@@ -4,7 +4,7 @@ Plot L2 distance of gradient dot products vs projection dimension.
 Adds a CLI and flexible reference selection.
 
 What it does:
-- Discovers result subfolders in --results_dir by --results_pattern (regex)
+- Discovers result subfolders in --results_dir by --results_pattern (regex or glob via --pattern_type)
 - Validates subfolder naming only differs by rank_total_{K}
 - Loads projections per rank and computes multi-reference dot-products
 - Compares errors to a reference specified by --reference:
@@ -26,6 +26,7 @@ from tqdm import tqdm
 from typing import Dict, List, Tuple, Pattern, Optional
 import re
 import argparse
+import fnmatch
 
 # Local imports for rebuilding projections when needed
 # Ensure project root is on path for local imports
@@ -227,7 +228,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument('--results_dir', type=str, required=True,
                   help='Directory containing result subfolders')
     p.add_argument('--results_pattern', type=str, required=True,
-                  help='Regex to match result subfolder names that only differ by rank_total_K')
+                  help='Pattern to match result subfolder names that only differ by rank_total_K')
+    p.add_argument('--pattern_type', type=str, default='glob', choices=['regex', 'glob'],
+                  help='Interpretation of --results_pattern: regex (default) or shell-style glob')
     p.add_argument('--num_ref', type=int, default=50, help='Number of reference samples')
     p.add_argument('--max_iters', type=int, default=100, help='Max iteration files to load per dir')
     p.add_argument('--reference', type=str, default='rank=1024',
@@ -238,7 +241,22 @@ def parse_args() -> argparse.Namespace:
 def main():
     args = parse_args()
     base_dir = Path(args.results_dir)
-    pattern = re.compile(args.results_pattern)
+    # Build matcher pattern (regex or translated glob)
+    if args.pattern_type == 'glob':
+        translated = fnmatch.translate(args.results_pattern)
+        pattern = re.compile(translated)
+    else:
+        try:
+            pattern = re.compile(args.results_pattern)
+        except re.error as e:
+            # Provide a clearer error if the user likely provided a glob by mistake
+            if any(ch in args.results_pattern for ch in ['*', '?', '[', ']']):
+                raise ValueError(
+                    "Invalid regex in --results_pattern. It looks like a shell-style glob. "
+                    "Either escape regex metacharacters or pass --pattern_type glob.\n"
+                    f"Pattern: {args.results_pattern}\nOriginal regex error: {e}"
+                )
+            raise
 
     # Discover rank dirs and extract ranks
     rank_dirs = discover_rank_dirs(base_dir, pattern)
@@ -256,6 +274,9 @@ def main():
         print(f"Dot products shape: {dots.shape}")
         print(f"Dot products mean stats - Mean: {dots.mean():.4f}, Std: {dots.std():.4f}")
 
+
+    num_data_loaded = projections.shape[0]
+
     # Prepare reference
     ref_mode = args.reference
     ref_label = ref_mode
@@ -266,6 +287,7 @@ def main():
         if reference_rank not in dot_products_by_rank:
             raise ValueError(f"Reference rank {reference_rank} not among discovered ranks: {list(dot_products_by_rank)}")
         reference_dots = dot_products_by_rank[reference_rank]
+
     else:
         # Need full gradients and metadata from one of the rank dirs (to get layer list)
         # Infer fullgrad directory name convention: sibling folder starting with 'fullgrads'
@@ -273,7 +295,11 @@ def main():
         if not fullgrad_cands:
             raise FileNotFoundError("No 'fullgrads*' directory found in results_dir; run compute_full_gradients.py first.")
         fullgrad_dir = sorted(fullgrad_cands)[0]
-        full_grads, full_meta = load_full_gradients(fullgrad_dir, max_iters=args.max_iters)
+
+        # We need to load num_data_loaded full gradients because the fullgrads are saved with batch size = 1. 
+        full_grads, full_meta = load_full_gradients(fullgrad_dir, max_iters=num_data_loaded)
+
+        print(f"Loaded full gradients shape: {full_grads.shape}")
 
         # Load projection metadata from any rank dir (assume constant except rank)
         any_rank_dir = next(iter(rank_dirs.values()))
@@ -313,6 +339,10 @@ def main():
     print(f"Computing errors from reference ({ref_label})")
     print(f"Using {reference_dots.shape[0]} reference samples")
     print(f"{'='*60}")
+
+
+    print(f"reference_dots shape: {reference_dots.shape}")
+    print(f"dot_products_by_rank[1024] shape: {dot_products_by_rank[1024].shape}")
 
     for rank in plot_ranks:
         dots = dot_products_by_rank[rank]
