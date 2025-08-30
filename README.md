@@ -13,40 +13,50 @@ This repository provides a clean implementation for "ghost"-based techniques for
 pip install -r requirements.txt
 ```
 
-## Quick Start
+## Project Structure
 
-### Minimal Example on Two-layer MLP
-
-A self-contained demo lives in `Examples/ghost_mlp.py`. It trains a tiny two-layer MLP for 10 steps on synthetic data and prints per-iteration gradient dot-products between the validation batch and each training sample, plus an aggregated vector.
-
-Run it directly:
-```bash
-python Examples/ghost_mlp.py
+```
+GhostSuite/
+├── ghostEngines/           # Core ghost engine library
+│   ├── graddotprod_engine.py
+│   ├── gradProjection/
+│   └── engine_manager.py
+├── Examples/               # Training examples and implementations
+│   ├── shared/            # Shared utilities across examples
+│   ├── GradDotProd_LM/    # GradDotProd language model training
+│   ├── GradProj_LM/       # Gradient projection LM example
+│   └── [MLP examples]     # Minimal MLP demonstrations
+├── Test/                  # Unit tests
+└── Results/               # Training outputs and metrics
 ```
 
-### Language model training
+## Quick Start
 
 ### 1. Get Tokenized Dataset
 Process the Pile dataset by domain:
 ```bash
-python data_processing/tokenize_pile_by_domain.py
+python Examples/shared/data_processing/tokenize_pile_by_domain.py
 ```
 *Note: This process can take ~24 hours depending on your system.*
 
-### 2. Configure Training
-Adjust the paths and settings in `config_file.py`:
-- `RESULTS_DIR`: Directory where training results and gradient metrics will be saved
-- `PILE_DATA_DIR`: Path to your tokenized dataset
+### 2. Run Training Examples
 
-### 3. Launch Training
-Run training with gradient dot product computation:
+#### GradDotProd Language Model Training
 ```bash
-./Scripts/train.sh
+cd Examples/GradDotProd_LM
+./train.sh --batch_size 2  # Run with gradient dot product computation
+./train.sh --batch_size 2 --method Regular  # Run without gradient computation
 ```
 
-During training, the engine automatically:
-- Logs gradient dot products at specified intervals
-- Saves metrics under `{RESULTS_DIR}`
+#### Gradient Projection Language Model
+```bash
+cd Examples/GradProj_LM
+./train.sh --batch_size 2  # Compute gradient projections
+```
+
+During training, the engines automatically:
+- Log gradient metrics at specified intervals
+- Save results to the configured output directory
 
 
 ## Integrating Ghost Engine with Your Training Loop

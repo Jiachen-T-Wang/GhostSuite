@@ -1,87 +1,126 @@
-# Examples
+# Examples Directory
 
-This folder contains small, runnable examples that demonstrate how to use the Ghost Engines in isolation from the full training stack.
+This directory contains example implementations demonstrating the use of the Ghost Engine framework for efficient gradient computation.
 
-## Files
+## Directory Structure
 
-### Gradient Dot Product Engine
-- `ghost_mlp.py`: Minimal two‑layer MLP classification demo using `GradDotProdEngine`.
-  - Trains for 10 steps on synthetic data (CPU by default).
-  - Prints per‑parameter gradient dot‑products for each iteration and an aggregated vector.
-  - Reports final validation loss at the end.
+```
+Examples/
+├── shared/                # Shared utilities and data processing
+│   ├── dataloader.py     # Dataset loading utilities
+│   ├── model_setup.py    # Model initialization
+│   ├── training_utils.py # Training helper functions
+│   ├── utils.py          # General utilities
+│   ├── domain_list.py    # Domain definitions
+│   └── data_processing/  # Data preprocessing scripts
+├── GradDotProd_LM/        # GradDotProd language model training
+│   ├── main.py           # Training entry point
+│   ├── config_file.py    # Configuration management
+│   ├── training_loop.py  # Main training loop
+│   └── train.sh          # Launch script
+├── GradProj_LM/           # Gradient projection for language models
+│   ├── main.py           # Projection computation entry
+│   ├── config_file.py    # Projection configuration
+│   ├── gradproj_loop.py  # Projection computation loop
+│   └── train.sh          # Launch script
+└── Minimal MLP Examples
+    ├── ghost_mlp.py       # Basic GradDotProd for MLP
+    ├── ghost_gradproj_mlp.py  # Gradient projection for MLP
+    └── ghost_gradproj_lm.py   # Gradient projection for LM
+```
 
-### Gradient Projection Engine (NEW)
-- `ghost_gradproj_mlp.py`: MLP example with gradient projection using LoRA-style architecture.
-  - Three execution modes:
-    - `--mode project`: Compute and save projected gradients to disk
-    - `--mode non_interf`: Verify engine doesn't interfere with training
-    - `--mode naive_check`: Compare projections against naive computation
-  - Demonstrates efficient per-sample gradient storage without materializing full gradients
-  
-- `ghost_gradproj_lm.py`: GPT-2 language model gradient projection example.
-  - Projects gradients for transformer layers (attention, MLP)
-  - Shows how to load and compute similarities from saved projections
-  - Integrates with existing transformers_support utilities
+## Available Examples
 
-## Quick Start
+### 1. GradDotProd Language Model (`GradDotProd_LM/`)
+Full implementation of gradient dot product computation during GPT-2 training on the Pile dataset. This example demonstrates how to efficiently compute gradient similarities between validation loss and training samples in a single backpropagation pass.
 
-### Gradient Dot Product
+**Features:**
+- Efficient gradient dot product computation
+- Support for GPT-2 Small/Medium/Large
+- Distributed training support
+- Automatic metric logging and saving
+
+**Quick Start:**
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Run the demo
-python Examples/ghost_mlp.py
+cd GradDotProd_LM
+./train.sh --batch_size 2 --method GradDotProd  # With gradient computation
+./train.sh --batch_size 2 --method Regular      # Standard training
 ```
 
-### Gradient Projection
+### 2. Gradient Projection Language Model (`GradProj_LM/`)
+Implementation of gradient projection using LoRA-based projection matrices for GPT-2 models. This example shows how to compute low-dimensional gradient projections efficiently.
+
+**Features:**
+- LoRA-based gradient projection
+- Configurable projection rank and layers
+- Support for MLP and attention layers
+- Batch processing with memory optimization
+
+**Quick Start:**
 ```bash
-# Run MLP projection example
-python Examples/ghost_gradproj_mlp.py --mode project --proj_rank_total 64
-
-# Test non-interference
-python Examples/ghost_gradproj_mlp.py --mode non_interf
-
-# Run GPT-2 projection
-python Examples/ghost_gradproj_lm.py --proj_layers "attn.c_attn,mlp.c_fc" --proj_rank_total 256
+cd GradProj_LM
+./train.sh --batch_size 2 --max_samples 1000
 ```
 
-Expected output (abridged):
+### 3. Minimal MLP Examples
+Simplified implementations demonstrating core concepts:
 
+- **`ghost_mlp.py`**: Basic GradDotProd implementation for MLP models
+  - Trains for 10 steps on synthetic data
+  - Prints per-parameter gradient dot-products
+  - Demonstrates core engine usage pattern
+
+- **`ghost_gradproj_mlp.py`**: Gradient projection for MLP with visualization
+  - Three execution modes: project, non_interf, naive_check
+  - Shows efficient per-sample gradient storage
+  - Includes comparison with naive computation
+
+- **`ghost_gradproj_lm.py`**: Language model gradient projection example
+  - Projects gradients for transformer layers
+  - Demonstrates similarity computation from saved projections
+  - Integrates with transformers support utilities
+
+**Run minimal examples:**
+```bash
+python ghost_mlp.py
+python ghost_gradproj_mlp.py --mode project --proj_rank_total 64
+python ghost_gradproj_lm.py --proj_layers "attn.c_attn,mlp.c_fc"
 ```
-[Iter 0] Per-parameter gradient dot products (val ⋅ train):
-  fc1.weight           shape=(8,) values=[...]
-  fc1.bias             shape=(8,) values=[...]
-  fc2.weight           shape=(8,) values=[...]
-  fc2.bias             shape=(8,) values=[...]
-[Iter 0] Aggregated dot product across parameters: tensor([...])
-...
-Validation loss after 10 steps: 1.23...
-```
 
-## How It Works
-- Builds a toy dataset and a two‑layer MLP.
-- Concatenates train and validation batches, then runs a single forward/backward pass per step.
-- `GradDotProdEngine`:
-  - Computes per‑parameter gradient dot‑products between the fixed validation batch and each training sample (`grad_dot_prod`).
-  - Accumulates training gradients separately, then moves them to `.grad` before the optimizer step.
-  - Aggregates per‑parameter dot‑products into a single vector per step via `engine.aggregate_and_log()`.
+## Shared Utilities
 
-Important: The script prints per‑parameter `grad_dot_prod` before calling `engine.aggregate_and_log()`, because aggregation clears those per‑parameter attributes to save memory.
+The `shared/` directory contains common components used across examples:
 
-## Tuning The Demo
-- Steps: edit `steps = 10` to change the number of iterations.
-- Batch sizes: change `n_train` / `n_val` near the top of the script.
-- Learning rate: adjust the SGD `lr` in the optimizer definition.
-- Device: set `device = "cuda"` if CUDA is available and desired.
+- **Data Processing**: Tokenization and dataset preparation scripts
+- **Model Setup**: Unified model initialization for different architectures
+- **Training Utilities**: Common training loop components and helpers
+- **Dataloaders**: Efficient data loading for Pile and other datasets
 
-## Extending
-Use this pattern to instrument your own modules:
-- Create your model and optimizer.
-- Initialize `GradDotProdEngine(module=model, val_batch_size=..., ...)` and call `engine.attach(optimizer)`.
-- Each iteration:
-  - Run forward/backward on concatenated (train + val) batch.
-  - Optionally inspect `param.grad_dot_prod` and/or `engine.aggregate_and_log()`.
-  - Call `engine.prepare_gradients()`, `optimizer.step()`, then `engine.clear_gradients()`.
+## Getting Started
 
-For full training on GPT models and Pile, see `main.py`, `training_loop.py`, and the SLURM launcher under `Scripts/`.
+1. **Prepare Data**: First tokenize your dataset using the shared processing scripts
+   ```bash
+   python shared/data_processing/tokenize_pile_by_domain.py
+   ```
+
+2. **Choose Example**: Select the appropriate example based on your use case
+
+3. **Configure**: Adjust settings in the example's `config_file.py`
+
+4. **Run**: Execute the `train.sh` script with desired parameters
+
+## How the Ghost Engines Work
+
+### GradDotProd Engine
+- Concatenates train and validation batches for single forward/backward pass
+- Computes per-parameter gradient dot-products between validation and training samples
+- Accumulates training gradients separately, then moves to `.grad` before optimizer step
+- Aggregates per-parameter dot-products into single vectors for efficient storage
+
+### GradProj Engine
+- Uses LoRA-style low-rank projection matrices
+- Projects high-dimensional gradients to lower-dimensional space
+- Enables efficient per-sample gradient storage without materializing full gradients
+- Supports both MLP and attention layer projections
+
+See individual example directories for detailed documentation and configuration options.
