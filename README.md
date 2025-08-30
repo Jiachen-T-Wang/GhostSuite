@@ -25,7 +25,7 @@ GhostSuite/
 │   ├── shared/            # Shared utilities across examples
 │   ├── GradDotProd_LM/    # GradDotProd language model training
 │   ├── GradProj_LM/       # Gradient projection LM example
-│   └── [MLP examples]     # Minimal MLP demonstrations
+│   └── [Minimal examples] # Minimal MLP and LM demo (no data proprocessing required). 
 ├── Test/                  # Unit tests
 └── Results/               # Training outputs and metrics
 ```
