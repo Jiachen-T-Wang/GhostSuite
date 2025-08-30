@@ -13,8 +13,8 @@ This methodology is adapted from [**LogIX**](https://arxiv.org/abs/2405.13954), 
 
 
 ## How the engine works
-- Per‑sample layer gradients have a Kronecker (outer‑product) form: for each position \(t\), \(\mathrm{vec}(\Delta W) = \sum_{t} x_{i,t} \otimes \mathcal{D}x_{o,t}\). We project without materializing \(\Delta W\) by using a Kronecker‑structured random projection \(P = P_i \otimes P_o\) so \(P\,\mathrm{vec}(\Delta W) = \sum_{t} (P_i x_{i,t}) \otimes (P_o \, \mathcal{D}x_{o,t})\).
-- A zero‑impact LoRA‑style side branch \(y = W x + P_o^{\top} \, G \, P_i \, x\) (with \(G\) initialized to zero and \(P_i, P_o\) fixed) makes \(\tfrac{\partial \ell}{\partial G}\) exactly the projected per‑sample gradient, so we can read out low‑dimensional gradients via standard autograd.
+- Per‑sample layer gradients have a Kronecker (outer‑product) form: for each position $t$, $\mathrm{vec}(\Delta W) = \sum_{t} x_{i,t} \otimes \mathcal{D}x_{o,t}$. We project without materializing $\Delta W$ by using a Kronecker‑structured random projection $P = P_i \otimes P_o$ so $P\,\mathrm{vec}(\Delta W) = \sum_{t} (P_i x_{i,t}) \otimes (P_o \, \mathcal{D}x_{o,t})$.
+- A zero‑impact LoRA‑style side branch $y = W x + P_o^{\top} \, G \, P_i \, x$ (with $G$ initialized to zero and $P_i, P_o$ fixed) makes $\tfrac{\partial \ell}{\partial G}$ exactly the projected per‑sample gradient, so we can read out low‑dimensional gradients via standard autograd.
 - Non‑invasive hooks cache activations and backward signals, apply the fixed projections, aggregate per‑layer results, and stream concatenated projections to disk—preserving inner products (JL) while scaling to large datasets.
 
 
