@@ -108,7 +108,7 @@ def main():
         "--max_tokens",
         type=int,
         default=30_000_000_000,
-        help="Maximum total tokens to process (default: 15B)",
+        help="Maximum total tokens to process for train split only (default: 30B)",
     )
     parser.add_argument(
         "--progress_interval", type=int, default=10000, help="Progress update interval"
@@ -147,6 +147,8 @@ def main():
         else:
             raise e
 
+    print(f"Available splits: {list(dataset.keys())}")
+
     # Initialize GPT-2 tokenizer
     print("Loading GPT-2 tokenizer...")
     tokenizer = GPT2Tokenizer.from_pretrained("gpt2")
@@ -171,6 +173,8 @@ def main():
         # Process examples in batches
         batch_examples = []
 
+        split_tokens = 0
+
         for example in split_data:
             batch_examples.append(example)
             total_examples += 1
@@ -181,6 +185,7 @@ def main():
                     batch_examples, split, tokenizer, file_manager, args
                 )
                 total_processed += tokens_added
+                split_tokens += tokens_added
                 batch_examples = []
 
                 pbar.update(args.batch_size)
@@ -188,34 +193,34 @@ def main():
                 # Update progress description
                 if total_examples % args.progress_interval == 0:
                     pbar.set_description(
-                        f"Processing {split} - {total_processed / 1e9:.2f}B tokens"
+                        f"Processing {split} - {split_tokens / 1e9:.2f}B tokens"
                     )
 
-                # Check if we've hit the token limit
-                if total_processed >= args.max_tokens:
+                if split == "train" and split_tokens >= args.max_tokens:
                     print(
-                        f"\nReached token limit of {args.max_tokens:,} tokens. Stopping."
+                        f"\nReached token limit of {args.max_tokens:,} tokens for train split. Moving to next split."
                     )
                     pbar.close()
                     break
 
-            # Early exit if token limit reached
-            if total_processed >= args.max_tokens:
+            if split == "train" and split_tokens >= args.max_tokens:
                 break
 
-        # Process remaining examples in the batch
-        if batch_examples and total_processed < args.max_tokens:
+        if batch_examples and not (
+            split == "train" and split_tokens >= args.max_tokens
+        ):
             tokens_added = process_batch(
                 batch_examples, split, tokenizer, file_manager, args
             )
             total_processed += tokens_added
+            split_tokens += tokens_added
             pbar.update(len(batch_examples))
 
         pbar.close()
 
-        # Exit if we've reached the token limit
-        if total_processed >= args.max_tokens:
-            break
+        print(
+            f"Completed {split} split: {split_tokens:,} tokens ({split_tokens / 1e9:.2f}B)"
+        )
 
     print("\nTokenization complete!")
     print(f"Total tokens processed: {total_processed:,} ({total_processed / 1e9:.2f}B)")
