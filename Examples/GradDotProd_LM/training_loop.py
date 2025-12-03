@@ -3,6 +3,8 @@
 import os
 import sys
 
+import torch
+
 # Add parent directories to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(
@@ -102,14 +104,6 @@ class Trainer:
     def _training_step(self, iter_num):
         """Perform one complete training step including data loading, LR update, and ghost engine operations."""
 
-        # Get training batch
-        X, Y, batch_idx = self.get_batch(
-            "train", batch_size=self.config.batch_size, return_idx=True
-        )
-
-        # Store batch info for ghost engine
-        self.ghost_engine.attach_train_batch(X, Y, iter_num, batch_idx)
-
         # Update learning rate
         lr = (
             get_learning_rate(iter_num, self.config)
@@ -123,10 +117,18 @@ class Trainer:
             if self.ghost_engine.should_save_metrics(iter_num):
                 self.ghost_engine.save_metrics(iter_num)
 
-        loss = None
+        step_loss = 0.0
 
         # Forward and backward pass with gradient accumulation
         for micro_step in range(self.config.gradient_accumulation_steps):
+            #  Get training batch
+            X, Y, batch_idx = self.get_batch(
+                "train", batch_size=self.config.batch_size, return_idx=True
+            )
+
+            # Store batch info for ghost engine
+            self.ghost_engine.attach_train_batch(X, Y, iter_num, batch_idx)
+
             if self.ddp_info["ddp"]:
                 self.model.require_backward_grad_sync = (
                     micro_step == self.config.gradient_accumulation_steps - 1
@@ -137,39 +139,39 @@ class Trainer:
                 X_forward, _ = self.ghost_engine.prepare_forward_input(X, Y)
 
                 # Forward pass with method-appropriate input
-                # FIX: Pass X_forward as labels. The GPT2LMHeadModel shifts labels internally.
-                # If we pass Y (already shifted), it gets shifted twice, causing a mismatch.
                 outputs = self.model(input_ids=X_forward, labels=X_forward)
                 logits, loss = outputs.logits, outputs.loss
 
                 # Scale loss for gradient accumulation
                 if loss is not None:
                     loss = loss / self.config.gradient_accumulation_steps
+                    step_loss += loss.item()
 
             # Backward pass
             if loss is not None:
                 self.scaler.scale(loss).backward()
 
+            # Aggregate metrics
+            self.ghost_engine.aggregate_and_log()
+
         # Prepare gradients using ghost engine
         self.ghost_engine.prepare_gradients()
 
-        print(
-            f"Step {iter_num}, Loss: {loss.item() if loss is not None else 'N/A'}, LR: {lr:.6f}"
-        )
+        print(f"Step {iter_num}, Loss: {step_loss:.4f}, LR: {lr:.7f}")
 
         # Gradient clipping and optimization step
         self.scaler.unscale_(self.optimizer)
-
-        # if self.config.grad_clip != 0.0:
-        #     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.grad_clip)
+        if self.config.grad_clip != 0.0:
+            torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(), self.config.grad_clip
+            )
 
         # This will call the custom engine's step() if it's enabled, which computes values
         # before calling the original optimizer step.
         self.scaler.step(self.optimizer)
         self.scaler.update()
 
-        # Aggregate metrics and clear gradients using ghost engine
-        self.ghost_engine.aggregate_and_log()
+        # clear gradients using ghost engine
         self.ghost_engine.clear_gradients()
 
         self.optimizer.zero_grad(set_to_none=True)
