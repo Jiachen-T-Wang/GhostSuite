@@ -51,6 +51,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=1234, help="Random seed.")
     parser.add_argument("--log-dotprods", action="store_true",
                         help="Aggregate and log dot products (adds CPU transfers).")
+    parser.add_argument("--check-correctness", action="store_true",
+                        help="Validate ghost dot products against naive per-sample gradients.")
+    parser.add_argument("--check-batch-size", type=int, default=None,
+                        help="Total batch size for correctness check (default: min(4, batch_size)).")
+    parser.add_argument("--check-val-batch-size", type=int, default=None,
+                        help="Validation batch size for correctness check (default: min(1, val_batch_size)).")
+    parser.add_argument("--check-rtol", type=float, default=1e-2,
+                        help="Relative tolerance for correctness check.")
+    parser.add_argument("--check-atol", type=float, default=1e-2,
+                        help="Absolute tolerance for correctness check.")
     return parser.parse_args()
 
 
@@ -278,6 +288,132 @@ def format_bytes(num_bytes: Optional[int]) -> str:
     return f"{num_bytes / (1024 ** 2):.1f} MiB"
 
 
+def compute_ghost_dot_products(
+    model: nn.Module,
+    x_train: torch.Tensor,
+    y_train: torch.Tensor,
+    x_val: torch.Tensor,
+    y_val: torch.Tensor,
+    val_batch_size: int,
+) -> torch.Tensor:
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    engine = GradDotProdEngine(
+        module=model,
+        val_batch_size=val_batch_size,
+        loss_reduction="mean",
+        use_dummy_bias=False,
+        dot_prod_save_path=None,
+    )
+    engine.attach(optimizer)
+    engine.attach_train_batch(x_train, y_train, iter_num=0, batch_idx=0)
+
+    optimizer.zero_grad(set_to_none=True)
+    x_forward = torch.cat([x_train, x_val], dim=0)
+    y_forward = torch.cat([y_train, y_val], dim=0)
+    logits = model(x_forward)
+    loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y_forward.reshape(-1))
+    loss.backward()
+
+    engine.aggregate_and_log()
+    if not engine.dot_product_log:
+        raise RuntimeError("Ghost engine did not log any dot products.")
+    ghost_dot = engine.dot_product_log[-1]["dot_product"].clone()
+    engine.dot_product_log.clear()
+    engine.clear_gradients()
+    engine.detach()
+    return ghost_dot
+
+
+def compute_naive_dot_products(
+    model: nn.Module,
+    x_train: torch.Tensor,
+    y_train: torch.Tensor,
+    x_val: torch.Tensor,
+    y_val: torch.Tensor,
+    total_batch_size: int,
+) -> torch.Tensor:
+    model.train()
+    params = [p for p in model.parameters() if p.requires_grad]
+    scale = 1.0 / float(total_batch_size)
+
+    val_sum = [torch.zeros_like(p, device=p.device) for p in params]
+    for idx in range(x_val.size(0)):
+        logits = model(x_val[idx:idx + 1])
+        loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y_val[idx:idx + 1].reshape(-1))
+        grads = torch.autograd.grad(loss, params, retain_graph=False, create_graph=False)
+        for i, g in enumerate(grads):
+            val_sum[i].add_(g, alpha=scale)
+
+    train_dots = []
+    for idx in range(x_train.size(0)):
+        logits = model(x_train[idx:idx + 1])
+        loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y_train[idx:idx + 1].reshape(-1))
+        grads = torch.autograd.grad(loss, params, retain_graph=False, create_graph=False)
+        dot = torch.tensor(0.0, device=x_train.device)
+        for i, g in enumerate(grads):
+            dot = dot + (g * scale * val_sum[i]).sum()
+        train_dots.append(dot)
+
+    return torch.stack(train_dots).detach().cpu()
+
+
+def run_correctness_check(args: argparse.Namespace, init_state: dict, device: str) -> None:
+    check_total_bs = args.check_batch_size or min(4, args.batch_size)
+    check_val_bs = args.check_val_batch_size or min(1, args.val_batch_size)
+    if check_val_bs <= 0:
+        raise ValueError("check_val_batch_size must be > 0")
+    if check_val_bs >= check_total_bs:
+        raise ValueError("check_val_batch_size must be smaller than check_batch_size")
+
+    train_bs = check_total_bs - check_val_bs
+
+    set_seed(args.seed)
+    x_train, y_train = make_lm_batch(train_bs, args.seq_len, args.vocab_size, device)
+    x_val, y_val = make_lm_batch(check_val_bs, args.seq_len, args.vocab_size, device)
+
+    ghost_model = LlamaLM(
+        vocab_size=args.vocab_size,
+        seq_len=args.seq_len,
+        d_model=args.d_model,
+        n_heads=args.n_heads,
+        n_layers=args.n_layers,
+        mlp_ratio=args.mlp_ratio,
+        rope_base=args.rope_base,
+    ).to(device)
+    ghost_model.load_state_dict(init_state)
+    ghost_dot = compute_ghost_dot_products(
+        ghost_model, x_train, y_train, x_val, y_val, check_val_bs
+    )
+
+    naive_model = LlamaLM(
+        vocab_size=args.vocab_size,
+        seq_len=args.seq_len,
+        d_model=args.d_model,
+        n_heads=args.n_heads,
+        n_layers=args.n_layers,
+        mlp_ratio=args.mlp_ratio,
+        rope_base=args.rope_base,
+    ).to(device)
+    naive_model.load_state_dict(init_state)
+    naive_dot = compute_naive_dot_products(
+        naive_model, x_train, y_train, x_val, y_val, check_total_bs
+    )
+
+    if ghost_dot.shape != naive_dot.shape:
+        raise ValueError(f"Shape mismatch: ghost={ghost_dot.shape} naive={naive_dot.shape}")
+
+    diff = (ghost_dot - naive_dot).abs()
+    max_abs = diff.max().item()
+    max_rel = (diff / (naive_dot.abs() + args.check_atol)).max().item()
+    ok = torch.allclose(ghost_dot, naive_dot, rtol=args.check_rtol, atol=args.check_atol)
+
+    print("\n=== Correctness Check ===")
+    print(f"Batch size: total={check_total_bs} train={train_bs} val={check_val_bs}")
+    print(f"allclose={ok} max_abs_diff={max_abs:.6g} max_rel_diff={max_rel:.6g}")
+    if not ok:
+        raise AssertionError("Ghost dot products do not match naive computation.")
+
+
 def main() -> None:
     args = parse_args()
     device = resolve_device(args.device)
@@ -400,6 +536,16 @@ def main() -> None:
         f"peak_mem={format_bytes(ghost_peak_bytes)}"
     )
     print(f"Slowdown: {slowdown:.2f}x")
+
+    del base_batches, ghost_batches, val_batch
+    if device == "cuda":
+        torch.cuda.empty_cache()
+
+    if args.check_correctness:
+        del ghost_model, ghost_opt, ghost_engine
+        if device == "cuda":
+            torch.cuda.empty_cache()
+        run_correctness_check(args, init_state, device)
 
 
 if __name__ == "__main__":
