@@ -74,7 +74,8 @@ class GhostEngineManager:
             val_batch_size=self.config.val_batch_size,
             loss_reduction='mean',
             use_dummy_bias=False,
-            dot_prod_save_path=dot_prod_save_path
+            dot_prod_save_path=dot_prod_save_path,
+            log_grad_norms=getattr(self.config, "log_grad_norms", False)
         )
         
         # Attach to optimizer

@@ -66,6 +66,8 @@ def parse_arguments():
     parser.add_argument('--wandb_dir', type=str, default=None, help='Directory for Weights & Biases files')
     parser.add_argument('--dynamic_val_batch', action='store_true',
                         help='Refresh validation batch every training step for GradDotProd')
+    parser.add_argument('--log_grad_norms', action='store_true',
+                        help='Record per-sample training gradient norms and aggregated validation gradient norm')
 
     return parser.parse_args()
 
@@ -130,6 +132,7 @@ class TrainingConfig:
         self.wandb_run_name = args.wandb_run_name
         self.wandb_mode = args.wandb_mode
         self.dynamic_val_batch = args.dynamic_val_batch
+        self.log_grad_norms = args.log_grad_norms
         
         # Result directory setup (larger folder)
         current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
