@@ -56,6 +56,15 @@ def parse_arguments():
                        choices=['float32', 'float16', 'bfloat16'], 
                        help='Training data type')
 
+    # WandB logging
+    parser.add_argument('--wandb', action='store_true', help='Enable Weights & Biases logging')
+    parser.add_argument('--wandb_project', type=str, default='GhostSuite', help='Weights & Biases project name')
+    parser.add_argument('--wandb_run_name', type=str, default=None, help='Optional Weights & Biases run name')
+    parser.add_argument('--wandb_mode', type=str, default='online',
+                        choices=['online', 'offline', 'disabled'],
+                        help='Weights & Biases mode (online, offline, disabled)')
+    parser.add_argument('--wandb_dir', type=str, default=None, help='Directory for Weights & Biases files')
+
     return parser.parse_args()
 
 
@@ -114,11 +123,16 @@ class TrainingConfig:
         
         # Method-specific settings
         self.method = args.method
+        self.use_wandb = args.wandb
+        self.wandb_project = args.wandb_project
+        self.wandb_run_name = args.wandb_run_name
+        self.wandb_mode = args.wandb_mode
         
         # Result directory setup (larger folder)
         current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
         self.result_folder = os.path.join(RESULTS_DIR, current_time)
         self.setup_result_directories()
+        self.wandb_dir = args.wandb_dir or self.result_dir
     
     def _is_bf16_supported(self):
         """Check if bfloat16 is supported."""
@@ -143,5 +157,4 @@ class TrainingConfig:
         """Get the result file path for storing training statistics."""
         result_dir = self.result_dir
         return os.path.join(result_dir + '_results.json')
-
 
