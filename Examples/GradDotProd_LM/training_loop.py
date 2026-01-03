@@ -89,7 +89,11 @@ class Trainer:
                     break
                 
                 # Perform complete training step
-                self._training_step(self.iter_num)
+                try:
+                    self._training_step(self.iter_num)
+                except StopIteration:
+                    print("[INFO] Replay data exhausted; terminating training loop.")
+                    break
                                 
                 self.iter_num += 1
             
