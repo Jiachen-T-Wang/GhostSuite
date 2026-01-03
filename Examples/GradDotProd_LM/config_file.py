@@ -11,11 +11,7 @@ from shared.utils import build_result_dir
 
 
 # Directory configurations
-RESULTS_DIR = '/scratch/gpfs/tw8948/GhostPub/GhostSuite/Results'
-
-# Dataset directories
-PILE_DATA_DIR = '/scratch/gpfs/tw8948/pile_tokenized'
-LLAVA_DATASET_DIR = '/scratch/gpfs/tw8948/llava_dataset'
+RESULTS_DIR = '/scratch/gpfs/PMITTAL/tianhao/GhostSuite/Examples/GradDotProd_LM/results'
 
 
 def parse_arguments():
@@ -23,8 +19,7 @@ def parse_arguments():
     parser = argparse.ArgumentParser(description='In-Run Data Shapley score computation.')
     
     # Method parameters
-    parser.add_argument('--method', type=str, default='Regular',
-                        choices=['Regular', 'GradDotProd'])
+    parser.add_argument('--method', type=str, default='Regular', choices=['Regular', 'GradDotProd'])
     
     # Architecture parameters
     parser.add_argument('--architecture', type=str, default='GPT2-Small',
@@ -53,7 +48,7 @@ def parse_arguments():
     parser.add_argument('--dot_prod_save_interval', type=int, default=10)
     
     # Precision parameters
-    parser.add_argument('--model_dtype', type=str, default='bfloat16',
+    parser.add_argument('--model_dtype', type=str, default='float32',
                        choices=['float32', 'float16', 'bfloat16'], 
                        help='Model data type')
     parser.add_argument('--train_dtype', type=str, default='bfloat16',
@@ -99,7 +94,6 @@ class TrainingConfig:
         self.backend = 'nccl'
 
         # Precision settings
-        # Note: we never use float16 for stability
         # To train LLAVA models, we use bfloat16 for both model and training
         self.model_dtype = args.model_dtype
         self.train_dtype = args.train_dtype

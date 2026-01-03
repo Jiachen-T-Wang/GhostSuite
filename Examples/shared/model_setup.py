@@ -2,9 +2,10 @@
 
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
-from transformers import GPT2Config, GPT2LMHeadModel as GPT 
 from transformers import LlavaForConditionalGeneration
 
+from .gpt2 import GPTConfig
+from .gpt2 import GPT
 
 def setup_model_and_optimizer(config, device, ddp_info):
     """Create model, optimizer, and scaler based on the configuration."""
@@ -94,11 +95,47 @@ def create_model(config):
     if config.args.architecture.startswith("LLaVA"):
         model = create_llava_model(config)
     elif config.args.architecture.startswith("GPT"):
-        model = create_GPT_model(config)
+        model = setup_model_GPT(config)
     else:
         raise ValueError(f"Unknown architecture: {config.architecture}")
     
     return model
+
+
+
+def setup_model_GPT(config):
+    """Initialize and setup the model"""
+
+    from .GPT2_configs import get_model_config
+    
+    # Get model configuration
+    model_config = get_model_config(config.architecture)
+    n_layer = model_config['n_layer']
+    n_head = model_config['n_head']
+    n_embd = model_config['n_embd']
+    block_size = model_config['block_size']
+    dropout = 0.0
+    bias = False
+    vocab_size = 50304
+    
+    # Create model configuration
+    model_args = dict(
+        n_layer=n_layer,
+        n_head=n_head,
+        n_embd=n_embd,
+        block_size=block_size,
+        bias=bias,
+        vocab_size=vocab_size,
+        dropout=dropout
+    )
+    
+    # Initialize model
+    gptconf = GPTConfig(**model_args)
+    model = GPT(gptconf)
+    
+    return model
+
+
 
 
 def create_GPT_model(config):
