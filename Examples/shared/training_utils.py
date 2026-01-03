@@ -59,7 +59,7 @@ def load_dataset_main(train_set, val_set):
 
 
 # TODO: Clean up this data loader function further; currently a bit messy due to different dataset handling
-def setup_data_functions(dataset, config, device):
+def setup_data_functions(dataset, config, device, ddp_info=None):
     """Setup data loading functions for different training sets with split-specific RNGs."""
 
     train_gen = torch.Generator()
@@ -73,13 +73,41 @@ def setup_data_functions(dataset, config, device):
 
     generators = {'train': train_gen, 'val': val_gen, 'test': test_gen}
 
+    replay_loader = None
+    if getattr(config, "replay_run_dir", None):
+        from .replay_loader import ReplayDataLoader
+        rank = ddp_info.get('ddp_rank', 0) if ddp_info else 0
+        world_size = ddp_info.get('ddp_world_size', 1) if ddp_info else 1
+        replay_loader = ReplayDataLoader(
+            run_dir=config.replay_run_dir,
+            filter_metric=config.replay_filter_metric,
+            threshold=config.replay_filter_threshold,
+            rebatch_size=config.replay_rebatch_size,
+            drop_last=config.replay_drop_last,
+            rank=rank,
+            world_size=world_size,
+            device=device,
+        )
+
     if config.args.train_set == 'pile':
         def get_batch(split, batch_size, return_idx=False):
-            gen = generators.get(split, train_gen)
+            if split == 'train' and replay_loader is not None:
+                X, Y, idx = replay_loader.next_batch(batch_size=batch_size, return_idx=return_idx)
+                return (X, Y, idx) if return_idx else (X, Y)
+
+            split_for_dataset = 'train' if split == 'train_eval' else split
+            gen = generators.get(split_for_dataset, train_gen)
             return get_batch_from_dataset(
-                split, batch_size, dataset, return_idx=return_idx, generator=gen
+                split_for_dataset, batch_size, dataset, return_idx=return_idx, generator=gen
             )
+
         def get_val_batch(batch_size, return_idx=False):
+            if replay_loader is not None:
+                X_val, Y_val = replay_loader.get_validation_batch(batch_size)
+                if return_idx:
+                    # No deterministic mapping to original dataset indices
+                    return X_val, Y_val, torch.full((batch_size,), -1, device=device)
+                return X_val, Y_val
             return get_batch('val', batch_size, return_idx=return_idx)
         
     elif config.args.train_set in LLAVA_LIST:
@@ -91,11 +119,16 @@ def setup_data_functions(dataset, config, device):
 
         def get_batch(split, batch_size, return_idx=False):
 
-            gen = generators.get(split, train_gen)
+            if split == 'train' and replay_loader is not None:
+                X, Y, idx = replay_loader.next_batch(batch_size=batch_size, return_idx=return_idx)
+                return (X, Y, idx) if return_idx else (X, Y)
+
+            split_for_dataset = 'train' if split == 'train_eval' else split
+            gen = generators.get(split_for_dataset, train_gen)
             
             # Get the batch from llava dataloader
             batch_data = get_llava_batch(
-                split, batch_size, dataset, device=device, generator=gen
+                split_for_dataset, batch_size, dataset, device=device, generator=gen
             )
             
             # Unpack based on what was returned (3 or 4 items)
@@ -127,6 +160,11 @@ def setup_data_functions(dataset, config, device):
                 return X, labels
         
         def get_val_batch(batch_size, return_idx=False):
+            if replay_loader is not None:
+                X_val, Y_val = replay_loader.get_validation_batch(batch_size)
+                if return_idx:
+                    return X_val, Y_val, torch.full((batch_size,), -1, device=device)
+                return X_val, Y_val
             return get_batch('val', batch_size, return_idx=return_idx)
         
     else:
@@ -230,9 +268,10 @@ def estimate_loss(model, get_batch_fn, config, ctx):
     
     out = {}
     for split in ['train', 'val', 'test']:
+        split_name = 'train_eval' if split == 'train' and getattr(config, 'replay_run_dir', None) else split
         losses = torch.zeros(config.eval_iters)
         for k in range(config.eval_iters):
-            X, Y = get_batch_fn(split, batch_size=config.eval_bs)
+            X, Y = get_batch_fn(split_name, batch_size=config.eval_bs)
             
             # with ctx:
             #     outputs = model(input_ids=X, labels=Y)

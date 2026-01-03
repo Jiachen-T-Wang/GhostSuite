@@ -37,6 +37,9 @@ cd Examples/GradDotProd_LM
 
 # Custom training parameters
 ./train.sh --batch_size 16 --learning_rate 1e-4 --max_steps 100000
+
+# Replay a previous run while filtering out negative similarity samples
+./train.sh --method GradDotProd --replay_run_dir /path/to/old/run --replay_filter_metric dot_product --replay_filter_threshold 0.0
 ```
 
 ### Key Parameters
@@ -46,6 +49,11 @@ cd Examples/GradDotProd_LM
 - `--batch_size`: Training batch size
 - `--val_batch_size`: Validation batch size for gradient computation
 - `--dot_prod_save_interval`: How often to save gradient metrics
+- `--replay_run_dir`: Load train batches from a past GradDotProd run (stored dot-product logs) instead of the live dataset
+- `--replay_filter_metric`: Filtering metric for replay data (`dot_product` or `cosine`)
+- `--replay_filter_threshold`: Drop samples below this threshold (default 0.0 drops negatives)
+- `--replay_rebatch_size`: Batch size to repackage replayed samples (defaults to `--batch_size`)
+- `--replay_drop_last`: Drop the final incomplete batch when replay data ends
 
 ### Key Configurations
 
