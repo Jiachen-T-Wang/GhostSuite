@@ -3,6 +3,7 @@
 import argparse
 import os
 import sys
+from datetime import datetime
 
 # Add parent directories to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -115,7 +116,8 @@ class TrainingConfig:
         self.method = args.method
         
         # Result directory setup (larger folder)
-        self.result_folder = RESULTS_DIR
+        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.result_folder = os.path.join(RESULTS_DIR, current_time)
         self.setup_result_directories()
     
     def _is_bf16_supported(self):
