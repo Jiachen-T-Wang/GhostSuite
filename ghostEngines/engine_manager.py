@@ -139,6 +139,10 @@ class GhostEngineManager:
         """Attach training batch information to the engine (if applicable)."""
         if self.engine and hasattr(self.engine, 'attach_train_batch'):
             self.engine.attach_train_batch(X_train, Y_train, iter_num, batch_idx)
+
+    def update_validation_batch(self, X_val, Y_val):
+        """Update validation batch (useful when refreshing every step)."""
+        self.X_val, self.Y_val = X_val, Y_val
     
     def prepare_gradients(self):
         """Prepare gradients after backward pass (if applicable)."""
