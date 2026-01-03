@@ -164,6 +164,13 @@ def _compute_linear_train_grad(layer: nn.Linear, A: torch.Tensor, B: torch.Tenso
     A_train, _ = torch.split(A, [train_batch_size, val_batch_size], dim=0)
     B_train, _ = torch.split(B, [train_batch_size, val_batch_size], dim=0)
 
+    # Ensure consistent dtype for einsum (e.g., when activations are bf16 and backprops are fp32)
+    param_dtype = layer.weight.dtype
+    if A_train.dtype != param_dtype:
+        A_train = A_train.to(param_dtype)
+    if B_train.dtype != param_dtype:
+        B_train = B_train.to(param_dtype)
+
     # Compute the SUM of gradients over the training batch
     grad_weight = torch.einsum('b...p,b...d->pd', B_train, A_train)
 
@@ -223,6 +230,11 @@ def _compute_embedding_train_grad(layer: nn.Embedding, A: torch.Tensor, B: torch
 
     A_train, _ = torch.split(A, [train_batch_size, val_batch_size], dim=0)
     B_train, _ = torch.split(B, [train_batch_size, val_batch_size], dim=0)
+
+    # Match dtype with embedding weights to avoid mixed-type index_add
+    param_dtype = layer.weight.dtype
+    if B_train.dtype != param_dtype:
+        B_train = B_train.to(param_dtype)
 
     A_train_long = A_train.long()
 
@@ -498,6 +510,12 @@ def _compute_Conv1D_train_grad(
     A_train, _ = torch.split(A, [train_batch_size, val_batch_size], dim=0)
     B_train, _ = torch.split(B, [train_batch_size, val_batch_size], dim=0)
 
+    param_dtype = layer.weight.dtype
+    if A_train.dtype != param_dtype:
+        A_train = A_train.to(param_dtype)
+    if B_train.dtype != param_dtype:
+        B_train = B_train.to(param_dtype)
+
     # Compute the summed gradient for the training batch.
     grad_weight = torch.einsum('b...d,b...p->dp', A_train, B_train)
 
@@ -574,6 +592,12 @@ def _compute_conv2d_train_grad(
     train_batch_size = A.size(0) - val_batch_size
     A_train, _ = torch.split(A, [train_batch_size, val_batch_size], dim=0)
     B_train, _ = torch.split(B, [train_batch_size, val_batch_size], dim=0)
+
+    param_dtype = layer.weight.dtype
+    if A_train.dtype != param_dtype:
+        A_train = A_train.to(param_dtype)
+    if B_train.dtype != param_dtype:
+        B_train = B_train.to(param_dtype)
 
     unfold_params = dict(
         kernel_size=layer.kernel_size,
