@@ -64,6 +64,8 @@ def parse_arguments():
                         choices=['online', 'offline', 'disabled'],
                         help='Weights & Biases mode (online, offline, disabled)')
     parser.add_argument('--wandb_dir', type=str, default=None, help='Directory for Weights & Biases files')
+    parser.add_argument('--dynamic_val_batch', action='store_true',
+                        help='Refresh validation batch every training step for GradDotProd')
 
     return parser.parse_args()
 
@@ -127,6 +129,7 @@ class TrainingConfig:
         self.wandb_project = args.wandb_project
         self.wandb_run_name = args.wandb_run_name
         self.wandb_mode = args.wandb_mode
+        self.dynamic_val_batch = args.dynamic_val_batch
         
         # Result directory setup (larger folder)
         current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -157,4 +160,3 @@ class TrainingConfig:
         """Get the result file path for storing training statistics."""
         result_dir = self.result_dir
         return os.path.join(result_dir + '_results.json')
-

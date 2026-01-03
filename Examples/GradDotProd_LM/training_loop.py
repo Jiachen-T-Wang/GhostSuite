@@ -43,7 +43,7 @@ class Trainer:
         # Training state
         self.iter_num = 0
         self.best_val_loss = 1e9
-
+        
         # Prepare validation data for ghost engines (if needed)
         val_data = None
         if self.config.method == 'GradDotProd':
@@ -53,6 +53,9 @@ class Trainer:
             X_val = to_device(X_val, self.ddp_info['device'])
             Y_val = to_device(Y_val, self.ddp_info['device'])
             val_data = (X_val, Y_val)
+            self.dynamic_val_batch = getattr(self.config, "dynamic_val_batch", False)
+        else:
+            self.dynamic_val_batch = False
 
         # Initialize ghost engine manager
         self.ghost_engine = GhostEngineManager(
@@ -105,6 +108,10 @@ class Trainer:
         """
 
         start_time = time.time()
+
+        # Refresh validation batch if configured (for GradDotProd)
+        if self.dynamic_val_batch:
+            self._refresh_validation_batch()
         
         # Get training batch
         X, Y, batch_idx = self.get_batch(
@@ -283,3 +290,13 @@ class Trainer:
             self.wandb_run.log(metrics, step=step if step is not None else self.iter_num)
         except Exception as e:
             print(f"[WARN] Failed to log metrics to Weights & Biases: {e}")
+
+
+    def _refresh_validation_batch(self):
+        """Fetch and attach a new validation batch for GradDotProd."""
+        X_val, Y_val = self.get_val_batch(
+            self.config.val_batch_size, return_idx=False
+        )
+        X_val = to_device(X_val, self.ddp_info['device'])
+        Y_val = to_device(Y_val, self.ddp_info['device'])
+        self.ghost_engine.update_validation_batch(X_val, Y_val)
