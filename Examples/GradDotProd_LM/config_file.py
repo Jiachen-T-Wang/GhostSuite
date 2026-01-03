@@ -68,6 +68,17 @@ def parse_arguments():
                         help='Refresh validation batch every training step for GradDotProd')
     parser.add_argument('--log_grad_norms', action='store_true',
                         help='Record per-sample training gradient norms and aggregated validation gradient norm')
+    parser.add_argument('--replay_run_dir', type=str, default=None,
+                        help='Path to a previous GradDotProd run directory for filtered replay training')
+    parser.add_argument('--replay_filter_metric', type=str, default='dot_product',
+                        choices=['dot_product', 'cosine'],
+                        help='Metric used to filter replay samples')
+    parser.add_argument('--replay_filter_threshold', type=float, default=0.0,
+                        help='Drop samples with metric below this threshold (default drops negatives)')
+    parser.add_argument('--replay_rebatch_size', type=int, default=None,
+                        help='Optional rebatch size for replayed samples; defaults to current batch_size')
+    parser.add_argument('--replay_drop_last', action='store_true',
+                        help='Drop the final incomplete batch when replay data is exhausted')
 
     return parser.parse_args()
 
@@ -133,6 +144,11 @@ class TrainingConfig:
         self.wandb_mode = args.wandb_mode
         self.dynamic_val_batch = args.dynamic_val_batch
         self.log_grad_norms = args.log_grad_norms
+        self.replay_run_dir = args.replay_run_dir
+        self.replay_filter_metric = args.replay_filter_metric
+        self.replay_filter_threshold = args.replay_filter_threshold
+        self.replay_rebatch_size = args.replay_rebatch_size or self.batch_size
+        self.replay_drop_last = args.replay_drop_last
         
         # Result directory setup (larger folder)
         current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
