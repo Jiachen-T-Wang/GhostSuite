@@ -45,6 +45,7 @@ DOT_PROD_SAVE_INTERVAL=10
 MODEL_DTYPE="float32"
 TRAIN_DTYPE="bfloat16"
 DYNAMIC_VAL_BATCH=true
+LOG_GRAD_NORMS=true
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -125,6 +126,10 @@ while [[ $# -gt 0 ]]; do
             DYNAMIC_VAL_BATCH=true
             shift 1
             ;;
+        --log_grad_norms)
+            LOG_GRAD_NORMS=true
+            shift 1
+            ;;
         --wandb_project)
             WANDB_PROJECT="$2"
             shift 2
@@ -159,6 +164,7 @@ while [[ $# -gt 0 ]]; do
             echo "  --model_dtype DTYPE           Model data type (default: bfloat16)"
             echo "  --train_dtype DTYPE           Training data type (default: bfloat16)"
             echo "  --dynamic_val_batch           Refresh validation batch every training step for GradDotProd"
+            echo "  --log_grad_norms              Record per-sample train grad norm and aggregated val grad norm"
             echo "  --wandb_project NAME          Weights & Biases project (default: GhostSuite)"
             echo "  --wandb_run_name NAME         Optional Weights & Biases run name"
             echo "  --wandb_mode MODE             Weights & Biases mode (online/offline/disabled, default: online)"
@@ -200,6 +206,7 @@ echo "Dot prod save interval: $DOT_PROD_SAVE_INTERVAL"
 echo "Model dtype: $MODEL_DTYPE"
 echo "Train dtype: $TRAIN_DTYPE"
 echo "Dynamic val batch: $DYNAMIC_VAL_BATCH"
+echo "Log grad norms: $LOG_GRAD_NORMS"
 echo "WandB project: $WANDB_PROJECT"
 echo "WandB run name: $WANDB_RUN_NAME"
 echo "WandB mode: $WANDB_MODE"
@@ -208,6 +215,9 @@ echo "WandB mode: $WANDB_MODE"
 CMD="python main.py --method \"$METHOD\" --architecture \"$ARCHITECTURE\" --batch_size \"$BATCH_SIZE\" --val_batch_size \"$VAL_BATCH_SIZE\" --warmup_step \"$WARMUP_STEP\" --learning_rate \"$LEARNING_RATE\" --optimizer \"$OPTIMIZER\" --max_steps \"$MAX_STEPS\" --seed \"$SEED\" --train_set \"$TRAIN_SET\" --val_set \"$VAL_SET\" --eval_interval \"$EVAL_INTERVAL\" --eval_iter \"$EVAL_ITER\" --eval_bs \"$EVAL_BS\" --dot_prod_save_interval \"$DOT_PROD_SAVE_INTERVAL\" --model_dtype \"$MODEL_DTYPE\" --train_dtype \"$TRAIN_DTYPE\" --wandb --wandb_project \"$WANDB_PROJECT\" --wandb_run_name \"$WANDB_RUN_NAME\" --wandb_mode \"$WANDB_MODE\""
 if [ "$DYNAMIC_VAL_BATCH" = true ]; then
     CMD="$CMD --dynamic_val_batch"
+fi
+if [ "$LOG_GRAD_NORMS" = true ]; then
+    CMD="$CMD --log_grad_norms"
 fi
 
 # Add eval_only flag if set

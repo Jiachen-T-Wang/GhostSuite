@@ -72,7 +72,13 @@ def _create_or_accumulate_train_grad(param: torch.Tensor, grad: torch.Tensor) ->
 # Linear Layer Implementation
 # #############################################################################
 
-def _compute_linear_dot_product(layer: nn.Linear, A: torch.Tensor, B: torch.Tensor, val_batch_size: int):
+def _compute_linear_dot_product(
+    layer: nn.Linear,
+    A: torch.Tensor,
+    B: torch.Tensor,
+    val_batch_size: int,
+    log_grad_norms: bool = False
+):
     """Computes the gradient dot-product for an nn.Linear layer.
 
     Supports both 2D inputs (batch, d) and higher-rank inputs
@@ -103,6 +109,18 @@ def _compute_linear_dot_product(layer: nn.Linear, A: torch.Tensor, B: torch.Tens
     # Common split for bias computation and non-ghost fallback
     A_train_full, A_val_full = torch.split(A, [train_bs, val_batch_size], dim=0)
     B_train_full, B_val_full = torch.split(B, [train_bs, val_batch_size], dim=0)
+
+    weight_train_norm = None
+    weight_val_norm_sq = None
+    bias_train_norm = None
+    bias_val_norm_sq = None
+
+    if log_grad_norms:
+        # Full per-sample train gradient and aggregated val gradient for norms
+        grad_train_full = torch.einsum('b...p,b...d->bpd', B_train_full, A_train_full)
+        weight_train_norm = (grad_train_full.float() ** 2).sum(dim=[1, 2])
+        grad_val_full = torch.einsum('...p,...d->pd', B_val_full.sum(dim=0), A_val_full.sum(dim=0))
+        weight_val_norm_sq = (grad_val_full.float() ** 2).sum()
 
     # --- Weight dot product ---
     if layer.use_ghost_computation:
@@ -145,6 +163,17 @@ def _compute_linear_dot_product(layer: nn.Linear, A: torch.Tensor, B: torch.Tens
         grad_bias_train = B_train.sum(dim=sum_dims_train) if B_train.dim() > 2 else B_train
         layer.bias.grad_dot_prod = torch.einsum('p,bp->b', grad_bias_val, grad_bias_train)
 
+        if log_grad_norms:
+            bias_train_norm = (grad_bias_train.float() ** 2).sum(dim=1)
+            bias_val_norm_sq = (grad_bias_val.float() ** 2).sum()
+
+    if log_grad_norms:
+        layer.weight.grad_train_norm = weight_train_norm
+        layer.weight.grad_val_norm_sq = weight_val_norm_sq
+        if layer.bias is not None:
+            layer.bias.grad_train_norm = bias_train_norm
+            layer.bias.grad_val_norm_sq = bias_val_norm_sq
+
     # torch.cuda.synchronize()  # Ensure all operations are complete
     # end_time = time.time()
     # print(f"Debug: Dot product computation time for lm_head: {(end_time - start_time) * 1000:.4f} ms")
@@ -185,7 +214,13 @@ def _compute_linear_train_grad(layer: nn.Linear, A: torch.Tensor, B: torch.Tenso
 # Embedding Layer Implementation
 # #############################################################################
 
-def _compute_embedding_dot_product(layer: nn.Embedding, A: torch.Tensor, B: torch.Tensor, val_batch_size: int):
+def _compute_embedding_dot_product(
+    layer: nn.Embedding,
+    A: torch.Tensor,
+    B: torch.Tensor,
+    val_batch_size: int,
+    log_grad_norms: bool = False
+):
     """Computes the gradient dot-product for an nn.Embedding layer."""
 
     # Detach the tensors to ensure they are not part of the computation graph.
@@ -216,6 +251,19 @@ def _compute_embedding_dot_product(layer: nn.Embedding, A: torch.Tensor, B: torc
 
     dot_products = (B_train * grad_val[A_train_long]).float().sum(dim=[1, 2])
     layer.weight.grad_dot_prod = dot_products
+
+    if log_grad_norms:
+        # Compute per-sample train grad norm using unique tokens per sample
+        train_norms = []
+        for sample_tokens, sample_B in zip(A_train_long, B_train):
+            unique_tok, inverse = torch.unique(sample_tokens, return_inverse=True)
+            agg = torch.zeros((unique_tok.numel(), sample_B.size(-1)), device=sample_B.device, dtype=sample_B.dtype)
+            agg.index_add_(0, inverse, sample_B)
+            train_norms.append((agg.float() ** 2).sum())
+        layer.weight.grad_train_norm = torch.stack(train_norms)
+
+        # Validation aggregated gradient norm
+        layer.weight.grad_val_norm_sq = (grad_val.float() ** 2).sum()
 
 
 def _compute_embedding_train_grad(layer: nn.Embedding, A: torch.Tensor, B: torch.Tensor, val_batch_size: int):
@@ -251,7 +299,13 @@ def _compute_embedding_train_grad(layer: nn.Embedding, A: torch.Tensor, B: torch
 # LayerNorm Layer Implementation
 # #############################################################################
 
-def _compute_layernorm_dot_product(layer: nn.LayerNorm, A: torch.Tensor, B: torch.Tensor, val_batch_size: int):
+def _compute_layernorm_dot_product(
+    layer: nn.LayerNorm,
+    A: torch.Tensor,
+    B: torch.Tensor,
+    val_batch_size: int,
+    log_grad_norms: bool = False
+):
     """Computes the gradient dot-product for an nn.LayerNorm layer."""
 
     # Detach the tensors to ensure they are not part of the computation graph.
@@ -293,6 +347,11 @@ def _compute_layernorm_dot_product(layer: nn.LayerNorm, A: torch.Tensor, B: torc
     layer.weight.grad_dot_prod = torch.einsum(
         'bf,f->b', per_sample_grad_weight.float(), total_grad_weight_val.float()
     )
+    weight_train_norm = None
+    weight_val_norm_sq = None
+    if log_grad_norms:
+        weight_train_norm = (per_sample_grad_weight.float() ** 2).sum(dim=1)
+        weight_val_norm_sq = (total_grad_weight_val.float() ** 2).sum()
 
     # --- Bias dot product ---
     if layer.bias is not None:
@@ -310,6 +369,21 @@ def _compute_layernorm_dot_product(layer: nn.LayerNorm, A: torch.Tensor, B: torc
         layer.bias.grad_dot_prod = torch.einsum(
             'bf,f->b', per_sample_grad_bias.float(), total_grad_bias_val.float()
         )
+        bias_train_norm = None
+        bias_val_norm_sq = None
+        if log_grad_norms:
+            bias_train_norm = (per_sample_grad_bias.float() ** 2).sum(dim=1)
+            bias_val_norm_sq = (total_grad_bias_val.float() ** 2).sum()
+    else:
+        bias_train_norm = None
+        bias_val_norm_sq = None
+
+    if log_grad_norms:
+        layer.weight.grad_train_norm = weight_train_norm
+        layer.weight.grad_val_norm_sq = weight_val_norm_sq
+        if layer.bias is not None:
+            layer.bias.grad_train_norm = bias_train_norm
+            layer.bias.grad_val_norm_sq = bias_val_norm_sq
 
 
 def _compute_layernorm_train_grad(
@@ -382,7 +456,8 @@ def _compute_Conv1D_dot_product(
     layer: nn.Linear,
     A: torch.Tensor,
     B: torch.Tensor,
-    val_batch_size: int
+    val_batch_size: int,
+    log_grad_norms: bool = False
 ) -> None:
     """
     Computes the gradient dot-product between the validation gradient and each of the
@@ -422,6 +497,9 @@ def _compute_Conv1D_dot_product(
     if A.dim() > 3:
         raise ValueError("Currently we only expect 3D input tensors (batch, seq_len, features). Extending this to 4D or higher requires additional handling.")
 
+    weight_train_norm = None
+    weight_val_norm_sq = None
+
     # --- Compute weight gradient dot product ---
     if layer.use_ghost_computation:
         # Sum over the validation batch dimension to get the validation gradient components
@@ -448,6 +526,12 @@ def _compute_Conv1D_dot_product(
         # layer.weight.grad_dot_prod = torch.sum(AA * BB, dim=[1, 2])
         layer.weight.grad_dot_prod = torch.sum((AA * BB).float(), dim=[1, 2])
 
+        if log_grad_norms:
+            grad_train = torch.einsum('btd,btp->bpd', A_train, B_train)
+            weight_train_norm = (grad_train.float() ** 2).sum(dim=[1, 2])
+            grad_val = torch.einsum('td,tp->pd', A_val_sum, B_val_sum)
+            weight_val_norm_sq = (grad_val.float() ** 2).sum()
+
         # torch.cuda.synchronize()  # Ensure all operations are complete
         # print(f"Prepare Dotprod time for {layer.name}: {(time.time() - start_time)*1000:.4f}ms")
         # print(f"Debug: Check grad dot product value for Conv1D layer: {layer.weight.grad_dot_prod}")
@@ -457,6 +541,9 @@ def _compute_Conv1D_dot_product(
         grad_train = torch.einsum('b...d, b...p->bpd', A_train, B_train).detach()
         grad_val = torch.einsum('...d, ...p->pd', torch.sum(A_val, dim=0), torch.sum(B_val, dim=0)).detach()
         layer.weight.grad_dot_prod = torch.einsum('pd,bpd->b', grad_val, grad_train)
+        if log_grad_norms:
+            weight_train_norm = (grad_train.float() ** 2).sum(dim=[1, 2])
+            weight_val_norm_sq = (grad_val.float() ** 2).sum()
 
     # --- Compute bias gradient dot product ---
     if layer.bias is not None:
@@ -481,6 +568,14 @@ def _compute_Conv1D_dot_product(
         # grad_bias_val shape: [features]
         # grad_bias_train shape: [batch, features]
         layer.bias.grad_dot_prod = torch.einsum('p,bp->b', grad_bias_val, grad_bias_train)
+
+        if log_grad_norms:
+            layer.bias.grad_train_norm = (grad_bias_train.float() ** 2).sum(dim=1)
+            layer.bias.grad_val_norm_sq = (grad_bias_val.float() ** 2).sum()
+
+    if log_grad_norms:
+        layer.weight.grad_train_norm = weight_train_norm
+        layer.weight.grad_val_norm_sq = weight_val_norm_sq
 
 
 def _compute_Conv1D_train_grad(
@@ -533,6 +628,7 @@ def _compute_conv2d_dot_product(
     A: torch.Tensor,
     B: torch.Tensor,
     val_batch_size: int,
+    log_grad_norms: bool = False,
 ) -> None:
     """Compute gradient dot-products for nn.Conv2d."""
 
@@ -564,21 +660,39 @@ def _compute_conv2d_dot_product(
 
     _should_use_ghost_computation(layer, A_train_u, B_train_r, conv=True)
 
+    weight_train_norm = None
+    weight_val_norm_sq = None
+
     if layer.use_ghost_computation:
         A_val_sum = torch.sum(A_val_u, dim=0)
         B_val_sum = torch.sum(B_val_r, dim=0)
         AA = torch.matmul(A_val_sum.unsqueeze(0), A_train_u.transpose(1, 2))
         BB = torch.matmul(B_val_sum.unsqueeze(0), B_train_r.transpose(1, 2))
         layer.weight.grad_dot_prod = torch.sum((AA * BB).float(), dim=[1, 2])
+        if log_grad_norms:
+            grad_train = torch.einsum('bik,bpk->bpi', A_train_u, B_train_r)
+            weight_train_norm = (grad_train.float() ** 2).sum(dim=[1, 2])
+            grad_val = torch.einsum('ik,pk->pi', A_val_sum, B_val_sum)
+            weight_val_norm_sq = (grad_val.float() ** 2).sum()
     else:
         grad_train = torch.einsum('bik,bpk->bpi', A_train_u, B_train_r)
         grad_val = torch.einsum('ik,pk->pi', A_val_u.sum(dim=0), B_val_r.sum(dim=0))
         layer.weight.grad_dot_prod = torch.einsum('pi,bpi->b', grad_val, grad_train)
+        if log_grad_norms:
+            weight_train_norm = (grad_train.float() ** 2).sum(dim=[1, 2])
+            weight_val_norm_sq = (grad_val.float() ** 2).sum()
 
     if layer.bias is not None:
         grad_bias_val = B_val_r.sum(dim=[0, 2])
         grad_bias_train = B_train_r.sum(dim=2)
         layer.bias.grad_dot_prod = torch.einsum('p,bp->b', grad_bias_val, grad_bias_train)
+        if log_grad_norms:
+            layer.bias.grad_train_norm = (grad_bias_train.float() ** 2).sum(dim=1)
+            layer.bias.grad_val_norm_sq = (grad_bias_val.float() ** 2).sum()
+
+    if log_grad_norms:
+        layer.weight.grad_train_norm = weight_train_norm
+        layer.weight.grad_val_norm_sq = weight_val_norm_sq
 
 
 def _compute_conv2d_train_grad(

@@ -23,7 +23,8 @@ def requires_grad(module: nn.Module) -> bool:
 def add_hooks(
     model: nn.Module,
     val_batch_size: int,
-    loss_reduction: str = 'mean'
+    loss_reduction: str = 'mean',
+    log_grad_norms: bool = False
 ):
     r"""
     Adds hooks to a model to compute gradient dot products and accumulate
@@ -60,7 +61,7 @@ def add_hooks(
                 # start_time = time.time()
                 # 1. Compute the gradient dot products and store them on the layer.
                 _prepare_sample_grad_or_dotprod(
-                    this_layer, grad_output, val_batch_size, loss_reduction
+                    this_layer, grad_output, val_batch_size, loss_reduction, log_grad_norms
                 )
 
                 # 2. Compute and accumulate the training gradients.
@@ -94,16 +95,38 @@ def _capture_activations(layer: nn.Module, inputs: Tuple, outputs: Tuple):
     layer.activations = inputs[0].detach()
 
 
+def _scale_logged_grad_norms(layer: nn.Module, grad_scale: float) -> None:
+    """
+    Rescales stored gradient norm stats to reflect the scaled backprops.
+    """
+    if grad_scale == 1.0:
+        return
+
+    scale_sq = grad_scale * grad_scale
+    for param_name in ("weight", "bias"):
+        if not hasattr(layer, param_name):
+            continue
+        param = getattr(layer, param_name)
+        if param is None:
+            continue
+        if hasattr(param, "grad_train_norm") and param.grad_train_norm is not None:
+            param.grad_train_norm = param.grad_train_norm * scale_sq
+        if hasattr(param, "grad_val_norm_sq") and param.grad_val_norm_sq is not None:
+            param.grad_val_norm_sq = param.grad_val_norm_sq * scale_sq
+
+
 def _prepare_sample_grad_or_dotprod(
     layer: nn.Module,
     grad_output: Tuple[torch.Tensor],
     val_batch_size: int,
     loss_reduction: str = 'mean',
+    log_grad_norms: bool = False,
 ):
     """
     Backward hook handler that captures backprops and computes the gradient dot product.
     """
     backprops = grad_output[0].detach()
+    grad_scale = float(backprops.shape[0]) if loss_reduction == 'mean' else 1.0
 
     if not hasattr(layer, 'activations'):
         layer.activations = None
@@ -119,19 +142,23 @@ def _prepare_sample_grad_or_dotprod(
             layer,
             layer.activations.to(common_type),
             backprops.to(common_type),
-            val_batch_size=val_batch_size
+            val_batch_size=val_batch_size,
+            log_grad_norms=log_grad_norms
         )
     else:
         compute_layer_dotprod(
             layer,
             layer.activations,
             backprops,
-            val_batch_size=val_batch_size
+            val_batch_size=val_batch_size,
+            log_grad_norms=log_grad_norms
         )
 
-    if loss_reduction == 'mean':
+    if grad_scale != 1.0:
+        if log_grad_norms:
+            _scale_logged_grad_norms(layer, grad_scale)
         # Scale the backprops since the value is being divided by train_batch_size+val_batch_size.
-        backprops = backprops * backprops.shape[0]
+        backprops = backprops * grad_scale
 
     # Store (scaled) backprops for the next function in the hook.
     layer.backprops = backprops
