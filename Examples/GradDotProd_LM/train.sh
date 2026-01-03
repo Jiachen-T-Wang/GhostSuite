@@ -1,13 +1,13 @@
 #!/bin/bash
 
-#SBATCH --job-name=ghost-test       # Job name
+#SBATCH --job-name=train-with-ghost       # Job name
 #SBATCH --mail-type=begin
 #SBATCH --mail-type=end
 #SBATCH --mail-type=fail
 #SBATCH --mail-user=tw8948@princeton.edu
 #SBATCH --output=/scratch/gpfs/tw8948/slurm_output/slurm-%j.out
 #SBATCH --error=/scratch/gpfs/tw8948/slurm_output/slurm-%j.err
-#SBATCH --time=7:59:59             
+#SBATCH --time=5:59:59             
 #SBATCH --nodes=1                    # Number of nodes
 #SBATCH --ntasks=1                   # Number of tasks
 #SBATCH --cpus-per-task=4            # CPU cores per task
@@ -33,7 +33,7 @@ VAL_BATCH_SIZE=16
 WARMUP_STEP=2000
 LEARNING_RATE=6e-4
 OPTIMIZER="adamw"
-MAX_STEPS=50000
+MAX_STEPS=20000
 SEED=42
 TRAIN_SET="pile"
 VAL_SET="pile"
