@@ -56,7 +56,9 @@ def main():
     dataset = load_dataset_main(args.train_set, args.val_set)
     
     # Setup data functions
-    get_batch_fn, get_val_batch_fn = setup_data_functions(dataset, config, ddp_info['device'])
+    get_batch_fn, get_val_batch_fn = setup_data_functions(
+        dataset, config, ddp_info['device'], ddp_info=ddp_info
+    )
     
     # Create trainer
     trainer = Trainer(

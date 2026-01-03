@@ -46,6 +46,11 @@ MODEL_DTYPE="float32"
 TRAIN_DTYPE="bfloat16"
 DYNAMIC_VAL_BATCH=true
 LOG_GRAD_NORMS=true
+REPLAY_RUN_DIR=""
+REPLAY_FILTER_METRIC="dot_product"
+REPLAY_FILTER_THRESHOLD=0.0
+REPLAY_REBATCH_SIZE=""
+REPLAY_DROP_LAST=false
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -130,6 +135,26 @@ while [[ $# -gt 0 ]]; do
             LOG_GRAD_NORMS=true
             shift 1
             ;;
+        --replay_run_dir)
+            REPLAY_RUN_DIR="$2"
+            shift 2
+            ;;
+        --replay_filter_metric)
+            REPLAY_FILTER_METRIC="$2"
+            shift 2
+            ;;
+        --replay_filter_threshold)
+            REPLAY_FILTER_THRESHOLD="$2"
+            shift 2
+            ;;
+        --replay_rebatch_size)
+            REPLAY_REBATCH_SIZE="$2"
+            shift 2
+            ;;
+        --replay_drop_last)
+            REPLAY_DROP_LAST=true
+            shift 1
+            ;;
         --wandb_project)
             WANDB_PROJECT="$2"
             shift 2
@@ -165,6 +190,11 @@ while [[ $# -gt 0 ]]; do
             echo "  --train_dtype DTYPE           Training data type (default: bfloat16)"
             echo "  --dynamic_val_batch           Refresh validation batch every training step for GradDotProd"
             echo "  --log_grad_norms              Record per-sample train grad norm and aggregated val grad norm"
+            echo "  --replay_run_dir PATH         Use stored GradDotProd logs as training data (filtered replay)"
+            echo "  --replay_filter_metric NAME   dot_product or cosine (default: dot_product)"
+            echo "  --replay_filter_threshold X   Drop samples below threshold (default: 0.0)"
+            echo "  --replay_rebatch_size SIZE    Rebatch filtered samples to this size (default: batch_size)"
+            echo "  --replay_drop_last            Drop final incomplete batch from replay data"
             echo "  --wandb_project NAME          Weights & Biases project (default: GhostSuite)"
             echo "  --wandb_run_name NAME         Optional Weights & Biases run name"
             echo "  --wandb_mode MODE             Weights & Biases mode (online/offline/disabled, default: online)"
@@ -207,6 +237,11 @@ echo "Model dtype: $MODEL_DTYPE"
 echo "Train dtype: $TRAIN_DTYPE"
 echo "Dynamic val batch: $DYNAMIC_VAL_BATCH"
 echo "Log grad norms: $LOG_GRAD_NORMS"
+echo "Replay run dir: ${REPLAY_RUN_DIR:-none}"
+echo "Replay filter metric: $REPLAY_FILTER_METRIC"
+echo "Replay filter threshold: $REPLAY_FILTER_THRESHOLD"
+echo "Replay rebatch size: ${REPLAY_REBATCH_SIZE:-default}"
+echo "Replay drop last: $REPLAY_DROP_LAST"
 echo "WandB project: $WANDB_PROJECT"
 echo "WandB run name: $WANDB_RUN_NAME"
 echo "WandB mode: $WANDB_MODE"
@@ -218,6 +253,15 @@ if [ "$DYNAMIC_VAL_BATCH" = true ]; then
 fi
 if [ "$LOG_GRAD_NORMS" = true ]; then
     CMD="$CMD --log_grad_norms"
+fi
+if [ -n "$REPLAY_RUN_DIR" ]; then
+    CMD="$CMD --replay_run_dir \"$REPLAY_RUN_DIR\" --replay_filter_metric \"$REPLAY_FILTER_METRIC\" --replay_filter_threshold \"$REPLAY_FILTER_THRESHOLD\""
+    if [ -n "$REPLAY_REBATCH_SIZE" ]; then
+        CMD="$CMD --replay_rebatch_size \"$REPLAY_REBATCH_SIZE\""
+    fi
+    if [ "$REPLAY_DROP_LAST" = true ]; then
+        CMD="$CMD --replay_drop_last"
+    fi
 fi
 
 # Add eval_only flag if set
