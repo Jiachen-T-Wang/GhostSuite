@@ -35,7 +35,7 @@ EVAL_INTERVAL=200
 EVAL_ITER=20
 EVAL_BS=16
 DOT_PROD_SAVE_INTERVAL=10
-MODEL_DTYPE="bfloat16"
+MODEL_DTYPE="float32"
 TRAIN_DTYPE="bfloat16"
 
 # Parse command line arguments

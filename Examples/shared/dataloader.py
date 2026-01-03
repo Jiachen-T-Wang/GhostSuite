@@ -5,8 +5,10 @@ import torch
 # Local imports
 from .domain_list import PILE_DOMAIN_LIST
 
-# Data directory
-PILE_DATA_DIR = '/scratch/gpfs/tw8948/pile_tokenized'
+PILE_DATA_DIR_TRAIN = '/scratch/gpfs/PMITTAL/tianhao/PretrainData/pile/pile-train'
+PILE_DATA_DIR_VAL = '/scratch/gpfs/PMITTAL/tianhao/PretrainData/pile/pile-val-gpt2'
+PILE_DATA_DIR_TEST = '/scratch/gpfs/PMITTAL/tianhao/PretrainData/pile/pile-test-gpt2'
+
 
 
 def load_all_data(num_domains: int=1):
@@ -24,9 +26,9 @@ def load_all_data(num_domains: int=1):
         dom_amp = domain.replace('/', '-').replace(' ', '_').replace('(', '').replace(')', '')
 
         # Define file paths
-        traindata_dir = f'{PILE_DATA_DIR}/train-{dom_amp}.bin'
-        valdata_dir = f'{PILE_DATA_DIR}/val/validation-{dom_amp}.bin'
-        testdata_dir = f'{PILE_DATA_DIR}/test/test-{dom_amp}.bin'
+        traindata_dir = f'{PILE_DATA_DIR_TRAIN}/train-{dom_amp}.bin'
+        valdata_dir = f'{PILE_DATA_DIR_VAL}/validation-{dom_amp}.bin'
+        testdata_dir = f'{PILE_DATA_DIR_TEST}/test-{dom_amp}.bin'
         
         # Load data
         train_data = np.memmap(traindata_dir, dtype=np.uint16, mode='r')

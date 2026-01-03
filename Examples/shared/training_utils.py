@@ -13,7 +13,6 @@ import torch
 from torch.distributed import init_process_group, destroy_process_group
 from contextlib import nullcontext
 
-
 # Data loaders for language datasets
 from .dataloader import (
     load_all_data,
@@ -246,7 +245,7 @@ def estimate_loss(model, get_batch_fn, config, ctx):
                 if pixel_values is not None:
                     outputs = model(input_ids=X, pixel_values=pixel_values, labels=Y)
                 else:
-                    outputs = model(input_ids=X, labels=Y)
+                    outputs = model(X, Y)
                 logits, loss = outputs.logits, outputs.loss
 
             losses[k] = loss.item()
