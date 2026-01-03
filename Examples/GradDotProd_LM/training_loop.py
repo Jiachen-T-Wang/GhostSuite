@@ -38,6 +38,7 @@ class Trainer:
         self.get_batch = get_batch_fn
         self.get_val_batch = get_val_batch_fn
         self.ctx = ctx
+        self.wandb_run = None
         
         # Training state
         self.iter_num = 0
@@ -61,6 +62,9 @@ class Trainer:
             ddp_info=self.ddp_info,
             val_data=val_data
         )
+
+        # Initialize Weights & Biases logging if requested
+        self._init_wandb()
 
 
     def run_training(self):
@@ -171,6 +175,13 @@ class Trainer:
         torch.cuda.synchronize()
         end_time = time.time()
         print(f"Time taken for training step: {end_time - start_time:.4f} seconds")
+        metrics = {
+            "train/lr": lr,
+            "train/step_time": end_time - start_time
+        }
+        if loss is not None:
+            metrics["train/loss"] = loss.item()
+        self._log_metrics(metrics, step=iter_num)
     
 
     def _run_evaluation(self, result_file):
@@ -189,6 +200,11 @@ class Trainer:
               f"val loss {val_loss:.4f}, test loss {test_loss:.4f}")
         
         save_training_results(result_file, train_loss, val_loss, test_loss, self.iter_num)
+        self._log_metrics({
+            "eval/train_loss": float(train_loss),
+            "eval/val_loss": float(val_loss),
+            "eval/test_loss": float(test_loss)
+        }, step=self.iter_num)
 
 
     def _cleanup(self, result_file):
@@ -201,3 +217,69 @@ class Trainer:
 
         # Cleanup ghost engines
         self.ghost_engine.cleanup()
+        if self.wandb_run is not None and self.ddp_info['master_process']:
+            try:
+                self.wandb_run.finish()
+            except Exception as e:
+                print(f"[WARN] Failed to finalize Weights & Biases run: {e}")
+
+
+    def _init_wandb(self):
+        """Initialize Weights & Biases logging on the master process."""
+        if not getattr(self.config, "use_wandb", False):
+            return
+        if not self.ddp_info['master_process']:
+            return
+        try:
+            import wandb
+        except ImportError:
+            print("[WARN] Weights & Biases is not installed; skipping wandb logging.")
+            return
+
+        run_name = self.config.wandb_run_name
+        if not run_name:
+            timestamp = int(time.time())
+            run_name = f"{self.config.method}_{self.config.architecture}_bs{self.config.batch_size}_lr{self.config.learning_rate}_{timestamp}"
+
+        config_payload = {
+            "method": self.config.method,
+            "architecture": self.config.architecture,
+            "train_set": self.config.args.train_set,
+            "val_set": self.config.args.val_set,
+            "batch_size": self.config.batch_size,
+            "val_batch_size": self.config.val_batch_size,
+            "learning_rate": self.config.learning_rate,
+            "optimizer": self.config.optimizer,
+            "max_steps": self.config.max_steps,
+            "seed": self.config.seed,
+            "eval_interval": self.config.eval_interval,
+            "eval_iters": self.config.eval_iters,
+            "eval_bs": self.config.eval_bs,
+            "dot_prod_save_interval": self.config.dot_prod_save_interval,
+            "model_dtype": self.config.model_dtype,
+            "train_dtype": self.config.train_dtype,
+            "gradient_accumulation_steps": self.config.gradient_accumulation_steps
+        }
+
+        try:
+            self.wandb_run = wandb.init(
+                project=self.config.wandb_project,
+                name=run_name,
+                mode=self.config.wandb_mode,
+                dir=self.config.wandb_dir,
+                config=config_payload
+            )
+            print(f"[INFO] Weights & Biases logging enabled (project: {self.config.wandb_project}, run: {run_name}).")
+        except Exception as e:
+            print(f"[WARN] Failed to initialize Weights & Biases: {e}")
+            self.wandb_run = None
+
+
+    def _log_metrics(self, metrics, step=None):
+        """Log metrics to Weights & Biases if enabled."""
+        if self.wandb_run is None or not self.ddp_info['master_process']:
+            return
+        try:
+            self.wandb_run.log(metrics, step=step if step is not None else self.iter_num)
+        except Exception as e:
+            print(f"[WARN] Failed to log metrics to Weights & Biases: {e}")
