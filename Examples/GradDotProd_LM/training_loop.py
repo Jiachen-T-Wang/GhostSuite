@@ -1,7 +1,5 @@
 """Main training loop implementation."""
 
-import time
-import numpy as np
 import torch
 import os
 import sys
@@ -132,7 +130,7 @@ class Trainer:
                 X_forward, Y_forward = self.ghost_engine.prepare_forward_input(X, Y)
                 
                 # Forward pass with method-appropriate input
-                outputs = self.model(input_ids=X_forward, labels=Y_forward)
+                outputs = self.model(X_forward, Y_forward)
                 logits, loss = outputs.logits, outputs.loss
                 
                 # Scale loss for gradient accumulation
@@ -151,8 +149,8 @@ class Trainer:
         # Gradient clipping and optimization step
         self.scaler.unscale_(self.optimizer)
         
-        # if self.config.grad_clip != 0.0:
-        #     torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.grad_clip)
+        if self.config.grad_clip != 0.0:
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.grad_clip)
         
         # This will call the custom engine's step() if it's enabled, which computes values
         # before calling the original optimizer step.

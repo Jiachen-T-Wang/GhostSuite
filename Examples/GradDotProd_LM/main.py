@@ -44,12 +44,6 @@ def main():
     # Setup PyTorch backend
     ctx = setup_torch_backend(config)
     
-    # Load dataset
-    dataset = load_dataset_main(args.train_set, args.val_set)
-    
-    # Setup data functions
-    get_batch_fn, get_val_batch_fn = setup_data_functions(dataset, config, ddp_info['device'])
-    
     # Print training information
     print_training_info(config)
     
@@ -57,6 +51,12 @@ def main():
     model, optimizer, scaler = setup_model_and_optimizer(
         config, ddp_info['device'], ddp_info
     )
+
+    # Load dataset
+    dataset = load_dataset_main(args.train_set, args.val_set)
+    
+    # Setup data functions
+    get_batch_fn, get_val_batch_fn = setup_data_functions(dataset, config, ddp_info['device'])
     
     # Create trainer
     trainer = Trainer(
