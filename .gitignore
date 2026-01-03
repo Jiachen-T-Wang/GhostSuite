@@ -8,3 +8,4 @@ Demo/
 init.sh
 llava_dataloader.py
 Plots/
+results/

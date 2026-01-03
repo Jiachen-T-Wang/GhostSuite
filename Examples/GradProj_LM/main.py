@@ -68,23 +68,6 @@ def main():
     # Create autocast context
     ctx = torch.amp.autocast(device_type='cuda', dtype=train_dtype, enabled=(train_dtype != torch.float32))
     
-    # Load dataset
-    print("\n" + "=" * 40)
-    print("Loading Pile dataset...")
-    dataset = load_all_data()
-    train_data = dataset['train']
-    print(f"Loaded dataset with {len(train_data)} tokens")
-    
-    # Calculate number of samples
-    total_samples = (len(train_data) - config.block_size) // config.block_size
-    if config.max_samples:
-        num_samples = min(config.max_samples, total_samples)
-    else:
-        num_samples = total_samples
-    num_iterations = (num_samples + config.batch_size - 1) // config.batch_size
-    
-    print(f"Will process {num_samples} samples in {num_iterations} iterations")
-    
     # Create model
     print("\n" + "=" * 40)
     print(f"Creating {config.architecture} model...")
@@ -109,6 +92,23 @@ def main():
         print("Warning: transformers_support not available, continuing without it")
     
     print(f"Model created with dtype {next(model.parameters()).dtype}")
+
+    # Load dataset
+    print("\n" + "=" * 40)
+    print("Loading Pile dataset...")
+    dataset = load_all_data()
+    train_data = dataset['train']
+    print(f"Loaded dataset with {len(train_data)} tokens")
+    
+    # Calculate number of samples
+    total_samples = (len(train_data) - config.block_size) // config.block_size
+    if config.max_samples:
+        num_samples = min(config.max_samples, total_samples)
+    else:
+        num_samples = total_samples
+    num_iterations = (num_samples + config.batch_size - 1) // config.batch_size
+    
+    print(f"Will process {num_samples} samples in {num_iterations} iterations")
     
     # Create projection engine
     print("\n" + "=" * 40)
