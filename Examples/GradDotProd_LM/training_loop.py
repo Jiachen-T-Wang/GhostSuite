@@ -1,5 +1,6 @@
 """Main training loop implementation."""
 
+import time
 import torch
 import os
 import sys
@@ -95,7 +96,11 @@ class Trainer:
     
 
     def _training_step(self, iter_num):
-        """Perform one complete training step including data loading, LR update, and ghost engine operations."""
+        """
+        Perform one complete training step including data loading, LR update, and ghost engine operations.
+        """
+
+        start_time = time.time()
         
         # Get training batch
         X, Y, batch_idx = self.get_batch(
@@ -162,6 +167,10 @@ class Trainer:
         self.ghost_engine.clear_gradients()
 
         self.optimizer.zero_grad(set_to_none=True)
+
+        torch.cuda.synchronize()
+        end_time = time.time()
+        print(f"Time taken for training step: {end_time - start_time:.4f} seconds")
     
 
     def _run_evaluation(self, result_file):

@@ -20,8 +20,7 @@ def _add_dummy_bias(embedding: nn.Embedding):
         return
 
     # Add a single trainable parameter
-    embedding.register_parameter("dummy_bias", 
-                                 nn.Parameter(torch.zeros(1, device=embedding.weight.device)))
+    embedding.register_parameter("dummy_bias", nn.Parameter(torch.zeros(1, device=embedding.weight.device)))
 
     old_forward = embedding.forward
 
