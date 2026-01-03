@@ -57,6 +57,8 @@ def parse_args() -> argparse.Namespace:
                         help="Total batch size for correctness check (default: min(4, batch_size)).")
     parser.add_argument("--check-val-batch-size", type=int, default=None,
                         help="Validation batch size for correctness check (default: min(1, val_batch_size)).")
+    parser.add_argument("--check-grad-norms", action="store_true",
+                        help="Validate logged train/val gradient norms against naive autograd.")
     parser.add_argument("--check-rtol", type=float, default=1e-2,
                         help="Relative tolerance for correctness check.")
     parser.add_argument("--check-atol", type=float, default=1e-2,
@@ -324,6 +326,48 @@ def compute_ghost_dot_products(
     return ghost_dot
 
 
+def compute_ghost_grad_norms(
+    model: nn.Module,
+    x_train: torch.Tensor,
+    y_train: torch.Tensor,
+    x_val: torch.Tensor,
+    y_val: torch.Tensor,
+    val_batch_size: int,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    engine = GradDotProdEngine(
+        module=model,
+        val_batch_size=val_batch_size,
+        loss_reduction="mean",
+        use_dummy_bias=False,
+        dot_prod_save_path=None,
+        log_grad_norms=True,
+    )
+    engine.attach(optimizer)
+    engine.attach_train_batch(x_train, y_train, iter_num=0, batch_idx=0)
+
+    optimizer.zero_grad(set_to_none=True)
+    x_forward = torch.cat([x_train, x_val], dim=0)
+    y_forward = torch.cat([y_train, y_val], dim=0)
+    logits = model(x_forward)
+    loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y_forward.reshape(-1))
+    loss.backward()
+
+    engine.aggregate_and_log()
+    if not engine.dot_product_log:
+        raise RuntimeError("Ghost engine did not log any gradient norms.")
+    info = engine.dot_product_log[-1]
+    if "train_grad_norm" not in info or "val_grad_norm" not in info:
+        raise RuntimeError("Gradient norm entries missing from ghost engine log.")
+    train_norm = info["train_grad_norm"].clone()
+    val_norm = torch.tensor(info["val_grad_norm"])
+
+    engine.dot_product_log.clear()
+    engine.clear_gradients()
+    engine.detach()
+    return train_norm, val_norm
+
+
 def compute_naive_dot_products(
     model: nn.Module,
     x_train: torch.Tensor,
@@ -355,6 +399,41 @@ def compute_naive_dot_products(
         train_dots.append(dot)
 
     return torch.stack(train_dots).detach().cpu()
+
+
+def compute_naive_grad_norms(
+    model: nn.Module,
+    x_train: torch.Tensor,
+    y_train: torch.Tensor,
+    x_val: torch.Tensor,
+    y_val: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    model.train()
+    params = [p for p in model.parameters() if p.requires_grad]
+
+    train_norms = []
+    for idx in range(x_train.size(0)):
+        logits = model(x_train[idx:idx + 1])
+        loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y_train[idx:idx + 1].reshape(-1))
+        grads = torch.autograd.grad(loss, params, retain_graph=False, create_graph=False)
+        norm_sq = torch.tensor(0.0, device=x_train.device)
+        for g in grads:
+            norm_sq = norm_sq + (g.float() ** 2).sum()
+        train_norms.append(norm_sq.sqrt())
+
+    val_sum = [torch.zeros_like(p, device=p.device) for p in params]
+    for idx in range(x_val.size(0)):
+        logits = model(x_val[idx:idx + 1])
+        loss = F.cross_entropy(logits.reshape(-1, logits.size(-1)), y_val[idx:idx + 1].reshape(-1))
+        grads = torch.autograd.grad(loss, params, retain_graph=False, create_graph=False)
+        for i, g in enumerate(grads):
+            val_sum[i].add_(g)
+
+    val_norm_sq = torch.tensor(0.0, device=x_train.device)
+    for g in val_sum:
+        val_norm_sq = val_norm_sq + (g.float() ** 2).sum()
+
+    return torch.stack(train_norms).detach().cpu(), val_norm_sq.sqrt().detach().cpu()
 
 
 def run_correctness_check(args: argparse.Namespace, init_state: dict, device: str) -> None:
@@ -412,6 +491,74 @@ def run_correctness_check(args: argparse.Namespace, init_state: dict, device: st
     print(f"allclose={ok} max_abs_diff={max_abs:.6g} max_rel_diff={max_rel:.6g}")
     if not ok:
         raise AssertionError("Ghost dot products do not match naive computation.")
+
+
+def run_grad_norm_check(args: argparse.Namespace, init_state: dict, device: str) -> None:
+    check_total_bs = args.check_batch_size or min(4, args.batch_size)
+    check_val_bs = args.check_val_batch_size or min(1, args.val_batch_size)
+    if check_val_bs <= 0:
+        raise ValueError("check_val_batch_size must be > 0")
+    if check_val_bs >= check_total_bs:
+        raise ValueError("check_val_batch_size must be smaller than check_batch_size")
+
+    train_bs = check_total_bs - check_val_bs
+
+    set_seed(args.seed)
+    x_train, y_train = make_lm_batch(train_bs, args.seq_len, args.vocab_size, device)
+    x_val, y_val = make_lm_batch(check_val_bs, args.seq_len, args.vocab_size, device)
+
+    ghost_model = LlamaLM(
+        vocab_size=args.vocab_size,
+        seq_len=args.seq_len,
+        d_model=args.d_model,
+        n_heads=args.n_heads,
+        n_layers=args.n_layers,
+        mlp_ratio=args.mlp_ratio,
+        rope_base=args.rope_base,
+    ).to(device)
+    ghost_model.load_state_dict(init_state)
+    ghost_train_norm, ghost_val_norm = compute_ghost_grad_norms(
+        ghost_model, x_train, y_train, x_val, y_val, check_val_bs
+    )
+
+    naive_model = LlamaLM(
+        vocab_size=args.vocab_size,
+        seq_len=args.seq_len,
+        d_model=args.d_model,
+        n_heads=args.n_heads,
+        n_layers=args.n_layers,
+        mlp_ratio=args.mlp_ratio,
+        rope_base=args.rope_base,
+    ).to(device)
+    naive_model.load_state_dict(init_state)
+    naive_train_norm, naive_val_norm = compute_naive_grad_norms(
+        naive_model, x_train, y_train, x_val, y_val
+    )
+
+    if ghost_train_norm.shape != naive_train_norm.shape:
+        raise ValueError(f"Shape mismatch: ghost={ghost_train_norm.shape} naive={naive_train_norm.shape}")
+
+    train_diff = (ghost_train_norm - naive_train_norm).abs()
+    train_max_abs = train_diff.max().item()
+    train_max_rel = (train_diff / (naive_train_norm.abs() + args.check_atol)).max().item()
+    train_ok = torch.allclose(ghost_train_norm, naive_train_norm, rtol=args.check_rtol, atol=args.check_atol)
+
+    val_diff = abs(float(ghost_val_norm) - float(naive_val_norm))
+    val_den = float(abs(naive_val_norm) + args.check_atol)
+    val_rel = val_diff / val_den if val_den != 0 else float("inf")
+    val_ok = torch.isclose(
+        torch.tensor(float(ghost_val_norm)),
+        torch.tensor(float(naive_val_norm)),
+        rtol=args.check_rtol,
+        atol=args.check_atol,
+    )
+
+    print("\n=== Gradient Norm Check ===")
+    print(f"Batch size: total={check_total_bs} train={train_bs} val={check_val_bs}")
+    print(f"train allclose={train_ok} max_abs_diff={train_max_abs:.6g} max_rel_diff={train_max_rel:.6g}")
+    print(f"val   allclose={bool(val_ok)} abs_diff={val_diff:.6g} rel_diff={val_rel:.6g}")
+    if not (train_ok and val_ok):
+        raise AssertionError("Ghost gradient norms do not match naive computation.")
 
 
 def main() -> None:
@@ -541,11 +688,14 @@ def main() -> None:
     if device == "cuda":
         torch.cuda.empty_cache()
 
-    if args.check_correctness:
+    if args.check_correctness or args.check_grad_norms:
         del ghost_model, ghost_opt, ghost_engine
         if device == "cuda":
             torch.cuda.empty_cache()
+    if args.check_correctness:
         run_correctness_check(args, init_state, device)
+    if args.check_grad_norms:
+        run_grad_norm_check(args, init_state, device)
 
 
 if __name__ == "__main__":

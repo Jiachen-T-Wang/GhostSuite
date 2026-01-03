@@ -26,6 +26,7 @@ class GradDotProdEngine:
         loss_reduction: str = 'mean',
         use_dummy_bias: bool = False,
         dot_prod_save_path: Optional[str] = None,
+        log_grad_norms: bool = False,
     ):
         """
         Initializes the GradDotProdEngine.
@@ -44,6 +45,7 @@ class GradDotProdEngine:
         self.val_batch_size = val_batch_size
         self.loss_reduction = loss_reduction
         self.dot_prod_save_path = dot_prod_save_path
+        self.log_grad_norms = log_grad_norms
 
         self.named_params = list(
             (name, param) for (name, param) in module.named_parameters() if param.requires_grad
@@ -95,7 +97,8 @@ class GradDotProdEngine:
         autograd_grad_sample_dotprod.add_hooks(
             model=self.module,
             val_batch_size=self.val_batch_size,
-            loss_reduction=self.loss_reduction
+            loss_reduction=self.loss_reduction,
+            log_grad_norms=self.log_grad_norms
         )
 
         # Keep a reference to the engine on the optimizer for convenience
@@ -195,6 +198,8 @@ class GradDotProdEngine:
         across all layers, and logs the result to a list on the GPU.
         """
         total_dot_product_iter = None
+        total_train_norm_sq = None
+        total_val_norm_sq = 0.0
 
         for name, param in self.module.named_parameters():
 
@@ -208,9 +213,22 @@ class GradDotProdEngine:
                     else:
                         # Add subsequent dot product tensors element-wise
                         total_dot_product_iter += param.grad_dot_prod
-                
+
                 # Clean up the per-parameter attribute immediately to save memory
                 delattr(param, 'grad_dot_prod')            
+
+            # Aggregate gradient norms if available
+            if hasattr(param, 'grad_train_norm') and param.grad_train_norm is not None:
+                grad_train_norm = param.grad_train_norm.float()
+                if total_train_norm_sq is None:
+                    total_train_norm_sq = grad_train_norm
+                else:
+                    total_train_norm_sq = total_train_norm_sq + grad_train_norm
+                delattr(param, 'grad_train_norm')
+
+            if hasattr(param, 'grad_val_norm_sq') and param.grad_val_norm_sq is not None:
+                total_val_norm_sq += float(param.grad_val_norm_sq)
+                delattr(param, 'grad_val_norm_sq')
 
         if total_dot_product_iter is not None:
 
@@ -222,6 +240,11 @@ class GradDotProdEngine:
                 'iter_num': self.iter_num,
                 'batch_idx': self.batch_idx
             }
+
+            if total_train_norm_sq is not None:
+                info_this_iter['train_grad_norm'] = to_device(total_train_norm_sq.sqrt(), 'cpu')
+            if total_val_norm_sq > 0.0:
+                info_this_iter['val_grad_norm'] = math.sqrt(total_val_norm_sq)
 
             self.dot_product_log.append(info_this_iter)
 
