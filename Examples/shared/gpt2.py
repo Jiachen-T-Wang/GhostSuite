@@ -30,16 +30,11 @@ class CausalLMOutput:
 
 
 
-class LayerNorm(nn.Module):
-    """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
-
-    def __init__(self, ndim, bias):
-        super().__init__()
-        self.weight = nn.Parameter(torch.ones(ndim))
-        self.bias = nn.Parameter(torch.zeros(ndim)) if bias else None
-
-    def forward(self, input):
-        return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
+def LayerNorm(ndim, bias):
+    """Wrapper returning torch.nn.LayerNorm while allowing bias=False like the previous custom impl."""
+    ln = nn.LayerNorm(ndim, eps=1e-5, elementwise_affine=True, bias=bias)
+    return ln
+    
 
 class CausalSelfAttention(nn.Module):
 
