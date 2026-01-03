@@ -16,6 +16,13 @@
 #SBATCH --partition=pli-lc
 #SBATCH --account=ai2_data
 
+# Load proxy only when running on compute nodes (i.e., inside a Slurm job)
+if [[ -n "${SLURM_JOB_ID:-}" ]]; then
+    module load proxy/default
+else
+    echo "Skipping proxy/default module load (not on compute node)"
+fi
+
 
 
 # Default values
@@ -113,6 +120,18 @@ while [[ $# -gt 0 ]]; do
             TRAIN_DTYPE="$2"
             shift 2
             ;;
+        --wandb_project)
+            WANDB_PROJECT="$2"
+            shift 2
+            ;;
+        --wandb_run_name)
+            WANDB_RUN_NAME="$2"
+            shift 2
+            ;;
+        --wandb_mode)
+            WANDB_MODE="$2"
+            shift 2
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo "Options:"
@@ -134,6 +153,9 @@ while [[ $# -gt 0 ]]; do
             echo "  --dot_prod_save_interval INT  Dot product save interval (default: 10)"
             echo "  --model_dtype DTYPE           Model data type (default: bfloat16)"
             echo "  --train_dtype DTYPE           Training data type (default: bfloat16)"
+            echo "  --wandb_project NAME          Weights & Biases project (default: GhostSuite)"
+            echo "  --wandb_run_name NAME         Optional Weights & Biases run name"
+            echo "  --wandb_mode MODE             Weights & Biases mode (online/offline/disabled, default: online)"
             echo "  -h, --help                    Show this help message"
             exit 0
             ;;
@@ -144,6 +166,13 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+WANDB_PROJECT="${WANDB_PROJECT:-GhostSuite}"
+WANDB_MODE="${WANDB_MODE:-online}"
+if [[ -z "${WANDB_RUN_NAME:-}" ]]; then
+    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+    WANDB_RUN_NAME="${METHOD}_${ARCHITECTURE}_bs${BATCH_SIZE}_lr${LEARNING_RATE}_${TIMESTAMP}"
+fi
 
 echo "Running with parameters:"
 echo "Method: $METHOD"
@@ -164,9 +193,12 @@ echo "Eval batch size: $EVAL_BS"
 echo "Dot prod save interval: $DOT_PROD_SAVE_INTERVAL"
 echo "Model dtype: $MODEL_DTYPE"
 echo "Train dtype: $TRAIN_DTYPE"
+echo "WandB project: $WANDB_PROJECT"
+echo "WandB run name: $WANDB_RUN_NAME"
+echo "WandB mode: $WANDB_MODE"
 
 # Build the command with all parameters
-CMD="python main.py --method \"$METHOD\" --architecture \"$ARCHITECTURE\" --batch_size \"$BATCH_SIZE\" --val_batch_size \"$VAL_BATCH_SIZE\" --warmup_step \"$WARMUP_STEP\" --learning_rate \"$LEARNING_RATE\" --optimizer \"$OPTIMIZER\" --max_steps \"$MAX_STEPS\" --seed \"$SEED\" --train_set \"$TRAIN_SET\" --val_set \"$VAL_SET\" --eval_interval \"$EVAL_INTERVAL\" --eval_iter \"$EVAL_ITER\" --eval_bs \"$EVAL_BS\" --dot_prod_save_interval \"$DOT_PROD_SAVE_INTERVAL\" --model_dtype \"$MODEL_DTYPE\" --train_dtype \"$TRAIN_DTYPE\""
+CMD="python main.py --method \"$METHOD\" --architecture \"$ARCHITECTURE\" --batch_size \"$BATCH_SIZE\" --val_batch_size \"$VAL_BATCH_SIZE\" --warmup_step \"$WARMUP_STEP\" --learning_rate \"$LEARNING_RATE\" --optimizer \"$OPTIMIZER\" --max_steps \"$MAX_STEPS\" --seed \"$SEED\" --train_set \"$TRAIN_SET\" --val_set \"$VAL_SET\" --eval_interval \"$EVAL_INTERVAL\" --eval_iter \"$EVAL_ITER\" --eval_bs \"$EVAL_BS\" --dot_prod_save_interval \"$DOT_PROD_SAVE_INTERVAL\" --model_dtype \"$MODEL_DTYPE\" --train_dtype \"$TRAIN_DTYPE\" --wandb --wandb_project \"$WANDB_PROJECT\" --wandb_run_name \"$WANDB_RUN_NAME\" --wandb_mode \"$WANDB_MODE\""
 
 # Add eval_only flag if set
 if [ "$EVAL_ONLY" = true ]; then
