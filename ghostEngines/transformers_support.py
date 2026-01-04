@@ -36,6 +36,18 @@ def _add_dummy_bias(embedding: nn.Embedding):
     embedding.dummy_bias.initially_requires_grad = True
 
 
+def add_dummy_bias_to_embeddings(module: nn.Module):
+    """
+    Recursively attach a dummy bias to all ``nn.Embedding`` modules inside ``module``.
+
+    Safe to call on arbitrary modules; embeddings that already have ``dummy_bias`` are
+    left untouched.
+    """
+    for submodule in module.modules():
+        if isinstance(submodule, nn.Embedding):
+            _add_dummy_bias(submodule)
+
+
 
 def forward_swapper(module):
     """Fix incompatibility between Opacus and Hugging Face.

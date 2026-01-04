@@ -47,6 +47,9 @@ class GradDotProdEngine:
         self.dot_prod_save_path = dot_prod_save_path
         self.log_grad_norms = log_grad_norms
 
+        if use_dummy_bias:
+            transformers_support.add_dummy_bias_to_embeddings(module)
+
         self.named_params = list(
             (name, param) for (name, param) in module.named_parameters() if param.requires_grad
         )
@@ -61,18 +64,25 @@ class GradDotProdEngine:
         self.batch_idx_lst = []
 
         # Improving efficiency through dummy bias trick (if enabled)
-        # Explanation: Since we compute the weight gradient by ourself
-        # in the standard backward pass, we can set all requires_grad to False and improve efficiency.
+        # Freeze real params but keep dummy_bias trainable to preserve the graph.
+        has_dummy_bias = any("dummy_bias" in n for n, _ in module.named_parameters())
+        self._dummy_bias_active = use_dummy_bias and has_dummy_bias
+        if use_dummy_bias and not has_dummy_bias:
+            warnings.warn(
+                "use_dummy_bias=True requested but no dummy_bias parameters found; "
+                "keeping original requires_grad settings to preserve autograd."
+            )
+
         for name, param in module.named_parameters():
 
             # Store the original requires_grad status
             param.initially_requires_grad = bool(param.requires_grad)
 
-            # If we use dummy_bias trick, set all requires_grad to False
-            if use_dummy_bias:
-                param.requires_grad = False
+            if self._dummy_bias_active:
+                # Keep dummy biases trainable; freeze everything else (we fill grads manually)
+                param.requires_grad = "dummy_bias" in name
             else:
-                param.requires_grad = True
+                param.requires_grad = param.initially_requires_grad
 
         # Fix for Hugging Face model incompatibility
         transformers_support.forward_swapper(module=module)
