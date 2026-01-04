@@ -82,9 +82,6 @@ def forward_swapper(module):
 
 def swap_openai_gpt_model_forward(model: transformers.OpenAIGPTModel):
 
-    _add_dummy_bias(model.tokens_embed)
-    _add_dummy_bias(model.positions_embed)
-
     def new_forward(
         self,
         input_ids=None,
@@ -184,9 +181,6 @@ def swap_gpt2_model_forward(model: Union[transformers.GPT2Model, transformers.GP
 
     Main issue is that positional embedding's input should be duplicated.
     """
-
-    _add_dummy_bias(model.wte)
-    _add_dummy_bias(model.wpe)
 
     def new_forward(
         self,
