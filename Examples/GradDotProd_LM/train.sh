@@ -5,8 +5,8 @@
 #SBATCH --mail-type=end
 #SBATCH --mail-type=fail
 #SBATCH --mail-user=tw8948@princeton.edu
-#SBATCH --output=/scratch/gpfs/tw8948/slurm_output/slurm-%j.out
-#SBATCH --error=/scratch/gpfs/tw8948/slurm_output/slurm-%j.err
+#SBATCH --output=/scratch/gpfs/PMITTAL/tianhao/slurm_output/slurm-%j.out
+#SBATCH --error=/scratch/gpfs/PMITTAL/tianhao/slurm_output/slurm-%j.err
 #SBATCH --time=5:59:59             
 #SBATCH --nodes=1                    # Number of nodes
 #SBATCH --ntasks=1                   # Number of tasks
