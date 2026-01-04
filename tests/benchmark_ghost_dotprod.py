@@ -644,13 +644,14 @@ def main() -> None:
         mlp_ratio=args.mlp_ratio,
         rope_base=args.rope_base,
     ).to(device)
+
     ghost_model.load_state_dict(init_state)
     ghost_opt = torch.optim.AdamW(ghost_model.parameters(), lr=args.lr)
     ghost_engine = GradDotProdEngine(
         module=ghost_model,
         val_batch_size=args.val_batch_size,
         loss_reduction="mean",
-        use_dummy_bias=False,
+        use_dummy_bias=True,
         dot_prod_save_path=None,
     )
     ghost_engine.attach(ghost_opt)
