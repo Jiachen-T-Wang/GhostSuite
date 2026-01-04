@@ -31,9 +31,9 @@ def _add_dummy_bias(embedding: nn.Embedding):
 
     embedding.forward = types.MethodType(new_forward, embedding)
 
-    # Stop gradient computation for the weight
-    embedding.weight.requires_grad = False
-    embedding.dummy_bias.initially_requires_grad = True
+    # # Stop gradient computation for the weight
+    # embedding.weight.requires_grad = False
+    # embedding.dummy_bias.initially_requires_grad = True
 
 
 def add_dummy_bias_to_embeddings(module: nn.Module):

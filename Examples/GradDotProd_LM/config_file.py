@@ -140,7 +140,13 @@ class TrainingConfig:
         self.method = args.method
         self.use_wandb = args.wandb
         self.wandb_project = args.wandb_project
-        self.wandb_run_name = args.wandb_run_name
+        if args.wandb_run_name:
+            self.wandb_run_name = args.wandb_run_name
+        else:
+            current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
+            self.wandb_run_name = (
+                f"{args.method}_{args.architecture}_bs{args.batch_size}_lr{args.learning_rate}_{current_time}"
+            )
         self.wandb_mode = args.wandb_mode
         self.dynamic_val_batch = args.dynamic_val_batch
         self.log_grad_norms = args.log_grad_norms
@@ -151,8 +157,7 @@ class TrainingConfig:
         self.replay_drop_last = args.replay_drop_last
         
         # Result directory setup (larger folder)
-        current_time = datetime.now().strftime("%Y%m%d_%H%M%S")
-        self.result_folder = os.path.join(RESULTS_DIR, current_time)
+        self.result_folder = os.path.join(RESULTS_DIR, self.wandb_run_name)
         self.setup_result_directories()
         self.wandb_dir = args.wandb_dir or self.result_dir
     
