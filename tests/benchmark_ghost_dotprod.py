@@ -34,9 +34,9 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Ghost dot-product benchmark on a Llama-like Transformer LM")
     parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"],
                         help="Device to run on (auto chooses cuda if available).")
-    parser.add_argument("--batch-size", type=int, default=8,
+    parser.add_argument("--batch-size", type=int, default=16,
                         help="Total batch size per step (ghost uses train+val = batch-size).")
-    parser.add_argument("--val-batch-size", type=int, default=1,
+    parser.add_argument("--val-batch-size", type=int, default=8,
                         help="Validation batch size used for ghost dot products.")
     parser.add_argument("--seq-len", type=int, default=64, help="Sequence length.")
     parser.add_argument("--vocab-size", type=int, default=2048, help="Vocabulary size.")
@@ -53,9 +53,9 @@ def parse_args() -> argparse.Namespace:
                         help="Aggregate and log dot products (adds CPU transfers).")
     parser.add_argument("--check-correctness", action="store_true",
                         help="Validate ghost dot products against naive per-sample gradients.")
-    parser.add_argument("--check-batch-size", type=int, default=None,
+    parser.add_argument("--check-batch-size", type=int, default=16,
                         help="Total batch size for correctness check (default: min(4, batch_size)).")
-    parser.add_argument("--check-val-batch-size", type=int, default=None,
+    parser.add_argument("--check-val-batch-size", type=int, default=8,
                         help="Validation batch size for correctness check (default: min(1, val_batch_size)).")
     parser.add_argument("--check-grad-norms", action="store_true",
                         help="Validate logged train/val gradient norms against naive autograd.")
@@ -686,17 +686,12 @@ def main() -> None:
     print(f"Slowdown: {slowdown:.2f}x")
 
     del base_batches, ghost_batches, val_batch
+    del ghost_model, ghost_opt, ghost_engine
     if device == "cuda":
         torch.cuda.empty_cache()
 
-    if args.check_correctness or args.check_grad_norms:
-        del ghost_model, ghost_opt, ghost_engine
-        if device == "cuda":
-            torch.cuda.empty_cache()
-    if args.check_correctness:
-        run_correctness_check(args, init_state, device)
-    if args.check_grad_norms:
-        run_grad_norm_check(args, init_state, device)
+    run_correctness_check(args, init_state, device)
+    run_grad_norm_check(args, init_state, device)
 
 
 if __name__ == "__main__":
