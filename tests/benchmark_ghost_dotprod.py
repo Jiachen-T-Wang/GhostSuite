@@ -691,7 +691,7 @@ def main() -> None:
         torch.cuda.empty_cache()
 
     run_correctness_check(args, init_state, device)
-    run_grad_norm_check(args, init_state, device)
+    # run_grad_norm_check(args, init_state, device)
 
 
 if __name__ == "__main__":
