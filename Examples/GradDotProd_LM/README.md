@@ -40,6 +40,9 @@ cd Examples/GradDotProd_LM
 
 # Replay a previous run while filtering out negative similarity samples
 ./train.sh --method GradDotProd --replay_run_dir /path/to/old/run --replay_filter_metric dot_product --replay_filter_threshold 0.0
+
+# Replay with shuffled filtered samples
+./train.sh --method GradDotProd --replay_run_dir /path/to/old/run --replay_filter_metric dot_product --replay_filter_threshold 0.0 --replay_shuffle --replay_shuffle_seed 42
 ```
 
 ### Key Parameters
@@ -54,6 +57,8 @@ cd Examples/GradDotProd_LM
 - `--replay_filter_threshold`: Drop samples below this threshold (default 0.0 drops negatives)
 - `--replay_rebatch_size`: Batch size to repackage replayed samples (defaults to `--batch_size`)
 - `--replay_drop_last`: Drop the final incomplete batch when replay data ends
+- `--replay_shuffle`: Shuffle filtered replay samples (loads all filtered samples into memory)
+- `--replay_shuffle_seed`: Seed for replay shuffling (defaults to `--seed`)
 
 ### Key Configurations
 

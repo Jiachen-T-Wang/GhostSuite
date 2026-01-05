@@ -50,6 +50,8 @@ REPLAY_FILTER_METRIC="dot_product"
 REPLAY_FILTER_THRESHOLD=0.0
 REPLAY_REBATCH_SIZE=""
 REPLAY_DROP_LAST=false
+REPLAY_SHUFFLE=false
+REPLAY_SHUFFLE_SEED=""
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -154,6 +156,14 @@ while [[ $# -gt 0 ]]; do
             REPLAY_DROP_LAST=true
             shift 1
             ;;
+        --replay_shuffle)
+            REPLAY_SHUFFLE=true
+            shift 1
+            ;;
+        --replay_shuffle_seed)
+            REPLAY_SHUFFLE_SEED="$2"
+            shift 2
+            ;;
         --wandb_project)
             WANDB_PROJECT="$2"
             shift 2
@@ -194,6 +204,8 @@ while [[ $# -gt 0 ]]; do
             echo "  --replay_filter_threshold X   Drop samples below threshold (default: 0.0)"
             echo "  --replay_rebatch_size SIZE    Rebatch filtered samples to this size (default: batch_size)"
             echo "  --replay_drop_last            Drop final incomplete batch from replay data"
+            echo "  --replay_shuffle              Shuffle filtered replay samples (loads all samples into memory)"
+            echo "  --replay_shuffle_seed SEED    Seed for replay shuffle (defaults to --seed)"
             echo "  --wandb_project NAME          Weights & Biases project (default: GhostSuite)"
             echo "  --wandb_run_name NAME         Optional Weights & Biases run name"
             echo "  --wandb_mode MODE             Weights & Biases mode (online/offline/disabled, default: online)"
@@ -241,6 +253,8 @@ echo "Replay filter metric: $REPLAY_FILTER_METRIC"
 echo "Replay filter threshold: $REPLAY_FILTER_THRESHOLD"
 echo "Replay rebatch size: ${REPLAY_REBATCH_SIZE:-default}"
 echo "Replay drop last: $REPLAY_DROP_LAST"
+echo "Replay shuffle: $REPLAY_SHUFFLE"
+echo "Replay shuffle seed: ${REPLAY_SHUFFLE_SEED:-default}"
 echo "WandB project: $WANDB_PROJECT"
 echo "WandB run name: $WANDB_RUN_NAME"
 echo "WandB mode: $WANDB_MODE"
@@ -260,6 +274,12 @@ if [ -n "$REPLAY_RUN_DIR" ]; then
     fi
     if [ "$REPLAY_DROP_LAST" = true ]; then
         CMD="$CMD --replay_drop_last"
+    fi
+    if [ "$REPLAY_SHUFFLE" = true ]; then
+        CMD="$CMD --replay_shuffle"
+    fi
+    if [ -n "$REPLAY_SHUFFLE_SEED" ]; then
+        CMD="$CMD --replay_shuffle_seed \"$REPLAY_SHUFFLE_SEED\""
     fi
 fi
 
