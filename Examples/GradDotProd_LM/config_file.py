@@ -79,6 +79,10 @@ def parse_arguments():
                         help='Optional rebatch size for replayed samples; defaults to current batch_size')
     parser.add_argument('--replay_drop_last', action='store_true',
                         help='Drop the final incomplete batch when replay data is exhausted')
+    parser.add_argument('--replay_shuffle', action='store_true',
+                        help='Shuffle filtered replay samples (loads all filtered samples into memory)')
+    parser.add_argument('--replay_shuffle_seed', type=int, default=None,
+                        help='Seed for replay shuffling; defaults to --seed when enabled')
 
     return parser.parse_args()
 
@@ -155,6 +159,10 @@ class TrainingConfig:
         self.replay_filter_threshold = args.replay_filter_threshold
         self.replay_rebatch_size = args.replay_rebatch_size or self.batch_size
         self.replay_drop_last = args.replay_drop_last
+        self.replay_shuffle = args.replay_shuffle
+        self.replay_shuffle_seed = args.replay_shuffle_seed
+        if self.replay_shuffle and self.replay_shuffle_seed is None:
+            self.replay_shuffle_seed = self.seed
         
         # Result directory setup (larger folder)
         self.result_folder = os.path.join(RESULTS_DIR, self.wandb_run_name)
