@@ -1,4 +1,0 @@
-# Plan: token_budget-aware loader
-- Domain token shares from training .bin sizes (uint16 tokens, total 94,760,607,020): Pile-CC 18.3514%; Github 14.8294%; StackExchange 7.7230%; HackerNews 0.7164%; Wikipedia (en) 4.1590%; ArXiv 13.8683%; DM Mathematics 2.5498%; PubMed Abstracts 2.9530%; PubMed Central 19.5819%; NIH ExPorter 0.2624%; EuroParl 1.2107%; PhilPapers 0.4462%; USPTO Backgrounds 3.4316%; FreeLaw 7.2657%; Gutenberg (PG-19) 2.4690%; Enron Emails 0.1820%.
-- Update `Examples/shared/dataloader.py::load_all_data` to accept `token_budget`, derive proportional per-domain token targets from the percentages above (capped at available tokens), and only map that many train tokens per domain while leaving default behavior intact when no budget is provided.
-- Add small helpers/error checks so a tiny budget that rounds to zero for every domain is flagged early, keeping val/test loading unchanged and preserving existing call sites.
