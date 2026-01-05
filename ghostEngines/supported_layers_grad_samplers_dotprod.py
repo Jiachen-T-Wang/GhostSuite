@@ -123,33 +123,47 @@ def _compute_linear_dot_product(
         weight_val_norm_sq = (grad_val_full.float() ** 2).sum()
 
     # --- Weight dot product ---
+    # Setup: flatten (Batch, T) -> N to simplify linear algebra
+    d = A_bf16.size(-1)
+    p = B_bf16.size(-1)
+
+    A_flat = A_bf16.reshape(-1, d)
+    B_flat = B_bf16.reshape(-1, p)
+
+    # Split Train / Val
+    # N_train = train_bs * T
+    tokens_per_sample = A_bf16.numel() // (total_bs * d)
+    split_idx = train_bs * tokens_per_sample
+
+    A_train = A_flat[:split_idx]  # [N_train, d]
+    A_val = A_flat[split_idx:]    # [N_val, d]
+    B_train = B_flat[:split_idx]  # [N_train, p]
+    B_val = B_flat[split_idx:]    # [N_val, p]
+
     if layer.use_ghost_computation:
-        # Flatten any non-batch, non-feature dims into a single token dimension
-        d = A_bf16.size(-1)
-        p = B_bf16.size(-1)
+        # --- PATH 1: Memory Efficient (The "Math Trick") ---
+        # 1. Compute Validation Gradient Summary (d x p)
+        val_interaction = torch.matmul(A_val.T, B_val)
 
-        # Reshape to [batch, T, feat]
-        T = int(A_bf16.numel() // (total_bs * d))
-        A_bf16 = A_bf16.reshape(total_bs, T, d)
-        B_bf16 = B_bf16.reshape(total_bs, T, p)
+        # 2. Project Training Gradients (N_train x d)
+        B_projected = torch.matmul(B_train, val_interaction.T)
 
-        # Split train/val
-        A_train = A_bf16[:train_bs].reshape(-1, d).contiguous()  # [(train_bs·T), d]
-        A_val = A_bf16[train_bs:].reshape(-1, d).contiguous()    # [(val_bs  ·T), d]
-        B_train = B_bf16[:train_bs].reshape(-1, p).contiguous()  # [(train_bs·T), p]
-        B_val = B_bf16[train_bs:].reshape(-1, p).contiguous()    # [(val_bs  ·T), p]
+        # 3. Element-wise Interaction
+        token_contrib = (A_train * B_projected).sum(dim=1)
 
-        # Two GEMMs → (train_tokens × val_tokens)
-        a_dot = torch.matmul(A_train, A_val.T)
-        b_dot = torch.matmul(B_train, B_val.T)
-
-        # Hadamard + reduce over validation tokens; fold back token dimension
-        token_contrib = (a_dot * b_dot).sum(dim=1, dtype=torch.float32)
-        layer.weight.grad_dot_prod = token_contrib.reshape(train_bs, T).sum(dim=1)
+        # 4. Fold back to [Batch, T] and reduce
+        layer.weight.grad_dot_prod = token_contrib.view(train_bs, tokens_per_sample).sum(dim=1)
     else:
-        # Materialize grads and compute Frobenius inner product
-        grad_train = torch.einsum('b...d,b...p->bpd', A_train_full, B_train_full)
-        grad_val = torch.einsum('...d,...p->dp', A_val_full.sum(dim=0), B_val_full.sum(dim=0))
+        # --- PATH 2: Compute Efficient (Materialized Grads) ---
+        # 1. Compute Validation Gradient (d x p)
+        grad_val = torch.einsum('nd,np->dp', A_val, B_val)
+
+        # 2. Compute Per-Sample Training Gradients (Batch x p x d)
+        A_train_3d = A_train.view(train_bs, tokens_per_sample, d)
+        B_train_3d = B_train.view(train_bs, tokens_per_sample, p)
+        grad_train = torch.einsum('btd,btp->bpd', A_train_3d, B_train_3d)
+
+        # 3. Frobenius Inner Product
         layer.weight.grad_dot_prod = torch.einsum('dp,bpd->b', grad_val, grad_train)
 
     # --- Bias dot product ---
