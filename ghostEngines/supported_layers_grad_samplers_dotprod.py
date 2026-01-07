@@ -429,6 +429,77 @@ def _compute_layernorm_train_grad(
     return None
 
 
+def _compute_rmsnorm_dot_product(
+    layer: nn.RMSNorm,
+    A: torch.Tensor,
+    B: torch.Tensor,
+    val_batch_size: int,
+    log_grad_norms: bool = False,
+):
+    """Compute gradient dot-product for nn.RMSNorm (weight-only)."""
+    A = A.detach()
+    B = B.detach()
+
+    A = A.to(torch.bfloat16)
+    B = B.to(torch.bfloat16)
+
+    train_batch_size = A.size(0) - val_batch_size
+    if train_batch_size <= 0:
+        return
+
+    A_train, A_val = torch.split(A, [train_batch_size, val_batch_size], dim=0)
+    B_train, B_val = torch.split(B, [train_batch_size, val_batch_size], dim=0)
+
+    eps = getattr(layer, "eps", 1e-6)
+    rms_train = torch.sqrt((A_train.float() ** 2).mean(dim=-1, keepdim=True) + eps)
+    rms_val = torch.sqrt((A_val.float() ** 2).mean(dim=-1, keepdim=True) + eps)
+
+    norm_A_train = (A_train.float() / rms_train).to(torch.bfloat16)
+    norm_A_val = (A_val.float() / rms_val).to(torch.bfloat16)
+
+    grad_weight_train = B_train * norm_A_train
+    grad_weight_val = B_val * norm_A_val
+
+    sum_dims_train = list(range(1, grad_weight_train.dim() - 1))
+    per_sample_grad_weight = grad_weight_train.sum(dim=sum_dims_train) if sum_dims_train else grad_weight_train
+
+    sum_dims_val = list(range(grad_weight_val.dim() - 1))
+    total_grad_weight_val = grad_weight_val.sum(dim=sum_dims_val)
+
+    layer.weight.grad_dot_prod = torch.einsum(
+        "bf,f->b", per_sample_grad_weight.float(), total_grad_weight_val.float()
+    )
+
+    if log_grad_norms:
+        layer.weight.grad_train_norm = (per_sample_grad_weight.float() ** 2).sum(dim=1)
+        layer.weight.grad_val_norm_sq = (total_grad_weight_val.float() ** 2).sum()
+
+
+def _compute_rmsnorm_train_grad(
+    layer: nn.RMSNorm,
+    A: torch.Tensor,
+    B: torch.Tensor,
+    val_batch_size: int,
+):
+    """Compute and apply averaged training gradient for nn.RMSNorm weight."""
+    train_batch_size = A.size(0) - val_batch_size
+    if train_batch_size <= 0:
+        raise ValueError("No training samples to compute gradients, check batch sizes.")
+
+    A_train, _ = torch.split(A, [train_batch_size, val_batch_size], dim=0)
+    B_train, _ = torch.split(B, [train_batch_size, val_batch_size], dim=0)
+
+    eps = getattr(layer, "eps", 1e-6)
+    rms_train = torch.sqrt((A_train.float() ** 2).mean(dim=-1, keepdim=True) + eps)
+    norm_A_train = (A_train.float() / rms_train).to(B_train.dtype)
+
+    grad_weight = (B_train * norm_A_train).sum(dim=list(range(A_train.dim() - 1)))
+    grad_weight = grad_weight.to(layer.weight.dtype)
+    grad_weight /= train_batch_size
+
+    return grad_weight
+
+
 def _compute_Conv1D_dot_product(
     layer: nn.Linear,
     A: torch.Tensor,
@@ -712,6 +783,7 @@ _supported_layers_dotprod = {
     nn.Linear: (_compute_linear_dot_product, _compute_linear_train_grad),
     nn.Embedding: (_compute_embedding_dot_product, _compute_embedding_train_grad),
     nn.LayerNorm: (_compute_layernorm_dot_product, _compute_layernorm_train_grad),
+    nn.RMSNorm: (_compute_rmsnorm_dot_product, _compute_rmsnorm_train_grad),
     transformers.pytorch_utils.Conv1D: (_compute_Conv1D_dot_product, _compute_Conv1D_train_grad),
     nn.Conv2d: (_compute_conv2d_dot_product, _compute_conv2d_train_grad),
 }
