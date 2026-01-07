@@ -437,25 +437,24 @@ def _compute_rmsnorm_dot_product(
     log_grad_norms: bool = False,
 ):
     """Compute gradient dot-product for nn.RMSNorm (weight-only)."""
+    """
+    A: [batch, seq, dim] (normalized by RMSNorm)
+    B: [batch, seq, dim] (backpropagated gradients)
+    """
     A = A.detach()
     B = B.detach()
 
-    A = A.to(torch.bfloat16)
-    B = B.to(torch.bfloat16)
-
     train_batch_size = A.size(0) - val_batch_size
-    if train_batch_size <= 0:
-        return
 
     A_train, A_val = torch.split(A, [train_batch_size, val_batch_size], dim=0)
     B_train, B_val = torch.split(B, [train_batch_size, val_batch_size], dim=0)
 
-    eps = getattr(layer, "eps", 1e-6)
+    eps = getattr(layer, "eps", 1e-5)
     rms_train = torch.sqrt((A_train.float() ** 2).mean(dim=-1, keepdim=True) + eps)
     rms_val = torch.sqrt((A_val.float() ** 2).mean(dim=-1, keepdim=True) + eps)
 
-    norm_A_train = (A_train.float() / rms_train).to(torch.bfloat16)
-    norm_A_val = (A_val.float() / rms_val).to(torch.bfloat16)
+    norm_A_train = (A_train.float() / rms_train)
+    norm_A_val = (A_val.float() / rms_val)
 
     grad_weight_train = B_train * norm_A_train
     grad_weight_val = B_val * norm_A_val
