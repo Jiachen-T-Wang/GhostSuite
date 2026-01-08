@@ -81,9 +81,6 @@ def _compute_linear_dot_product(
 ):
     """Computes the gradient dot-product for an nn.Linear layer."""
 
-    # check A and B's dtype
-    print(f"[hook] _compute_linear_dot_product for {layer.name}: A dtype: {A.dtype}, B dtype: {B.dtype}")
-    
     # Detach and Cast
     A = A.detach()
     B = B.detach()
@@ -444,11 +441,6 @@ def _compute_rmsnorm_dot_product(
     A: [batch, seq, dim] (normalized by RMSNorm)
     B: [batch, seq, dim] (backpropagated gradients)
     """
-
-    # check A and B's dtype
-    print(f"A dtype: {A.dtype}, B dtype: {B.dtype}")
-
-
 
     A = A.detach()
     B = B.detach()

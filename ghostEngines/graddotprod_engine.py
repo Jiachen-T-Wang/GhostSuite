@@ -4,6 +4,7 @@ import types
 from typing import Dict, Optional, Sequence, Union
 import os
 import warnings
+from contextlib import contextmanager
 
 import torch
 from torch import nn
@@ -46,6 +47,7 @@ class GradDotProdEngine:
         self.loss_reduction = loss_reduction
         self.dot_prod_save_path = dot_prod_save_path
         self.log_grad_norms = log_grad_norms
+        self._saved_tensor_mgr = None
 
         if use_dummy_bias:
             transformers_support.add_dummy_bias_to_embeddings(module)
@@ -63,8 +65,7 @@ class GradDotProdEngine:
         # A list to log batch indices corresponding to the dot products
         self.batch_idx_lst = []
 
-        # Improving efficiency through dummy bias trick (if enabled)
-        # Freeze real params but keep dummy_bias trainable to preserve the graph.
+        # Dummy bias is optional; keep original requires_grad so autograd saves inputs.
         has_dummy_bias = any("dummy_bias" in n for n, _ in module.named_parameters())
         self._dummy_bias_active = use_dummy_bias and has_dummy_bias
         if use_dummy_bias and not has_dummy_bias:
@@ -78,11 +79,7 @@ class GradDotProdEngine:
             # Store the original requires_grad status
             param.initially_requires_grad = bool(param.requires_grad)
 
-            if self._dummy_bias_active:
-                # Keep dummy biases trainable; freeze everything else (we fill grads manually)
-                param.requires_grad = "dummy_bias" in name
-            else:
-                param.requires_grad = param.initially_requires_grad
+            param.requires_grad = param.initially_requires_grad
 
         # Fix for Hugging Face model incompatibility
         transformers_support.forward_swapper(module=module)
@@ -110,6 +107,7 @@ class GradDotProdEngine:
             loss_reduction=self.loss_reduction,
             log_grad_norms=self.log_grad_norms
         )
+        self._saved_tensor_mgr = getattr(self.module, "_ghost_saved_tensor_mgr", None)
 
         # Keep a reference to the engine on the optimizer for convenience
         optimizer.grad_dot_prod_engine = self
@@ -127,6 +125,7 @@ class GradDotProdEngine:
         # Remove the hooks from the model
         autograd_grad_sample_dotprod.remove_hooks(self.module)
         self.module.zero_grad()
+        self._saved_tensor_mgr = None
 
         # Clean up custom attributes from all parameters
         for param in self.module.parameters():
@@ -200,6 +199,21 @@ class GradDotProdEngine:
     def aggregate_and_log(self):
         """Aggregate per-layer dot products and append to the log list."""
         self._aggregate_and_log_dot_products()
+
+    @contextmanager
+    def saved_tensors_context(self):
+        """Enable saved tensor capture for the forward/backward pass."""
+        if self._saved_tensor_mgr is None:
+            raise RuntimeError("Saved tensor manager not initialized; call attach() first.")
+        self._saved_tensor_mgr.enable()
+        try:
+            with torch.autograd.graph.saved_tensors_hooks(
+                self._saved_tensor_mgr.pack_hook,
+                self._saved_tensor_mgr.unpack_hook,
+            ):
+                yield
+        finally:
+            self._saved_tensor_mgr.disable()
 
 
     def _aggregate_and_log_dot_products(self):
