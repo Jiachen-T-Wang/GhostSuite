@@ -106,10 +106,11 @@ for iteration in range(max_steps):
     # Prepare input (concatenates val data for GradDotProd method)
     X_forward, Y_forward = ghost_engine.prepare_forward_input(X_train, Y_train)
     
-    # Forward and backward pass
-    outputs = model(input_ids=X_forward, labels=Y_forward)
-    loss = outputs.loss
-    loss.backward()
+    # Forward and backward pass (capture saved tensors for GradDotProd)
+    with ghost_engine.saved_tensors_context():
+        outputs = model(input_ids=X_forward, labels=Y_forward)
+        loss = outputs.loss
+        loss.backward()
     
     # Ghost engine gradient processing
     ghost_engine.prepare_gradients()    # Move accumulated gradients to .grad
