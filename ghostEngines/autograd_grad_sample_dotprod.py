@@ -92,7 +92,10 @@ def remove_hooks(model: nn.Module):
 
 def _capture_activations(layer: nn.Module, inputs: Tuple, outputs: Tuple):
     """Forward hook handler captures and saves activations."""
+
+    print(f"[hook] _capture_activations for {layer.name}: inputs[0] dtype: {inputs[0].dtype}")
     layer.activations = inputs[0].detach()
+    print(f"[hook] _capture_activations for {layer.name}: layer.activations dtype: {layer.activations.dtype}")
 
 
 def _scale_logged_grad_norms(layer: nn.Module, grad_scale: float) -> None:
@@ -134,6 +137,9 @@ def _prepare_sample_grad_or_dotprod(
     # The function to compute the dot product is retrieved from the support dictionary.
     # We assume the second function returned is for computing the training gradient.
     compute_layer_dotprod, _ = _supported_layers_dotprod.get(type(layer))
+
+    # check layer.activations and backprops's dtype
+    print(f"[hook] _prepare_sample_grad_or_dotprod for {layer.name}: activations dtype: {layer.activations.dtype}, backprops dtype: {backprops.dtype}")
 
     # This logic correctly handles mixed precision.
     if layer.activations is not None and layer.activations.dtype != backprops.dtype:

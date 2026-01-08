@@ -79,7 +79,10 @@ def _compute_linear_dot_product(
     val_batch_size: int,
     log_grad_norms: bool = False
 ):
-    # ... [Input checks and Setup remain the same] ...
+    """Computes the gradient dot-product for an nn.Linear layer."""
+
+    # check A and B's dtype
+    print(f"[hook] _compute_linear_dot_product for {layer.name}: A dtype: {A.dtype}, B dtype: {B.dtype}")
     
     # Detach and Cast
     A = A.detach()
@@ -441,6 +444,12 @@ def _compute_rmsnorm_dot_product(
     A: [batch, seq, dim] (normalized by RMSNorm)
     B: [batch, seq, dim] (backpropagated gradients)
     """
+
+    # check A and B's dtype
+    print(f"A dtype: {A.dtype}, B dtype: {B.dtype}")
+
+
+
     A = A.detach()
     B = B.detach()
 
@@ -456,8 +465,9 @@ def _compute_rmsnorm_dot_product(
     norm_A_train = (A_train.float() / rms_train)
     norm_A_val = (A_val.float() / rms_val)
 
-    grad_weight_train = B_train * norm_A_train
-    grad_weight_val = B_val * norm_A_val
+    # Accumulate in fp32 for numerical stability.
+    grad_weight_train = B_train.float() * norm_A_train
+    grad_weight_val = B_val.float() * norm_A_val
 
     sum_dims_train = list(range(1, grad_weight_train.dim() - 1))
     per_sample_grad_weight = grad_weight_train.sum(dim=sum_dims_train) if sum_dims_train else grad_weight_train
@@ -488,7 +498,7 @@ def _compute_rmsnorm_train_grad(
     A_train, _ = torch.split(A, [train_batch_size, val_batch_size], dim=0)
     B_train, _ = torch.split(B, [train_batch_size, val_batch_size], dim=0)
 
-    eps = getattr(layer, "eps", 1e-6)
+    eps = getattr(layer, "eps", 1e-5)
     rms_train = torch.sqrt((A_train.float() ** 2).mean(dim=-1, keepdim=True) + eps)
     norm_A_train = (A_train.float() / rms_train).to(B_train.dtype)
 
