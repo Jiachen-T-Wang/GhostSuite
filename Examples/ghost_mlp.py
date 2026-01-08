@@ -95,10 +95,11 @@ def demo_train_with_engine() -> None:
         # Optional: store current train batch metadata for aggregation utilities
         engine.attach_train_batch(X_train=X_tr, Y_train=Y_tr, iter_num=step, batch_idx=0)
 
-        logits = model(X_cat)
-        loss = F.cross_entropy(logits, Y_cat, reduction="mean")
         optimizer.zero_grad(set_to_none=True)
-        loss.backward()
+        with engine.saved_tensors_context():
+            logits = model(X_cat)
+            loss = F.cross_entropy(logits, Y_cat, reduction="mean")
+            loss.backward()
 
         # Print per-parameter gradient dot products this iteration (before aggregation clears them)
         print(f"\n[Iter {step}] Per-parameter gradient dot products (val ⋅ train):")

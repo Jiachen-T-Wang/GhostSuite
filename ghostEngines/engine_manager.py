@@ -6,6 +6,7 @@ based on configuration, removing the need for method-specific code in training l
 """
 
 import os
+from contextlib import nullcontext
 from typing import Optional, Union, Dict, Any
 
 import torch
@@ -149,6 +150,12 @@ class GhostEngineManager:
         """Prepare gradients after backward pass (if applicable)."""
         if self.engine and hasattr(self.engine, 'prepare_gradients'):
             self.engine.prepare_gradients()
+
+    def saved_tensors_context(self):
+        """Context manager for saved tensor capture when supported."""
+        if self.engine and hasattr(self.engine, "saved_tensors_context"):
+            return self.engine.saved_tensors_context()
+        return nullcontext()
     
     def aggregate_and_log(self):
         """Aggregate and log metrics after optimizer step (if applicable)."""

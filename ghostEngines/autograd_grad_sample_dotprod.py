@@ -1,10 +1,9 @@
-from typing import Tuple
+from typing import Dict, List, Optional, Tuple
+import math
+import threading
 
 import torch
 import torch.nn as nn
-import transformers
-
-import time
 
 # Assuming these are defined in the dot-product specific samplers file
 from .supported_layers_grad_samplers_dotprod import (
@@ -20,6 +19,160 @@ def requires_grad(module: nn.Module) -> bool:
     return any(p.initially_requires_grad for p in module.parameters())
 
 
+class _NamedSavedTensorManager:
+    """Captures autograd-saved tensors using a scope stack."""
+
+    def __init__(self) -> None:
+        self._local = threading.local()
+
+    def _get_stack(self) -> List[str]:
+        if not hasattr(self._local, "stack"):
+            self._local.stack = []
+        return self._local.stack
+
+    def _get_captured(self) -> Dict[str, List[torch.Tensor]]:
+        if not hasattr(self._local, "captured"):
+            self._local.captured = {}
+        return self._local.captured
+
+    def _get_captured_all(self) -> List[torch.Tensor]:
+        if not hasattr(self._local, "captured_all"):
+            self._local.captured_all = []
+        return self._local.captured_all
+
+    def _get_used(self) -> set[int]:
+        if not hasattr(self._local, "used_ids"):
+            self._local.used_ids = set()
+        return self._local.used_ids
+
+    def _get_enabled(self) -> bool:
+        if not hasattr(self._local, "enabled"):
+            self._local.enabled = False
+        return self._local.enabled
+
+    def enable(self) -> None:
+        self._local.enabled = True
+        self._local.stack = []
+        self._local.captured = {}
+        self._local.captured_all = []
+        self._local.used_ids = set()
+
+    def disable(self) -> None:
+        self._local.enabled = False
+        self._local.stack = []
+        self._local.captured = {}
+        self._local.captured_all = []
+        self._local.used_ids = set()
+
+    def push(self, name: str) -> None:
+        if not self._get_enabled():
+            return
+        self._get_stack().append(name)
+
+    def pop(self, name: str) -> None:
+        if not self._get_enabled():
+            return
+        stack = self._get_stack()
+        if not stack:
+            return
+        if stack[-1] == name:
+            stack.pop()
+            return
+        # Fall back to removing the most recent matching scope if present.
+        for idx in range(len(stack) - 1, -1, -1):
+            if stack[idx] == name:
+                stack.pop(idx)
+                return
+
+    def pack_hook(self, x: torch.Tensor) -> torch.Tensor:
+        if not self._get_enabled():
+            return x
+        stack = self._get_stack()
+        self._get_captured_all().append(x)
+        if stack:
+            name = stack[-1]
+            captured = self._get_captured()
+            captured.setdefault(name, []).append(x)
+        return x
+
+    def unpack_hook(self, x: torch.Tensor) -> torch.Tensor:
+        return x
+
+    def resolve_activation(self, layer: nn.Module) -> Optional[torch.Tensor]:
+        name = getattr(layer, "name", None)
+        if not name:
+            return None
+        captured = self._get_captured().get(name, [])
+        if not captured:
+            captured = self._get_captured_all()
+        if not captured:
+            return None
+
+        params = list(layer.parameters(recurse=False))
+        param_ids = {id(p) for p in params}
+
+        def _is_param_view(tensor: torch.Tensor) -> bool:
+            base = getattr(tensor, "_base", None)
+            return base is not None and id(base) in param_ids
+
+        used_ids = self._get_used()
+        non_param = [
+            t for t in captured
+            if id(t) not in param_ids and not _is_param_view(t) and id(t) not in used_ids
+        ]
+        if not non_param:
+            return None
+
+        input_shape = getattr(layer, "_ghost_input_shape", None)
+        flat_shape = None
+        if input_shape is not None and len(input_shape) > 1:
+            flat_shape = (int(math.prod(input_shape[:-1])), input_shape[-1])
+
+        if input_shape is not None:
+            matching = [t for t in non_param if tuple(t.shape) == tuple(input_shape)]
+            if len(matching) == 1:
+                chosen = matching[0]
+                used_ids.add(id(chosen))
+                return chosen
+            if matching:
+                for tensor in matching:
+                    if not tensor.is_leaf:
+                        used_ids.add(id(tensor))
+                        return tensor
+                chosen = matching[0]
+                used_ids.add(id(chosen))
+                return chosen
+        if flat_shape is not None:
+            flat_matching = [t for t in non_param if tuple(t.shape) == tuple(flat_shape)]
+            if len(flat_matching) == 1:
+                chosen = flat_matching[0]
+                used_ids.add(id(chosen))
+                return chosen
+            if flat_matching:
+                for tensor in flat_matching:
+                    if not tensor.is_leaf:
+                        used_ids.add(id(tensor))
+                        return tensor
+                chosen = flat_matching[0]
+                used_ids.add(id(chosen))
+                return chosen
+        for tensor in non_param:
+            if not tensor.is_leaf:
+                used_ids.add(id(tensor))
+                return tensor
+
+        if len(non_param) == 1:
+            chosen = non_param[0]
+            used_ids.add(id(chosen))
+            return chosen
+
+        return None
+
+    def clear_layer(self, name: str) -> None:
+        captured = self._get_captured()
+        captured.pop(name, None)
+
+
 def add_hooks(
     model: nn.Module,
     val_batch_size: int,
@@ -31,7 +184,7 @@ def add_hooks(
     training gradients.
 
     The hooks will:
-    1. Save activations into ``layer.activations`` during the forward pass.
+    1. Capture autograd-saved activations via saved_tensors_hooks for each layer.
     2. In the backward pass:
         a. Compute the gradient dot product between the validation batch
            gradient and each training sample's gradient.
@@ -48,13 +201,25 @@ def add_hooks(
         raise ValueError("Trying to add hooks twice to the same model")
 
     handles = []
+    manager = _NamedSavedTensorManager()
+    model._ghost_saved_tensor_mgr = manager
 
     for name, layer in model.named_modules():
         if type(layer) in _supported_layers_dotprod and requires_grad(layer):
 
-            handles.append(layer.register_forward_hook(_capture_activations))
-
             layer.name = name
+            layer._ghost_saved_tensor_mgr = manager
+
+            def _push_scope(this_layer, inputs):
+                manager.push(this_layer.name)
+                if manager._get_enabled() and inputs and hasattr(inputs[0], "shape"):
+                    this_layer._ghost_input_shape = tuple(inputs[0].shape)
+
+            def _pop_scope(this_layer, inputs, output):
+                manager.pop(this_layer.name)
+
+            handles.append(layer.register_forward_pre_hook(_push_scope))
+            handles.append(layer.register_forward_hook(_pop_scope))
 
             def backward_hook(this_layer, grad_input, grad_output):
 
@@ -88,14 +253,14 @@ def remove_hooks(model: nn.Module):
         for handle in model.autograd_grad_sample_hooks:
             handle.remove()
         del model.autograd_grad_sample_hooks
-
-
-def _capture_activations(layer: nn.Module, inputs: Tuple, outputs: Tuple):
-    """Forward hook handler captures and saves activations."""
-
-    print(f"[hook] _capture_activations for {layer.name}: inputs[0] dtype: {inputs[0].dtype}")
-    layer.activations = inputs[0].detach()
-    print(f"[hook] _capture_activations for {layer.name}: layer.activations dtype: {layer.activations.dtype}")
+    if hasattr(model, "_ghost_saved_tensor_mgr"):
+        model._ghost_saved_tensor_mgr.disable()
+        delattr(model, "_ghost_saved_tensor_mgr")
+    for _, layer in model.named_modules():
+        if hasattr(layer, "_ghost_saved_tensor_mgr"):
+            delattr(layer, "_ghost_saved_tensor_mgr")
+        if hasattr(layer, "_ghost_input_shape"):
+            delattr(layer, "_ghost_input_shape")
 
 
 def _scale_logged_grad_norms(layer: nn.Module, grad_scale: float) -> None:
@@ -131,16 +296,32 @@ def _prepare_sample_grad_or_dotprod(
     backprops = grad_output[0].detach()
     grad_scale = float(backprops.shape[0]) if loss_reduction == 'mean' else 1.0
 
-    if not hasattr(layer, 'activations'):
-        layer.activations = None
+    if not hasattr(layer, 'activations') or layer.activations is None:
+        manager = getattr(layer, "_ghost_saved_tensor_mgr", None)
+        if manager is None:
+            raise RuntimeError(
+                f"Missing saved tensor manager for layer {getattr(layer, 'name', '<unnamed>')}."
+            )
+        activation = manager.resolve_activation(layer)
+        if activation is None:
+            raise RuntimeError(
+                f"Failed to capture saved activations for layer {getattr(layer, 'name', '<unnamed>')}. "
+                "Ensure the saved_tensors_hooks context is active around forward/backward."
+            )
+        input_shape = getattr(layer, "_ghost_input_shape", None)
+        if input_shape is not None and hasattr(activation, "shape"):
+            flat_shape = None
+            if len(input_shape) > 1:
+                flat_shape = (int(math.prod(input_shape[:-1])), input_shape[-1])
+            if flat_shape is not None and tuple(activation.shape) == tuple(flat_shape):
+                activation = activation.reshape(input_shape)
+        layer.activations = activation
 
     # The function to compute the dot product is retrieved from the support dictionary.
     # We assume the second function returned is for computing the training gradient.
     compute_layer_dotprod, _ = _supported_layers_dotprod.get(type(layer))
 
     # check layer.activations and backprops's dtype
-    print(f"[hook] _prepare_sample_grad_or_dotprod for {layer.name}: activations dtype: {layer.activations.dtype}, backprops dtype: {backprops.dtype}")
-
     # This logic correctly handles mixed precision.
     if layer.activations is not None and layer.activations.dtype != backprops.dtype:
         common_type = torch.promote_types(layer.activations.dtype, backprops.dtype)
@@ -227,6 +408,11 @@ def _apply_train_grad(
         del layer.activations
     if hasattr(layer, 'backprops'):
         del layer.backprops
+    if hasattr(layer, '_ghost_input_shape'):
+        delattr(layer, '_ghost_input_shape')
+    manager = getattr(layer, "_ghost_saved_tensor_mgr", None)
+    if manager is not None and hasattr(layer, "name"):
+        manager.clear_layer(layer.name)
 
 
 def _compute_train_grad_bias(
