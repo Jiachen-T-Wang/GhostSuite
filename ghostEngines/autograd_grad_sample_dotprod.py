@@ -24,45 +24,35 @@ class _NamedSavedTensorManager:
 
     def __init__(self) -> None:
         self._local = threading.local()
+        self._lock = threading.Lock()
+        self._enabled: bool = False
+        self._captured: Dict[str, List[torch.Tensor]] = {}
+        self._captured_all: List[torch.Tensor] = []
+        self._used_ids: set[int] = set()
 
     def _get_stack(self) -> List[str]:
         if not hasattr(self._local, "stack"):
             self._local.stack = []
         return self._local.stack
 
-    def _get_captured(self) -> Dict[str, List[torch.Tensor]]:
-        if not hasattr(self._local, "captured"):
-            self._local.captured = {}
-        return self._local.captured
-
-    def _get_captured_all(self) -> List[torch.Tensor]:
-        if not hasattr(self._local, "captured_all"):
-            self._local.captured_all = []
-        return self._local.captured_all
-
-    def _get_used(self) -> set[int]:
-        if not hasattr(self._local, "used_ids"):
-            self._local.used_ids = set()
-        return self._local.used_ids
-
     def _get_enabled(self) -> bool:
-        if not hasattr(self._local, "enabled"):
-            self._local.enabled = False
-        return self._local.enabled
+        return self._enabled
 
     def enable(self) -> None:
-        self._local.enabled = True
-        self._local.stack = []
-        self._local.captured = {}
-        self._local.captured_all = []
-        self._local.used_ids = set()
+        with self._lock:
+            self._enabled = True
+            self._captured = {}
+            self._captured_all = []
+            self._used_ids = set()
+        self._get_stack().clear()
 
     def disable(self) -> None:
-        self._local.enabled = False
-        self._local.stack = []
-        self._local.captured = {}
-        self._local.captured_all = []
-        self._local.used_ids = set()
+        with self._lock:
+            self._enabled = False
+            self._captured = {}
+            self._captured_all = []
+            self._used_ids = set()
+        self._get_stack().clear()
 
     def push(self, name: str) -> None:
         if not self._get_enabled():
@@ -88,11 +78,11 @@ class _NamedSavedTensorManager:
         if not self._get_enabled():
             return x
         stack = self._get_stack()
-        self._get_captured_all().append(x)
-        if stack:
-            name = stack[-1]
-            captured = self._get_captured()
-            captured.setdefault(name, []).append(x)
+        with self._lock:
+            self._captured_all.append(x)
+            if stack:
+                name = stack[-1]
+                self._captured.setdefault(name, []).append(x)
         return x
 
     def unpack_hook(self, x: torch.Tensor) -> torch.Tensor:
@@ -102,11 +92,6 @@ class _NamedSavedTensorManager:
         name = getattr(layer, "name", None)
         if not name:
             return None
-        captured = self._get_captured().get(name, [])
-        if not captured:
-            captured = self._get_captured_all()
-        if not captured:
-            return None
 
         params = list(layer.parameters(recurse=False))
         param_ids = {id(p) for p in params}
@@ -115,62 +100,69 @@ class _NamedSavedTensorManager:
             base = getattr(tensor, "_base", None)
             return base is not None and id(base) in param_ids
 
-        used_ids = self._get_used()
-        non_param = [
-            t for t in captured
-            if id(t) not in param_ids and not _is_param_view(t) and id(t) not in used_ids
-        ]
-        if not non_param:
-            return None
-
         input_shape = getattr(layer, "_ghost_input_shape", None)
         flat_shape = None
         if input_shape is not None and len(input_shape) > 1:
             flat_shape = (int(math.prod(input_shape[:-1])), input_shape[-1])
 
-        if input_shape is not None:
-            matching = [t for t in non_param if tuple(t.shape) == tuple(input_shape)]
-            if len(matching) == 1:
-                chosen = matching[0]
-                used_ids.add(id(chosen))
-                return chosen
-            if matching:
-                for tensor in matching:
-                    if not tensor.is_leaf:
-                        used_ids.add(id(tensor))
-                        return tensor
-                chosen = matching[0]
-                used_ids.add(id(chosen))
-                return chosen
-        if flat_shape is not None:
-            flat_matching = [t for t in non_param if tuple(t.shape) == tuple(flat_shape)]
-            if len(flat_matching) == 1:
-                chosen = flat_matching[0]
-                used_ids.add(id(chosen))
-                return chosen
-            if flat_matching:
-                for tensor in flat_matching:
-                    if not tensor.is_leaf:
-                        used_ids.add(id(tensor))
-                        return tensor
-                chosen = flat_matching[0]
-                used_ids.add(id(chosen))
-                return chosen
-        for tensor in non_param:
-            if not tensor.is_leaf:
-                used_ids.add(id(tensor))
-                return tensor
+        with self._lock:
+            if not self._enabled:
+                return None
 
-        if len(non_param) == 1:
-            chosen = non_param[0]
-            used_ids.add(id(chosen))
-            return chosen
+            capture_pool = self._captured.get(name, []) or self._captured_all
+            if not capture_pool:
+                return None
 
-        return None
+            non_param = [
+                t for t in capture_pool
+                if id(t) not in param_ids and not _is_param_view(t) and id(t) not in self._used_ids
+            ]
+            if not non_param:
+                return None
+
+            if input_shape is not None:
+                matching = [t for t in non_param if tuple(t.shape) == tuple(input_shape)]
+                if len(matching) == 1:
+                    chosen = matching[0]
+                    self._used_ids.add(id(chosen))
+                    return chosen
+                if matching:
+                    for tensor in matching:
+                        if not tensor.is_leaf:
+                            self._used_ids.add(id(tensor))
+                            return tensor
+                    chosen = matching[0]
+                    self._used_ids.add(id(chosen))
+                    return chosen
+            if flat_shape is not None:
+                flat_matching = [t for t in non_param if tuple(t.shape) == tuple(flat_shape)]
+                if len(flat_matching) == 1:
+                    chosen = flat_matching[0]
+                    self._used_ids.add(id(chosen))
+                    return chosen
+                if flat_matching:
+                    for tensor in flat_matching:
+                        if not tensor.is_leaf:
+                            self._used_ids.add(id(tensor))
+                            return tensor
+                    chosen = flat_matching[0]
+                    self._used_ids.add(id(chosen))
+                    return chosen
+            for tensor in non_param:
+                if not tensor.is_leaf:
+                    self._used_ids.add(id(tensor))
+                    return tensor
+
+            if len(non_param) == 1:
+                chosen = non_param[0]
+                self._used_ids.add(id(chosen))
+                return chosen
+
+            return None
 
     def clear_layer(self, name: str) -> None:
-        captured = self._get_captured()
-        captured.pop(name, None)
+        with self._lock:
+            self._captured.pop(name, None)
 
 
 def add_hooks(
