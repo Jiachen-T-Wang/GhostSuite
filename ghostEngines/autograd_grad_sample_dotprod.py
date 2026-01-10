@@ -181,25 +181,15 @@ class _NamedSavedTensorManager:
                     self._used_ids.add(id(chosen))
                     return chosen
 
-            for tensor in non_param:
-
-                if self._debug:
-                    print(f"[resolve_activation - shape matching failed] [{name}] tensor id: {id(tensor)} is_leaf: {tensor.is_leaf}")
-
-                if not tensor.is_leaf:
-                    self._used_ids.add(id(tensor))
-                    return tensor
-
-            if len(non_param) == 1:
-
-                if self._debug:
-                    print(f"[resolve_activation - shape matching failed] [{name}] tensor id: {id(tensor)} is_leaf: {tensor.is_leaf}")
-
-                chosen = non_param[0]
-                self._used_ids.add(id(chosen))
-                return chosen
-
-            return None
+            # If we reach here, we have failed to find a matching tensor.
+            # This could happen for certain techniques, e.g., weight tying
+            # where we need to strengthen the logic to handle this case.
+            candidate_shapes = [tuple(t.shape) for t in non_param]
+            raise RuntimeError(
+                "Failed to resolve activation: no saved tensor matched "
+                f"input_shape={input_shape} or flat_shape={flat_shape}. "
+                f"layer={name} candidates={candidate_shapes}"
+            )
 
     def clear_layer(self, name: str) -> None:
         with self._lock:
