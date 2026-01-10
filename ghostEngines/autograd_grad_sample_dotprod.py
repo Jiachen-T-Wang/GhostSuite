@@ -352,9 +352,16 @@ def _prepare_sample_grad_or_dotprod(
     # We assume the second function returned is for computing the training gradient.
     compute_layer_dotprod, _ = _supported_layers_dotprod.get(type(layer))
 
+    if manager._debug:
+        print(f"[prepare_sample_grad_or_dotprod] [{layer.name}] activations dtype: {layer.activations.dtype}, backprops dtype: {backprops.dtype}")
+
     # check layer.activations and backprops's dtype
     # This logic correctly handles mixed precision.
     if layer.activations is not None and layer.activations.dtype != backprops.dtype:
+
+        if manager._debug:
+            print(f"[prepare_sample_grad_or_dotprod] [{layer.name}] [MISMATCH] activations dtype: {layer.activations.dtype}, backprops dtype: {backprops.dtype}")
+
         common_type = torch.promote_types(layer.activations.dtype, backprops.dtype)
         compute_layer_dotprod(
             layer,
