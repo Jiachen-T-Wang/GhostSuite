@@ -327,12 +327,17 @@ def _prepare_sample_grad_or_dotprod(
             raise RuntimeError(
                 f"Missing saved tensor manager for layer {getattr(layer, 'name', '<unnamed>')}."
             )
+
+        # resolve the activation tensor from the saved tensors during forward pass
         activation = manager.resolve_activation(layer)
         if activation is None:
             raise RuntimeError(
                 f"Failed to capture saved activations for layer {getattr(layer, 'name', '<unnamed>')}. "
                 "Ensure the saved_tensors_hooks context is active around forward/backward."
             )
+
+        # for linear layers, we need to reshape the activation tensor (batch_size * seq_len, d_model)
+        # back to (batch_size, seq_len, d_model) for the dot product computation.
         input_shape = getattr(layer, "_ghost_input_shape", None)
         if input_shape is not None and hasattr(activation, "shape"):
             flat_shape = None
@@ -340,6 +345,7 @@ def _prepare_sample_grad_or_dotprod(
                 flat_shape = (int(math.prod(input_shape[:-1])), input_shape[-1])
             if flat_shape is not None and tuple(activation.shape) == tuple(flat_shape):
                 activation = activation.reshape(input_shape)
+
         layer.activations = activation
 
     # The function to compute the dot product is retrieved from the support dictionary.
