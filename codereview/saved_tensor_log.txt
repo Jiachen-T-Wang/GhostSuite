@@ -1,0 +1,218 @@
+++ /usr/bin/tclsh /usr/share/Modules/libexec/modulecmd.tcl bash load proxy/default
+Http proxy settings allow access to a very limited and pre-approved list of internet API servers.
+This is documented on Research Computing website. General internet access is not supported.
++ eval 'https_proxy=http://della-proxy:8080; export https_proxy;
+http_proxy=http://della-proxy:8080; export http_proxy;
+_LMFILES_=/usr/licensed/Modules/modulefiles/anaconda3/2020.7:/usr/local/share/Modules/modulefiles/proxy/default; export _LMFILES_;
+LOADEDMODULES=anaconda3/2020.7:proxy/default; export LOADEDMODULES;
+test 0;'
+++ https_proxy=http://della-proxy:8080
+++ export https_proxy
+++ http_proxy=http://della-proxy:8080
+++ export http_proxy
+++ _LMFILES_=/usr/licensed/Modules/modulefiles/anaconda3/2020.7:/usr/local/share/Modules/modulefiles/proxy/default
+++ export _LMFILES_
+++ LOADEDMODULES=anaconda3/2020.7:proxy/default
+++ export LOADEDMODULES
+++ test 0
++ _mlstatus=0
++ return 0
+[rank0]:[titan] 2026-01-09 22:24:59,078 - root - INFO - torchtitan version: 0.0.0+unknown (0.0.0 means __version__ is not defined correctly).
+[rank0]:[titan] 2026-01-09 22:24:59,166 - root - INFO - Starting job: Llama 3-tiny (1.5M) training with Ghost GradDotProd
+[rank0]:[titan] 2026-01-09 22:24:59,314 - root - WARNING - ENV[TORCH_NCCL_ASYNC_ERROR_HANDLING] = 1 will be overridden to 3 based on job config
+[rank0]:[titan] 2026-01-09 22:24:59,315 - root - INFO - [GC] Initial GC collection took 0.00 seconds
+[rank0]:[titan] 2026-01-09 22:24:59,330 - root - INFO - Loading tokenizer from tokenizer.json
+[rank0]:[titan] 2026-01-09 22:24:59,605 - root - INFO - Preparing c4_500gb dataset from /scratch/gpfs/PMITTAL/tianhao/PretrainData/c4
+[rank0]:[titan] 2026-01-09 22:25:00,012 - root - INFO - Building llama3 tinywith {
+[rank0]:  "_enforced": "This field is used to enforce all fields have defaults.",
+[rank0]:  "dim": 16,
+[rank0]:  "n_layers": 4,
+[rank0]:  "n_heads": 4,
+[rank0]:  "n_kv_heads": 1,
+[rank0]:  "vocab_size": 128256,
+[rank0]:  "multiple_of": 128,
+[rank0]:  "ffn_dim_multiplier": 1.5,
+[rank0]:  "norm_eps": 1e-05,
+[rank0]:  "rope_theta": 500000,
+[rank0]:  "rope_scaling_args": {
+[rank0]:    "scaling_factor": 8.0,
+[rank0]:    "low_freq_factor": 1.0,
+[rank0]:    "high_freq_factor": 4.0,
+[rank0]:    "original_max_position_embeddings": 8192
+[rank0]:  },
+[rank0]:  "max_seq_len": 32,
+[rank0]:  "depth_init": true,
+[rank0]:  "attn_type": "sdpa",
+[rank0]:  "attn_mask_type": "causal",
+[rank0]:  "eos_id": 0
+[rank0]:}
+[rank0]:[titan] 2026-01-09 22:25:01,703 - root - INFO - WandB logging enabled
+[rank0]:[titan] 2026-01-09 22:25:01,704 - root - INFO - TensorBoard logging enabled. Logs will be saved at ./outputs/tb/20260109-2225
+[rank0]:[titan] 2026-01-09 22:25:01,704 - root - INFO - CUDA capacity: NVIDIA A100 80GB PCIe with 79.25GiB memory
+[rank0]:[titan] 2026-01-09 22:25:01,722 - root - INFO - [34mModel llama3 tiny [31msize: 4,131,472 total parameters[39m
+[rank0]:[titan] 2026-01-09 22:25:01,836 - root - INFO - Peak FLOPS used for computing MFU: 3.120e+14
+[rank0]:[titan] 2026-01-09 22:25:01,836 - root - INFO - CUDA memory usage for model: 0.02GiB(0.03%)
+[rank0]:[titan] 2026-01-09 22:25:01,837 - root - WARNING - Warmup steps (200) exceed total training steps (1). Adjusting warmup steps to 1.
+[rank0]:[titan] 2026-01-09 22:25:01,837 - root - WARNING - model.safetensors.index.json not found at hf_assets_path: ./assets/hf/Llama-3.1-8B/model.safetensors.index.json.                     Defaulting to saving a single safetensors file if checkpoint is saved in HF format
+[rank0]:[titan] 2026-01-09 22:25:01,839 - root - INFO - Mixed precision training is handled by AMP
+[rank0]:[titan] 2026-01-09 22:25:01,839 - root - INFO - Trainer is initialized with local batch size 12, global batch size 12, gradient accumulation steps 1, sequence length 32, total steps 1 (warmup 200)
+[rank0]:[titan] 2026-01-09 22:25:01,839 - root - INFO - Preparing pile_test dataset from /scratch/gpfs/PMITTAL/tianhao/PretrainData/pile/pile-test
+[rank0]:[titan] 2026-01-09 22:25:01,872 - root - INFO - Ghost GradDotProd enabled | val_batch_size=4 | save_interval=50 | save_train_batch=False
+[rank0]:[titan] 2026-01-09 22:25:01,872 - root - INFO - Training starts at step 1
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=tok_embeddings shape=(16, 32) dtype=torch.int64 device=cuda:0 captured_all=1
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.attention_norm shape=(16, 32, 16) dtype=torch.float32 device=cuda:0 captured_all=2
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.attention_norm shape=(16,) dtype=torch.float32 device=cuda:0 captured_all=3
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.attention_norm shape=(16, 32, 1) dtype=torch.float32 device=cuda:0 captured_all=4
+[rank0]:[model] Attention forward: x dtype: torch.float32
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.attention.wq shape=(16, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=5
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.attention.wq shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=6
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.attention.wk shape=(16, 4) dtype=torch.bfloat16 device=cuda:0 captured_all=7
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.attention.wk shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=8
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.attention.wv shape=(16, 4) dtype=torch.bfloat16 device=cuda:0 captured_all=9
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.attention.wv shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=10
+[rank0]:[model] Attention forward: xq dtype: torch.bfloat16, xk dtype: torch.bfloat16, xv dtype: torch.bfloat16
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(1, 32, 1, 2) dtype=torch.complex64 device=cuda:0 captured_all=11
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(1, 32, 1, 2) dtype=torch.complex64 device=cuda:0 captured_all=12
+[rank0]:[model] attention after rotary: xq dtype: torch.bfloat16, xk dtype: torch.bfloat16
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=13
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=14
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=15
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32) dtype=torch.float32 device=cuda:0 captured_all=16
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=17
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(2,) dtype=torch.uint64 device=cuda:0 captured_all=18
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=() dtype=torch.uint64 device=cuda:0 captured_all=19
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.attention.wo shape=(16, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=20
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.attention.wo shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=21
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.ffn_norm shape=(16, 32, 16) dtype=torch.float32 device=cuda:0 captured_all=22
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.ffn_norm shape=(16,) dtype=torch.float32 device=cuda:0 captured_all=23
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.ffn_norm shape=(16, 32, 1) dtype=torch.float32 device=cuda:0 captured_all=24
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.feed_forward.w1 shape=(16, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=25
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.feed_forward.w1 shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=26
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 32, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=27
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.feed_forward.w3 shape=(16, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=28
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.feed_forward.w3 shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=29
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 32, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=30
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 32, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=31
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.feed_forward.w2 shape=(128, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=32
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.feed_forward.w2 shape=(512, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=33
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.attention_norm shape=(16, 32, 16) dtype=torch.float32 device=cuda:0 captured_all=34
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.attention_norm shape=(16,) dtype=torch.float32 device=cuda:0 captured_all=35
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.attention_norm shape=(16, 32, 1) dtype=torch.float32 device=cuda:0 captured_all=36
+[rank0]:[model] Attention forward: x dtype: torch.float32
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.attention.wq shape=(16, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=37
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.attention.wq shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=38
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.attention.wk shape=(16, 4) dtype=torch.bfloat16 device=cuda:0 captured_all=39
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.attention.wk shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=40
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.attention.wv shape=(16, 4) dtype=torch.bfloat16 device=cuda:0 captured_all=41
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.attention.wv shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=42
+[rank0]:[model] Attention forward: xq dtype: torch.bfloat16, xk dtype: torch.bfloat16, xv dtype: torch.bfloat16
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(1, 32, 1, 2) dtype=torch.complex64 device=cuda:0 captured_all=43
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(1, 32, 1, 2) dtype=torch.complex64 device=cuda:0 captured_all=44
+[rank0]:[model] attention after rotary: xq dtype: torch.bfloat16, xk dtype: torch.bfloat16
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=45
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=46
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=47
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32) dtype=torch.float32 device=cuda:0 captured_all=48
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=49
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(2,) dtype=torch.uint64 device=cuda:0 captured_all=50
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=() dtype=torch.uint64 device=cuda:0 captured_all=51
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.attention.wo shape=(16, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=52
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.attention.wo shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=53
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.ffn_norm shape=(16, 32, 16) dtype=torch.float32 device=cuda:0 captured_all=54
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.ffn_norm shape=(16,) dtype=torch.float32 device=cuda:0 captured_all=55
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.ffn_norm shape=(16, 32, 1) dtype=torch.float32 device=cuda:0 captured_all=56
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.feed_forward.w1 shape=(16, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=57
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.feed_forward.w1 shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=58
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 32, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=59
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.feed_forward.w3 shape=(16, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=60
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.feed_forward.w3 shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=61
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 32, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=62
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 32, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=63
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.feed_forward.w2 shape=(128, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=64
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.feed_forward.w2 shape=(512, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=65
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.attention_norm shape=(16, 32, 16) dtype=torch.float32 device=cuda:0 captured_all=66
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.attention_norm shape=(16,) dtype=torch.float32 device=cuda:0 captured_all=67
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.attention_norm shape=(16, 32, 1) dtype=torch.float32 device=cuda:0 captured_all=68
+[rank0]:[model] Attention forward: x dtype: torch.float32
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.attention.wq shape=(16, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=69
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.attention.wq shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=70
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.attention.wk shape=(16, 4) dtype=torch.bfloat16 device=cuda:0 captured_all=71
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.attention.wk shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=72
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.attention.wv shape=(16, 4) dtype=torch.bfloat16 device=cuda:0 captured_all=73
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.attention.wv shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=74
+[rank0]:[model] Attention forward: xq dtype: torch.bfloat16, xk dtype: torch.bfloat16, xv dtype: torch.bfloat16
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(1, 32, 1, 2) dtype=torch.complex64 device=cuda:0 captured_all=75
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(1, 32, 1, 2) dtype=torch.complex64 device=cuda:0 captured_all=76
+[rank0]:[model] attention after rotary: xq dtype: torch.bfloat16, xk dtype: torch.bfloat16
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=77
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=78
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=79
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32) dtype=torch.float32 device=cuda:0 captured_all=80
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=81
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(2,) dtype=torch.uint64 device=cuda:0 captured_all=82
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=() dtype=torch.uint64 device=cuda:0 captured_all=83
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.attention.wo shape=(16, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=84
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.attention.wo shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=85
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.ffn_norm shape=(16, 32, 16) dtype=torch.float32 device=cuda:0 captured_all=86
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.ffn_norm shape=(16,) dtype=torch.float32 device=cuda:0 captured_all=87
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.ffn_norm shape=(16, 32, 1) dtype=torch.float32 device=cuda:0 captured_all=88
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.feed_forward.w1 shape=(16, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=89
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.feed_forward.w1 shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=90
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 32, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=91
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.feed_forward.w3 shape=(16, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=92
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.feed_forward.w3 shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=93
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 32, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=94
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 32, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=95
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.feed_forward.w2 shape=(128, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=96
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.feed_forward.w2 shape=(512, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=97
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.attention_norm shape=(16, 32, 16) dtype=torch.float32 device=cuda:0 captured_all=98
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.attention_norm shape=(16,) dtype=torch.float32 device=cuda:0 captured_all=99
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.attention_norm shape=(16, 32, 1) dtype=torch.float32 device=cuda:0 captured_all=100
+[rank0]:[model] Attention forward: x dtype: torch.float32
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.attention.wq shape=(16, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=101
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.attention.wq shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=102
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.attention.wk shape=(16, 4) dtype=torch.bfloat16 device=cuda:0 captured_all=103
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.attention.wk shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=104
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.attention.wv shape=(16, 4) dtype=torch.bfloat16 device=cuda:0 captured_all=105
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.attention.wv shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=106
+[rank0]:[model] Attention forward: xq dtype: torch.bfloat16, xk dtype: torch.bfloat16, xv dtype: torch.bfloat16
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(1, 32, 1, 2) dtype=torch.complex64 device=cuda:0 captured_all=107
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(1, 32, 1, 2) dtype=torch.complex64 device=cuda:0 captured_all=108
+[rank0]:[model] attention after rotary: xq dtype: torch.bfloat16, xk dtype: torch.bfloat16
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=109
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=110
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=111
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32) dtype=torch.float32 device=cuda:0 captured_all=112
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=113
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(2,) dtype=torch.uint64 device=cuda:0 captured_all=114
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=() dtype=torch.uint64 device=cuda:0 captured_all=115
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.attention.wo shape=(16, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=116
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.attention.wo shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=117
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.ffn_norm shape=(16, 32, 16) dtype=torch.float32 device=cuda:0 captured_all=118
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.ffn_norm shape=(16,) dtype=torch.float32 device=cuda:0 captured_all=119
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.ffn_norm shape=(16, 32, 1) dtype=torch.float32 device=cuda:0 captured_all=120
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.feed_forward.w1 shape=(16, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=121
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.feed_forward.w1 shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=122
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 32, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=123
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.feed_forward.w3 shape=(16, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=124
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.feed_forward.w3 shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=125
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 32, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=126
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 32, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=127
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.feed_forward.w2 shape=(128, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=128
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.feed_forward.w2 shape=(512, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=129
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=norm shape=(16, 32, 16) dtype=torch.float32 device=cuda:0 captured_all=130
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=norm shape=(16,) dtype=torch.float32 device=cuda:0 captured_all=131
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=norm shape=(16, 32, 1) dtype=torch.float32 device=cuda:0 captured_all=132
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=output shape=(16, 128256) dtype=torch.bfloat16 device=cuda:0 captured_all=133
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=output shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=134
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(512, 128256) dtype=torch.float32 device=cuda:0 captured_all=135
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(512, 128256) dtype=torch.float32 device=cuda:0 captured_all=136
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(512,) dtype=torch.int64 device=cuda:0 captured_all=137
+[rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=() dtype=torch.float32 device=cuda:0 captured_all=138
+[rank0]:[titan] 2026-01-09 22:25:02,469 - root - INFO - [31mstep:  1  [32mloss: 12.2158  [38;2;180;60;0mgrad_norm:  0.3169  [38;2;54;234;195mmemory:  1.02GiB(1.29%)  [34mtps: 515  [36mtflops: 0.01  [35mmfu: 0.00%[39m
+[rank0]:[titan] 2026-01-09 22:25:02,469 - root - INFO - Synchronizing and adjusting timeout for all ProcessGroups to 0:01:40
+[rank0]:[titan] 2026-01-09 22:25:02,587 - root - INFO - Building device mesh with parallelism: pp=1, dp_replicate=1, dp_shard=1, cp=1, tp=1, ep=1, etp=1
+[rank0]:[titan] 2026-01-09 22:25:02,592 - root - INFO - Successfully created meshes with active dimensions: []
+[rank0]:[titan] 2026-01-09 22:25:02,592 - root - INFO - Sleeping 2 seconds for other ranks to complete
+[rank0]:[titan] 2026-01-09 22:25:04,593 - root - INFO - Training completed
+[rank0]:[titan] 2026-01-09 22:25:05,098 - root - INFO - Process group destroyed
