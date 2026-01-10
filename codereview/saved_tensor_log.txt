@@ -1,3 +1,4 @@
+# Annotated log: lines starting with '# NOTE:' explain the immediately preceding [ghost_saved_tensor] entry.
 ++ /usr/bin/tclsh /usr/share/Modules/libexec/modulecmd.tcl bash load proxy/default
 Http proxy settings allow access to a very limited and pre-approved list of internet API servers.
 This is documented on Research Computing website. General internet access is not supported.
@@ -60,155 +61,293 @@ test 0;'
 [rank0]:[titan] 2026-01-09 22:25:01,872 - root - INFO - Ghost GradDotProd enabled | val_batch_size=4 | save_interval=50 | save_train_batch=False
 [rank0]:[titan] 2026-01-09 22:25:01,872 - root - INFO - Training starts at step 1
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=tok_embeddings shape=(16, 32) dtype=torch.int64 device=cuda:0 captured_all=1
+# NOTE: Embedding indices (token ids) saved for nn.Embedding backward.
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.attention_norm shape=(16, 32, 16) dtype=torch.float32 device=cuda:0 captured_all=2
+# NOTE: RMSNorm input activation (fp32).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.attention_norm shape=(16,) dtype=torch.float32 device=cuda:0 captured_all=3
+# NOTE: RMSNorm weight parameter saved for backward.
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.attention_norm shape=(16, 32, 1) dtype=torch.float32 device=cuda:0 captured_all=4
+# NOTE: RMSNorm per-token inv_rms/rstd statistic (shape B,S,1).
 [rank0]:[model] Attention forward: x dtype: torch.float32
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.attention.wq shape=(16, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=5
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.attention.wq shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=6
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.attention.wk shape=(16, 4) dtype=torch.bfloat16 device=cuda:0 captured_all=7
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.attention.wk shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=8
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.attention.wv shape=(16, 4) dtype=torch.bfloat16 device=cuda:0 captured_all=9
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.attention.wv shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=10
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[model] Attention forward: xq dtype: torch.bfloat16, xk dtype: torch.bfloat16, xv dtype: torch.bfloat16
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(1, 32, 1, 2) dtype=torch.complex64 device=cuda:0 captured_all=11
+# NOTE: RoPE freqs_cis (broadcasted) used in rotary complex multiply.
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(1, 32, 1, 2) dtype=torch.complex64 device=cuda:0 captured_all=12
+# NOTE: RoPE freqs_cis (broadcasted) used in rotary complex multiply.
 [rank0]:[model] attention after rotary: xq dtype: torch.bfloat16, xk dtype: torch.bfloat16
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=13
+# NOTE: SDPA saved tensor (q/k/v/output; head_dim padded to 8).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=14
+# NOTE: SDPA saved tensor (q/k/v/output; head_dim padded to 8).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=15
+# NOTE: SDPA saved tensor (q/k/v/output; head_dim padded to 8).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32) dtype=torch.float32 device=cuda:0 captured_all=16
+# NOTE: SDPA logsumexp/softmax normalizer (fp32).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=17
+# NOTE: SDPA saved tensor (q/k/v/output; head_dim padded to 8).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(2,) dtype=torch.uint64 device=cuda:0 captured_all=18
+# NOTE: SDPA RNG seed/offset or kernel metadata.
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=() dtype=torch.uint64 device=cuda:0 captured_all=19
+# NOTE: SDPA RNG seed/offset or kernel metadata.
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.attention.wo shape=(16, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=20
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.attention.wo shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=21
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.ffn_norm shape=(16, 32, 16) dtype=torch.float32 device=cuda:0 captured_all=22
+# NOTE: RMSNorm input activation (fp32).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.ffn_norm shape=(16,) dtype=torch.float32 device=cuda:0 captured_all=23
+# NOTE: RMSNorm weight parameter saved for backward.
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.ffn_norm shape=(16, 32, 1) dtype=torch.float32 device=cuda:0 captured_all=24
+# NOTE: RMSNorm per-token inv_rms/rstd statistic (shape B,S,1).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.feed_forward.w1 shape=(16, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=25
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.feed_forward.w1 shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=26
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 32, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=27
+# NOTE: FFN SwiGLU intermediate (w1/w3 output or silu/mul).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.feed_forward.w3 shape=(16, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=28
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.feed_forward.w3 shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=29
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 32, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=30
+# NOTE: FFN SwiGLU intermediate (w1/w3 output or silu/mul).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 32, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=31
+# NOTE: FFN SwiGLU intermediate (w1/w3 output or silu/mul).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.feed_forward.w2 shape=(128, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=32
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.0.feed_forward.w2 shape=(512, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=33
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.attention_norm shape=(16, 32, 16) dtype=torch.float32 device=cuda:0 captured_all=34
+# NOTE: RMSNorm input activation (fp32).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.attention_norm shape=(16,) dtype=torch.float32 device=cuda:0 captured_all=35
+# NOTE: RMSNorm weight parameter saved for backward.
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.attention_norm shape=(16, 32, 1) dtype=torch.float32 device=cuda:0 captured_all=36
+# NOTE: RMSNorm per-token inv_rms/rstd statistic (shape B,S,1).
 [rank0]:[model] Attention forward: x dtype: torch.float32
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.attention.wq shape=(16, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=37
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.attention.wq shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=38
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.attention.wk shape=(16, 4) dtype=torch.bfloat16 device=cuda:0 captured_all=39
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.attention.wk shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=40
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.attention.wv shape=(16, 4) dtype=torch.bfloat16 device=cuda:0 captured_all=41
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.attention.wv shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=42
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[model] Attention forward: xq dtype: torch.bfloat16, xk dtype: torch.bfloat16, xv dtype: torch.bfloat16
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(1, 32, 1, 2) dtype=torch.complex64 device=cuda:0 captured_all=43
+# NOTE: RoPE freqs_cis (broadcasted) used in rotary complex multiply.
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(1, 32, 1, 2) dtype=torch.complex64 device=cuda:0 captured_all=44
+# NOTE: RoPE freqs_cis (broadcasted) used in rotary complex multiply.
 [rank0]:[model] attention after rotary: xq dtype: torch.bfloat16, xk dtype: torch.bfloat16
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=45
+# NOTE: SDPA saved tensor (q/k/v/output; head_dim padded to 8).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=46
+# NOTE: SDPA saved tensor (q/k/v/output; head_dim padded to 8).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=47
+# NOTE: SDPA saved tensor (q/k/v/output; head_dim padded to 8).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32) dtype=torch.float32 device=cuda:0 captured_all=48
+# NOTE: SDPA logsumexp/softmax normalizer (fp32).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=49
+# NOTE: SDPA saved tensor (q/k/v/output; head_dim padded to 8).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(2,) dtype=torch.uint64 device=cuda:0 captured_all=50
+# NOTE: SDPA RNG seed/offset or kernel metadata.
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=() dtype=torch.uint64 device=cuda:0 captured_all=51
+# NOTE: SDPA RNG seed/offset or kernel metadata.
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.attention.wo shape=(16, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=52
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.attention.wo shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=53
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.ffn_norm shape=(16, 32, 16) dtype=torch.float32 device=cuda:0 captured_all=54
+# NOTE: RMSNorm input activation (fp32).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.ffn_norm shape=(16,) dtype=torch.float32 device=cuda:0 captured_all=55
+# NOTE: RMSNorm weight parameter saved for backward.
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.ffn_norm shape=(16, 32, 1) dtype=torch.float32 device=cuda:0 captured_all=56
+# NOTE: RMSNorm per-token inv_rms/rstd statistic (shape B,S,1).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.feed_forward.w1 shape=(16, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=57
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.feed_forward.w1 shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=58
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 32, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=59
+# NOTE: FFN SwiGLU intermediate (w1/w3 output or silu/mul).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.feed_forward.w3 shape=(16, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=60
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.feed_forward.w3 shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=61
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 32, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=62
+# NOTE: FFN SwiGLU intermediate (w1/w3 output or silu/mul).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 32, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=63
+# NOTE: FFN SwiGLU intermediate (w1/w3 output or silu/mul).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.feed_forward.w2 shape=(128, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=64
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.1.feed_forward.w2 shape=(512, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=65
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.attention_norm shape=(16, 32, 16) dtype=torch.float32 device=cuda:0 captured_all=66
+# NOTE: RMSNorm input activation (fp32).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.attention_norm shape=(16,) dtype=torch.float32 device=cuda:0 captured_all=67
+# NOTE: RMSNorm weight parameter saved for backward.
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.attention_norm shape=(16, 32, 1) dtype=torch.float32 device=cuda:0 captured_all=68
+# NOTE: RMSNorm per-token inv_rms/rstd statistic (shape B,S,1).
 [rank0]:[model] Attention forward: x dtype: torch.float32
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.attention.wq shape=(16, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=69
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.attention.wq shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=70
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.attention.wk shape=(16, 4) dtype=torch.bfloat16 device=cuda:0 captured_all=71
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.attention.wk shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=72
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.attention.wv shape=(16, 4) dtype=torch.bfloat16 device=cuda:0 captured_all=73
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.attention.wv shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=74
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[model] Attention forward: xq dtype: torch.bfloat16, xk dtype: torch.bfloat16, xv dtype: torch.bfloat16
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(1, 32, 1, 2) dtype=torch.complex64 device=cuda:0 captured_all=75
+# NOTE: RoPE freqs_cis (broadcasted) used in rotary complex multiply.
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(1, 32, 1, 2) dtype=torch.complex64 device=cuda:0 captured_all=76
+# NOTE: RoPE freqs_cis (broadcasted) used in rotary complex multiply.
 [rank0]:[model] attention after rotary: xq dtype: torch.bfloat16, xk dtype: torch.bfloat16
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=77
+# NOTE: SDPA saved tensor (q/k/v/output; head_dim padded to 8).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=78
+# NOTE: SDPA saved tensor (q/k/v/output; head_dim padded to 8).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=79
+# NOTE: SDPA saved tensor (q/k/v/output; head_dim padded to 8).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32) dtype=torch.float32 device=cuda:0 captured_all=80
+# NOTE: SDPA logsumexp/softmax normalizer (fp32).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=81
+# NOTE: SDPA saved tensor (q/k/v/output; head_dim padded to 8).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(2,) dtype=torch.uint64 device=cuda:0 captured_all=82
+# NOTE: SDPA RNG seed/offset or kernel metadata.
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=() dtype=torch.uint64 device=cuda:0 captured_all=83
+# NOTE: SDPA RNG seed/offset or kernel metadata.
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.attention.wo shape=(16, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=84
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.attention.wo shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=85
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.ffn_norm shape=(16, 32, 16) dtype=torch.float32 device=cuda:0 captured_all=86
+# NOTE: RMSNorm input activation (fp32).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.ffn_norm shape=(16,) dtype=torch.float32 device=cuda:0 captured_all=87
+# NOTE: RMSNorm weight parameter saved for backward.
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.ffn_norm shape=(16, 32, 1) dtype=torch.float32 device=cuda:0 captured_all=88
+# NOTE: RMSNorm per-token inv_rms/rstd statistic (shape B,S,1).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.feed_forward.w1 shape=(16, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=89
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.feed_forward.w1 shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=90
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 32, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=91
+# NOTE: FFN SwiGLU intermediate (w1/w3 output or silu/mul).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.feed_forward.w3 shape=(16, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=92
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.feed_forward.w3 shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=93
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 32, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=94
+# NOTE: FFN SwiGLU intermediate (w1/w3 output or silu/mul).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 32, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=95
+# NOTE: FFN SwiGLU intermediate (w1/w3 output or silu/mul).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.feed_forward.w2 shape=(128, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=96
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.2.feed_forward.w2 shape=(512, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=97
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.attention_norm shape=(16, 32, 16) dtype=torch.float32 device=cuda:0 captured_all=98
+# NOTE: RMSNorm input activation (fp32).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.attention_norm shape=(16,) dtype=torch.float32 device=cuda:0 captured_all=99
+# NOTE: RMSNorm weight parameter saved for backward.
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.attention_norm shape=(16, 32, 1) dtype=torch.float32 device=cuda:0 captured_all=100
+# NOTE: RMSNorm per-token inv_rms/rstd statistic (shape B,S,1).
 [rank0]:[model] Attention forward: x dtype: torch.float32
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.attention.wq shape=(16, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=101
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.attention.wq shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=102
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.attention.wk shape=(16, 4) dtype=torch.bfloat16 device=cuda:0 captured_all=103
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.attention.wk shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=104
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.attention.wv shape=(16, 4) dtype=torch.bfloat16 device=cuda:0 captured_all=105
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.attention.wv shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=106
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[model] Attention forward: xq dtype: torch.bfloat16, xk dtype: torch.bfloat16, xv dtype: torch.bfloat16
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(1, 32, 1, 2) dtype=torch.complex64 device=cuda:0 captured_all=107
+# NOTE: RoPE freqs_cis (broadcasted) used in rotary complex multiply.
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(1, 32, 1, 2) dtype=torch.complex64 device=cuda:0 captured_all=108
+# NOTE: RoPE freqs_cis (broadcasted) used in rotary complex multiply.
 [rank0]:[model] attention after rotary: xq dtype: torch.bfloat16, xk dtype: torch.bfloat16
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=109
+# NOTE: SDPA saved tensor (q/k/v/output; head_dim padded to 8).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=110
+# NOTE: SDPA saved tensor (q/k/v/output; head_dim padded to 8).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=111
+# NOTE: SDPA saved tensor (q/k/v/output; head_dim padded to 8).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32) dtype=torch.float32 device=cuda:0 captured_all=112
+# NOTE: SDPA logsumexp/softmax normalizer (fp32).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 4, 32, 8) dtype=torch.bfloat16 device=cuda:0 captured_all=113
+# NOTE: SDPA saved tensor (q/k/v/output; head_dim padded to 8).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(2,) dtype=torch.uint64 device=cuda:0 captured_all=114
+# NOTE: SDPA RNG seed/offset or kernel metadata.
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=() dtype=torch.uint64 device=cuda:0 captured_all=115
+# NOTE: SDPA RNG seed/offset or kernel metadata.
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.attention.wo shape=(16, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=116
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.attention.wo shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=117
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.ffn_norm shape=(16, 32, 16) dtype=torch.float32 device=cuda:0 captured_all=118
+# NOTE: RMSNorm input activation (fp32).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.ffn_norm shape=(16,) dtype=torch.float32 device=cuda:0 captured_all=119
+# NOTE: RMSNorm weight parameter saved for backward.
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.ffn_norm shape=(16, 32, 1) dtype=torch.float32 device=cuda:0 captured_all=120
+# NOTE: RMSNorm per-token inv_rms/rstd statistic (shape B,S,1).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.feed_forward.w1 shape=(16, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=121
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.feed_forward.w1 shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=122
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 32, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=123
+# NOTE: FFN SwiGLU intermediate (w1/w3 output or silu/mul).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.feed_forward.w3 shape=(16, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=124
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.feed_forward.w3 shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=125
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 32, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=126
+# NOTE: FFN SwiGLU intermediate (w1/w3 output or silu/mul).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(16, 32, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=127
+# NOTE: FFN SwiGLU intermediate (w1/w3 output or silu/mul).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.feed_forward.w2 shape=(128, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=128
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=layers.3.feed_forward.w2 shape=(512, 128) dtype=torch.bfloat16 device=cuda:0 captured_all=129
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=norm shape=(16, 32, 16) dtype=torch.float32 device=cuda:0 captured_all=130
+# NOTE: RMSNorm input activation (fp32).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=norm shape=(16,) dtype=torch.float32 device=cuda:0 captured_all=131
+# NOTE: RMSNorm weight parameter saved for backward.
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=norm shape=(16, 32, 1) dtype=torch.float32 device=cuda:0 captured_all=132
+# NOTE: RMSNorm per-token inv_rms/rstd statistic (shape B,S,1).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=output shape=(16, 128256) dtype=torch.bfloat16 device=cuda:0 captured_all=133
+# NOTE: Linear weight.T saved for backward (transposed).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=output shape=(512, 16) dtype=torch.bfloat16 device=cuda:0 captured_all=134
+# NOTE: Linear input activation flattened to (batch*seq, in_features).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(512, 128256) dtype=torch.float32 device=cuda:0 captured_all=135
+# NOTE: Cross-entropy log_softmax output (log_probs), flattened to [B*S, V], fp32.
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(512, 128256) dtype=torch.float32 device=cuda:0 captured_all=136
+# NOTE: Cross-entropy log_softmax output (log_probs) saved again by nll_loss backward.
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=(512,) dtype=torch.int64 device=cuda:0 captured_all=137
+# NOTE: Cross-entropy labels (flattened token ids).
 [rank0]:[ghost_saved_tensor] tid=23426639533120 scope=<none> shape=() dtype=torch.float32 device=cuda:0 captured_all=138
+# NOTE: Cross-entropy total_weight/reduction scalar.
 [rank0]:[titan] 2026-01-09 22:25:02,469 - root - INFO - [31mstep:  1  [32mloss: 12.2158  [38;2;180;60;0mgrad_norm:  0.3169  [38;2;54;234;195mmemory:  1.02GiB(1.29%)  [34mtps: 515  [36mtflops: 0.01  [35mmfu: 0.00%[39m
 [rank0]:[titan] 2026-01-09 22:25:02,469 - root - INFO - Synchronizing and adjusting timeout for all ProcessGroups to 0:01:40
 [rank0]:[titan] 2026-01-09 22:25:02,587 - root - INFO - Building device mesh with parallelism: pp=1, dp_replicate=1, dp_shard=1, cp=1, tp=1, ep=1, etp=1
