@@ -2,6 +2,7 @@ from typing import Dict, List, Optional, Tuple
 import math
 import os
 import threading
+import warnings
 
 import torch
 import torch.nn as nn
@@ -260,7 +261,13 @@ def add_hooks(
         else:
             is_atomic_layer = not list(layer.children())
             if is_atomic_layer and requires_grad(layer):
-                print(f"WARNING: Skipping atomic layer '{name}' of type {type(layer)} because it is not supported.")
+                supported = ", ".join(cls.__name__ for cls in _supported_layers_dotprod)
+                warnings.warn(
+                    f"Skipping unsupported leaf layer '{name}' ({type(layer).__name__}). "
+                    f"Only supported types: {supported}",
+                    category=UserWarning,
+                    stacklevel=2,
+                )
 
     model.__dict__.setdefault("autograd_grad_sample_hooks", []).extend(handles)
 
