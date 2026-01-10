@@ -142,18 +142,20 @@ class _NamedSavedTensorManager:
             if not non_param:
                 return None
 
-            if input_shape is not None:
-                matching = [t for t in non_param if tuple(t.shape) == tuple(input_shape)]
+            def _match_shape(shape):
+                if shape is None:
+                    return None
+                matching = [t for t in non_param if tuple(t.shape) == tuple(shape)]
 
-                # If there is only one matching tensor, that's the activation we want. 
+                # If there is only one matching tensor, that's the activation we want.
                 if len(matching) == 1:
                     chosen = matching[0]
                     self._used_ids.add(id(chosen))
                     return chosen
 
-                # If there are multiple matching tensors, we need to choose the non-leaf one.
-                # TODO: Here we assume there is only one non-leaf tensor, which is not always the case for weight tying. 
-                # Need to test this with weight tying later. 
+                # If there are multiple matching tensors, choose the non-leaf one.
+                # TODO: Here we assume there is only one non-leaf tensor, which is not always the case for weight tying.
+                # Need to test this with weight tying later.
                 if matching:
                     for tensor in matching:
                         if not tensor.is_leaf:
@@ -161,25 +163,20 @@ class _NamedSavedTensorManager:
                             return tensor
 
                     # If all tensors are leaf, we choose the first one.
-                    # for example, the first layer input tensor is a leaf tensor.
+                    # For example, the first layer input tensor is a leaf tensor.
                     chosen = matching[0]
                     self._used_ids.add(id(chosen))
                     return chosen
 
-            if flat_shape is not None:
-                flat_matching = [t for t in non_param if tuple(t.shape) == tuple(flat_shape)]
-                if len(flat_matching) == 1:
-                    chosen = flat_matching[0]
-                    self._used_ids.add(id(chosen))
-                    return chosen
-                if flat_matching:
-                    for tensor in flat_matching:
-                        if not tensor.is_leaf:
-                            self._used_ids.add(id(tensor))
-                            return tensor
-                    chosen = flat_matching[0]
-                    self._used_ids.add(id(chosen))
-                    return chosen
+                return None
+
+            chosen = _match_shape(input_shape)
+            if chosen is not None:
+                return chosen
+
+            chosen = _match_shape(flat_shape)
+            if chosen is not None:
+                return chosen
 
             # If we reach here, we have failed to find a matching tensor.
             # This could happen for certain techniques, e.g., weight tying
