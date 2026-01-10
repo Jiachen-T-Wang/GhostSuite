@@ -28,7 +28,10 @@ class _NamedSavedTensorManager:
         self._enabled: bool = False
         self._captured: Dict[str, List[torch.Tensor]] = {}
         self._captured_all: List[torch.Tensor] = []
+
+        # Book-keeping of tensor ids that have been used for activations (to avoid double usage across layers).
         self._used_ids: set[int] = set()
+
         self._debug: bool = os.getenv("GHOST_SAVED_TENSOR_DEBUG", "0") == "1"
 
     def _get_stack(self) -> List[str]:
@@ -107,7 +110,15 @@ class _NamedSavedTensorManager:
         params = list(layer.parameters(recurse=False))
         param_ids = {id(p) for p in params}
 
+        if self._debug:
+            print(f"[resolve_activation] [{name}] param_ids: {param_ids}")
+
         def _is_param_view(tensor: torch.Tensor) -> bool:
+            """
+            Checks if a tensor is a view of a parameter.
+            This is used to filter out parameter views like weight.t() so 
+            we don't mistake them for activation tensors.
+            """
             base = getattr(tensor, "_base", None)
             return base is not None and id(base) in param_ids
 
@@ -133,18 +144,28 @@ class _NamedSavedTensorManager:
 
             if input_shape is not None:
                 matching = [t for t in non_param if tuple(t.shape) == tuple(input_shape)]
+
+                # If there is only one matching tensor, that's the activation we want. 
                 if len(matching) == 1:
                     chosen = matching[0]
                     self._used_ids.add(id(chosen))
                     return chosen
+
+                # If there are multiple matching tensors, we need to choose the non-leaf one.
+                # TODO: Here we assume there is only one non-leaf tensor, which is not always the case for weight tying. 
+                # Need to test this with weight tying later. 
                 if matching:
                     for tensor in matching:
                         if not tensor.is_leaf:
                             self._used_ids.add(id(tensor))
                             return tensor
+
+                    # If all tensors are leaf, we choose the first one.
+                    # for example, the first layer input tensor is a leaf tensor.
                     chosen = matching[0]
                     self._used_ids.add(id(chosen))
                     return chosen
+
             if flat_shape is not None:
                 flat_matching = [t for t in non_param if tuple(t.shape) == tuple(flat_shape)]
                 if len(flat_matching) == 1:
@@ -159,12 +180,21 @@ class _NamedSavedTensorManager:
                     chosen = flat_matching[0]
                     self._used_ids.add(id(chosen))
                     return chosen
+
             for tensor in non_param:
+
+                if self._debug:
+                    print(f"[resolve_activation - shape matching failed] [{name}] tensor id: {id(tensor)} is_leaf: {tensor.is_leaf}")
+
                 if not tensor.is_leaf:
                     self._used_ids.add(id(tensor))
                     return tensor
 
             if len(non_param) == 1:
+
+                if self._debug:
+                    print(f"[resolve_activation - shape matching failed] [{name}] tensor id: {id(tensor)} is_leaf: {tensor.is_leaf}")
+
                 chosen = non_param[0]
                 self._used_ids.add(id(chosen))
                 return chosen
