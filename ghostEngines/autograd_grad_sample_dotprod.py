@@ -5,7 +5,6 @@ import threading
 import torch
 import torch.nn as nn
 
-# Assuming these are defined in the dot-product specific samplers file
 from .supported_layers_grad_samplers_dotprod import (
     _supported_layers_dotprod,
     _create_or_accumulate_train_grad
@@ -55,11 +54,13 @@ class _NamedSavedTensorManager:
         self._get_stack().clear()
 
     def push(self, name: str) -> None:
+        # If enabled, pushes the module name onto the thread‑local scope stack (forward‑pre hook).
         if not self._get_enabled():
             return
         self._get_stack().append(name)
 
     def pop(self, name: str) -> None:
+        # If enabled, pops the matching module name from the thread‑local stack (forward‑post hook).
         if not self._get_enabled():
             return
         stack = self._get_stack()
@@ -202,11 +203,13 @@ def add_hooks(
             layer.name = name
             layer._ghost_saved_tensor_mgr = manager
 
+            # push the layer name to the scope stack before forward pass
             def _push_scope(this_layer, inputs):
                 manager.push(this_layer.name)
                 if manager._get_enabled() and inputs and hasattr(inputs[0], "shape"):
                     this_layer._ghost_input_shape = tuple(inputs[0].shape)
 
+            # pop the layer name from the scope stack after forward pass
             def _pop_scope(this_layer, inputs, output):
                 manager.pop(this_layer.name)
 
@@ -215,21 +218,17 @@ def add_hooks(
 
             def backward_hook(this_layer, grad_input, grad_output):
 
-                # start_time = time.time()
-                # 1. Compute the gradient dot products and store them on the layer.
+                # compute the gradient dot products and store them on the layer
                 _prepare_sample_grad_or_dotprod(
                     this_layer, grad_output, val_batch_size, loss_reduction, log_grad_norms
                 )
 
-                # 2. Compute and accumulate the training gradients.
+                # compute and accumulate the training gradients
                 _apply_train_grad(this_layer, val_batch_size)
 
-                # A backward hook must return None or a new grad_input tuple.
-                # Since we are not modifying the gradient flow, we return None.
                 return None
 
             handles.append(layer.register_full_backward_hook(backward_hook))
-            # print(f"[Debug] Added hooks to layer: {name} of type {type(layer)}")
 
         else:
             is_atomic_layer = not list(layer.children())
