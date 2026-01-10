@@ -359,10 +359,12 @@ def _prepare_sample_grad_or_dotprod(
     # This logic correctly handles mixed precision.
     if layer.activations is not None and layer.activations.dtype != backprops.dtype:
 
+        common_type = torch.promote_types(layer.activations.dtype, backprops.dtype)
+
         if manager._debug:
             print(f"[prepare_sample_grad_or_dotprod] [{layer.name}] [MISMATCH] activations dtype: {layer.activations.dtype}, backprops dtype: {backprops.dtype}")
+            print(f"[prepare_sample_grad_or_dotprod] [{layer.name}] [PROMOTING] common_type: {common_type}")
 
-        common_type = torch.promote_types(layer.activations.dtype, backprops.dtype)
         compute_layer_dotprod(
             layer,
             layer.activations.to(common_type),
