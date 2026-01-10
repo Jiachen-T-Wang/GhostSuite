@@ -12,6 +12,8 @@ from .supported_layers_grad_samplers_dotprod import (
     _create_or_accumulate_train_grad
 )
 
+ACCUM_DTYPE = torch.float32
+
 
 def requires_grad(module: nn.Module) -> bool:
     """
@@ -308,6 +310,30 @@ def _scale_logged_grad_norms(layer: nn.Module, grad_scale: float) -> None:
             param.grad_val_norm_sq = param.grad_val_norm_sq * scale_sq
 
 
+def _select_compute_dtype(layer: nn.Module, A: torch.Tensor, B: torch.Tensor) -> Optional[torch.dtype]:
+    """
+    Decide the compute dtype for dot-product calculations.
+
+    - Keep embedding activations as integer indices; use backprop/weight dtype for compute.
+    - Otherwise, prefer a promoted dtype between weight and backprop when both exist.
+    """
+    if isinstance(layer, nn.Embedding):
+        if B.is_floating_point():
+            return B.dtype
+        if hasattr(layer, "weight") and hasattr(layer.weight, "dtype"):
+            return layer.weight.dtype
+        return None
+
+    bp_dtype = B.dtype if B.is_floating_point() else None
+    weight_dtype = None
+    if hasattr(layer, "weight") and getattr(layer, "weight", None) is not None:
+        weight_dtype = layer.weight.dtype
+
+    if bp_dtype is not None and weight_dtype is not None:
+        return torch.promote_types(bp_dtype, weight_dtype)
+    return bp_dtype or weight_dtype
+
+
 def _prepare_sample_grad_or_dotprod(
     layer: nn.Module,
     grad_output: Tuple[torch.Tensor],
@@ -320,9 +346,9 @@ def _prepare_sample_grad_or_dotprod(
     """
     backprops = grad_output[0].detach()
     grad_scale = float(backprops.shape[0]) if loss_reduction == 'mean' else 1.0
+    manager = getattr(layer, "_ghost_saved_tensor_mgr", None)
 
     if not hasattr(layer, 'activations') or layer.activations is None:
-        manager = getattr(layer, "_ghost_saved_tensor_mgr", None)
         if manager is None:
             raise RuntimeError(
                 f"Missing saved tensor manager for layer {getattr(layer, 'name', '<unnamed>')}."
@@ -352,34 +378,24 @@ def _prepare_sample_grad_or_dotprod(
     # We assume the second function returned is for computing the training gradient.
     compute_layer_dotprod, _ = _supported_layers_dotprod.get(type(layer))
 
-    if manager._debug:
-        print(f"[prepare_sample_grad_or_dotprod] [{layer.name}] activations dtype: {layer.activations.dtype}, backprops dtype: {backprops.dtype}")
+    compute_dtype = _select_compute_dtype(layer, layer.activations, backprops)
 
-    # check layer.activations and backprops's dtype
-    # This logic correctly handles mixed precision.
-    if layer.activations is not None and layer.activations.dtype != backprops.dtype:
-
-        common_type = torch.promote_types(layer.activations.dtype, backprops.dtype)
-
-        if manager._debug:
-            print(f"[prepare_sample_grad_or_dotprod] [{layer.name}] [MISMATCH] activations dtype: {layer.activations.dtype}, backprops dtype: {backprops.dtype}")
-            print(f"[prepare_sample_grad_or_dotprod] [{layer.name}] [PROMOTING] common_type: {common_type}")
-
-        compute_layer_dotprod(
-            layer,
-            layer.activations.to(common_type),
-            backprops.to(common_type),
-            val_batch_size=val_batch_size,
-            log_grad_norms=log_grad_norms
+    if manager is not None and manager._debug:
+        print(
+            "[prepare_sample_grad_or_dotprod] "
+            f"[{layer.name}] activations dtype: {layer.activations.dtype}, "
+            f"backprops dtype: {backprops.dtype}, compute_dtype: {compute_dtype}, accum_dtype: {ACCUM_DTYPE}"
         )
-    else:
-        compute_layer_dotprod(
-            layer,
-            layer.activations,
-            backprops,
-            val_batch_size=val_batch_size,
-            log_grad_norms=log_grad_norms
-        )
+
+    compute_layer_dotprod(
+        layer,
+        layer.activations,
+        backprops,
+        val_batch_size=val_batch_size,
+        log_grad_norms=log_grad_norms,
+        compute_dtype=compute_dtype,
+        accum_dtype=ACCUM_DTYPE,
+    )
 
     if grad_scale != 1.0:
         if log_grad_norms:
