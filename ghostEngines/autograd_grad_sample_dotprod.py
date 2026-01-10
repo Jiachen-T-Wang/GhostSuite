@@ -315,7 +315,7 @@ def _select_compute_dtype(layer: nn.Module, A: torch.Tensor, B: torch.Tensor) ->
     Decide the compute dtype for dot-product calculations.
 
     - Keep embedding activations as integer indices; use backprop/weight dtype for compute.
-    - Otherwise, prefer a promoted dtype between weight and backprop when both exist.
+    - Otherwise, prefer matching activation/backprop dtype or warn and fall back to activations.
     """
     if isinstance(layer, nn.Embedding):
         if B.is_floating_point():
@@ -324,14 +324,16 @@ def _select_compute_dtype(layer: nn.Module, A: torch.Tensor, B: torch.Tensor) ->
             return layer.weight.dtype
         return None
 
-    bp_dtype = B.dtype if B.is_floating_point() else None
-    weight_dtype = None
-    if hasattr(layer, "weight") and getattr(layer, "weight", None) is not None:
-        weight_dtype = layer.weight.dtype
-
-    if bp_dtype is not None and weight_dtype is not None:
-        return torch.promote_types(bp_dtype, weight_dtype)
-    return bp_dtype or weight_dtype
+    if A.dtype != B.dtype:
+        layer_name = getattr(layer, "name", layer.__class__.__name__)
+        warnings.warn(
+            "Mismatched dtypes for dot-product compute in "
+            f"{layer_name}: A.dtype={A.dtype}, B.dtype={B.dtype}; using A.dtype.",
+            UserWarning,
+            stacklevel=2,
+        )
+        
+    return A.dtype
 
 
 def _prepare_sample_grad_or_dotprod(
