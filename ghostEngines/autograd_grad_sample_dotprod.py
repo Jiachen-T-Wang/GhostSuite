@@ -1,5 +1,6 @@
 from typing import Dict, List, Optional, Tuple
 import math
+import os
 import threading
 
 import torch
@@ -28,6 +29,7 @@ class _NamedSavedTensorManager:
         self._captured: Dict[str, List[torch.Tensor]] = {}
         self._captured_all: List[torch.Tensor] = []
         self._used_ids: set[int] = set()
+        self._debug: bool = os.getenv("GHOST_SAVED_TENSOR_DEBUG", "0") == "1"
 
     def _get_stack(self) -> List[str]:
         if not hasattr(self._local, "stack"):
@@ -84,6 +86,14 @@ class _NamedSavedTensorManager:
             if stack:
                 name = stack[-1]
                 self._captured.setdefault(name, []).append(x)
+            if self._debug:
+                scope = stack[-1] if stack else "<none>"
+                print(
+                    "[ghost_saved_tensor] "
+                    f"tid={threading.get_ident()} scope={scope} "
+                    f"shape={tuple(x.shape)} dtype={x.dtype} device={x.device} "
+                    f"captured_all={len(self._captured_all)}"
+                )
         return x
 
     def unpack_hook(self, x: torch.Tensor) -> torch.Tensor:
