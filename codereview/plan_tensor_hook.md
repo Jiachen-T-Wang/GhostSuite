@@ -5,6 +5,7 @@
 - Keep the saved-tensors pack_hook / activation resolution path intact.
 - Use activation masking in `unpack_hook` so autograd computes **train-only** parameter gradients.
 - For RMSNorm/LayerNorm, repair `grad_input` in a full backward hook to preserve upstream dot products.
+- Ensure LayerNorm parameter gradients are actually train-only (additional fix needed vs RMSNorm).
 
 ## Current flow (baseline)
 - `ghostEngines/autograd_grad_sample_dotprod.py:add_hooks` registers:
@@ -31,7 +32,7 @@
    - Extend manager to store metadata for saved tensors:
      - `self._tensor_meta[id(x)] = {"layer_name": name}` in `pack_hook` when a scope is active.
      - `self._layers_by_name` registry populated in `add_hooks` to resolve `layer_name` → module.
-     - Clear `_tensor_meta` on `disable()` and per-layer cleanup to avoid leaks.
+     - Clear `_tensor_meta` on `disable()` to avoid stale metadata.
    - Determine validation indices cleanly:
      - In forward pre-hook, store `layer._ghost_input_shape` and `layer._ghost_train_bs`:
        - `total_bs = inputs[0].shape[0]`
@@ -50,7 +51,19 @@
      then returns the corrected `grad_input` so upstream gradients (and dot products for earlier layers) remain correct.
    - This runs after parameter gradients are computed, which is acceptable because we want train-only parameter grads.
 
-4) **Grad_input formulas for norm layers**
+4) **LayerNorm parameter gradients need an extra fix**
+   - **RMSNorm**: masking `x` zeroes validation contribution to `weight.grad` because `x_hat = x * inv_rms`;
+     even though `inv_rms` is from the original forward, `x=0` makes val contribution zero. So parameter grads are train-only.
+   - **LayerNorm**: masking `x` is **not** sufficient:
+     - `weight.grad` uses `x_hat = (x - mean) * rstd`; with `mean/rstd` saved from the original forward,
+       masking `x` does **not** zero `x_hat` for val samples.
+     - `bias.grad` depends only on `grad_output`, so masking `x` does nothing.
+   - Therefore, for `nn.LayerNorm` we must **override parameter grads** in the full backward hook:
+     - Reuse `_compute_layernorm_train_grad` to compute train-only `weight` and `bias` grads.
+     - Write them into `param.train_grad` (or directly to `param.grad`), and ensure `GradDotProdEngine.prepare_gradients`
+       prefers `train_grad` for these params.
+
+5) **Grad_input formulas for norm layers**
    - Implement helpers (e.g., `_compute_rmsnorm_grad_input`, `_compute_layernorm_grad_input`)
      that match PyTorch math, using the **original activation** cached on the layer:
      - **RMSNorm** (normalize over last dim, size `D`):
@@ -67,11 +80,11 @@
        - `grad_input = (1/N) * rstd * (N*go - sum(go) - x_hat*sum(go*x_hat))`
    - Use a stable compute dtype (likely `float32`) and cast back to `grad_output.dtype` before returning.
 
-5) **GradDotProdEngine updates**
+6) **GradDotProdEngine updates**
    - `prepare_gradients()` should tolerate the absence of `train_grad` and simply use `.grad`.
    - `clear_gradients()` should delete `train_grad` if present, but not require it.
 
-6) **Refactor dot-product helper(s)**
+7) **Refactor dot-product helper(s)**
    - Split `_prepare_sample_grad_or_dotprod` into:
      - `_compute_dotprod_from_backprops(layer, backprops, val_batch_size, loss_reduction, log_grad_norms)`
        - activation resolution + reshaping
@@ -81,22 +94,23 @@
      - immediately `_cleanup_layer_state` for safe layers
      - defer `_cleanup_layer_state` until the norm-layer backward hook finishes
 
-7) **Tests / validation**
+8) **Tests / validation**
    - Add a small MLP regression to confirm:
      - `param.grad` on maskable layers matches a train-only baseline.
      - dot products remain identical to naive computation (`tests/benchmark_ghost_dotprod.py`).
    - Add a norm-layer case (LayerNorm/RMSNorm) to ensure:
-     - parameter grads are train-only (from activation masking)
-     - upstream dot products are correct (from grad_input correction).
+     - parameter grads are train-only (masking + LayerNorm override)
+     - upstream dot products are correct (grad_input correction).
 
-## Evaluation of the norm-layer grad_input fix
-- **Correctness:** Full backward hooks can return a new `grad_input` used by upstream modules, even though
-  parameter grads are already computed. This fits our goal: train-only parameter grads + full upstream grads.
-- **Cost:** Extra compute for norm layers (mean/var or RMS recomputation), but only for those layers.
-- **Risk:** Numerical differences if formulas or dtypes differ from PyTorch kernels; mitigate by matching
-  PyTorch’s math (biased variance, eps, dtype casts) and validating against a baseline.
+## Evaluation of the proposed norm-layer fix
+- **RMSNorm**: masking activation + recomputing `grad_input` is sufficient (weight-only, val contributions zero).
+- **LayerNorm**: still needs explicit param-grad override because bias and `x_hat` depend on `grad_output` and
+  saved mean/var. The full backward hook is a good place to recompute and overwrite these grads.
+- **Risk:** numerical differences if formulas/dtypes differ from PyTorch kernels; mitigate by matching math
+  (biased variance, eps, dtype casts) and validating vs a baseline.
 
 ## Key implementation note
 This plan preserves upstream gradients (and thus earlier-layer dot products) by **not** modifying `grad_output`.
 Train-only parameter gradients are produced by masking **activations** at `unpack_hook` time.
-For RMSNorm/LayerNorm, a full backward hook recomputes and returns `grad_input` using the **original** activation.
+For RMSNorm/LayerNorm, a full backward hook recomputes and returns `grad_input` using the **original** activation,
+and for LayerNorm also overrides parameter grads to be train-only.

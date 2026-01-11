@@ -166,9 +166,10 @@ class GradDotProdEngine:
                     )
                 else:
                     param.grad = param.train_grad
-            else:
+            elif param.grad is None:
                 raise ValueError(
-                    f"Parameter {name} requires grad but does not have 'train_grad' attribute. "
+                    f"Parameter {name} requires grad but has no gradient. "
+                    "Check that autograd produced .grad or train_grad is set."
                 )
                 
         # Lock to prevent accidental re-creation of gradients before step is done.
