@@ -191,6 +191,10 @@ class _NamedSavedTensorManager:
             if not self._enabled:
                 return None
 
+            if self._debug:
+                if not self._captured.get(name, []):
+                    print(f"[resolve_activation] [{name}] no captures found")
+
             capture_pool = self._captured.get(name, []) or self._captured_all
             if not capture_pool:
                 return None
