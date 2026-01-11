@@ -31,6 +31,10 @@ class _NamedSavedTensorManager:
         self._enabled: bool = False
         self._captured: Dict[str, List[torch.Tensor]] = {}
         self._captured_all: List[torch.Tensor] = []
+        self._tensor_meta: Dict[int, str] = {}
+        self._layers_by_name: Dict[str, nn.Module] = {}
+        self._val_batch_size: int = 0
+        self._loss_reduction: str = "mean"
 
         # Book-keeping of tensor ids that have been used for activations (to avoid double usage across layers).
         self._used_ids: set[int] = set()
@@ -50,6 +54,7 @@ class _NamedSavedTensorManager:
             self._enabled = True
             self._captured = {}
             self._captured_all = []
+            self._tensor_meta = {}
             self._used_ids = set()
         self._get_stack().clear()
 
@@ -58,6 +63,7 @@ class _NamedSavedTensorManager:
             self._enabled = False
             self._captured = {}
             self._captured_all = []
+            self._tensor_meta = {}
             self._used_ids = set()
         self._get_stack().clear()
 
@@ -92,6 +98,7 @@ class _NamedSavedTensorManager:
             if stack:
                 name = stack[-1]
                 self._captured.setdefault(name, []).append(x)
+                self._tensor_meta[id(x)] = name
             if self._debug:
                 scope = stack[-1] if stack else "<none>"
                 print(
@@ -103,7 +110,57 @@ class _NamedSavedTensorManager:
         return x
 
     def unpack_hook(self, x: torch.Tensor) -> torch.Tensor:
-        return x
+        if not self._get_enabled():
+            return x
+
+        if not x.is_floating_point():
+            return x
+
+        name = self._tensor_meta.get(id(x))
+        if not name:
+            return x
+
+        layer = self._layers_by_name.get(name)
+        if layer is None:
+            return x
+
+        input_shape = getattr(layer, "_ghost_input_shape", None)
+        train_bs = getattr(layer, "_ghost_train_bs", None)
+        total_bs = getattr(layer, "_ghost_total_bs", None)
+        if input_shape is None or train_bs is None or total_bs is None:
+            return x
+
+        if train_bs <= 0 or train_bs >= total_bs:
+            return x
+
+        flat_shape = None
+        tokens_per_sample = 1
+        if len(input_shape) > 1:
+            if len(input_shape) > 2:
+                tokens_per_sample = int(math.prod(input_shape[1:-1]))
+            flat_shape = (input_shape[0] * tokens_per_sample, input_shape[-1])
+
+        shape = tuple(x.shape)
+        if shape != input_shape and (flat_shape is None or shape != flat_shape):
+            return x
+
+        if self._loss_reduction == "mean":
+            scale = float(total_bs) / float(train_bs)
+        else:
+            scale = 1.0 / float(train_bs)
+
+        masked = x.clone()
+        if shape == input_shape:
+            if scale != 1.0:
+                masked[:train_bs] = masked[:train_bs] * scale
+            masked[train_bs:] = 0
+            return masked
+
+        split_idx = train_bs * tokens_per_sample
+        if scale != 1.0:
+            masked[:split_idx] = masked[:split_idx] * scale
+        masked[split_idx:] = 0
+        return masked
 
     def resolve_activation(self, layer: nn.Module) -> Optional[torch.Tensor]:
         name = getattr(layer, "name", None)
@@ -225,6 +282,8 @@ def add_hooks(
 
     handles = []
     manager = _NamedSavedTensorManager()
+    manager._val_batch_size = val_batch_size
+    manager._loss_reduction = loss_reduction
     model._ghost_saved_tensor_mgr = manager
 
     for name, layer in model.named_modules():
@@ -232,12 +291,17 @@ def add_hooks(
 
             layer.name = name
             layer._ghost_saved_tensor_mgr = manager
+            manager._layers_by_name[name] = layer
 
             # push the layer name to the scope stack before forward pass
             def _push_scope(this_layer, inputs):
                 manager.push(this_layer.name)
                 if manager._get_enabled() and inputs and hasattr(inputs[0], "shape"):
-                    this_layer._ghost_input_shape = tuple(inputs[0].shape)
+                    input_shape = tuple(inputs[0].shape)
+                    this_layer._ghost_input_shape = input_shape
+                    total_bs = input_shape[0]
+                    this_layer._ghost_total_bs = total_bs
+                    this_layer._ghost_train_bs = total_bs - val_batch_size
 
             # pop the layer name from the scope stack after forward pass
             def _pop_scope(this_layer, inputs, output):
@@ -246,19 +310,81 @@ def add_hooks(
             handles.append(layer.register_forward_pre_hook(_push_scope))
             handles.append(layer.register_forward_hook(_pop_scope))
 
-            def backward_hook(this_layer, grad_input, grad_output):
+            def _register_output_hook(this_layer, inputs, output):
+                def _grad_hook(grad: torch.Tensor) -> torch.Tensor:
+                    _compute_dotprod_from_backprops(
+                        this_layer, grad, val_batch_size, loss_reduction, log_grad_norms
+                    )
 
-                # compute the gradient dot products and store them on the layer
-                _prepare_sample_grad_or_dotprod(
-                    this_layer, grad_output, val_batch_size, loss_reduction, log_grad_norms
-                )
+                    if isinstance(this_layer, nn.Embedding):
+                        masked_grad = _mask_embedding_grad_output(
+                            this_layer, grad, val_batch_size, loss_reduction
+                        )
+                        _cleanup_layer_state(this_layer)
+                        return masked_grad
 
-                # compute and accumulate the training gradients
-                _apply_train_grad(this_layer, val_batch_size)
+                    if isinstance(this_layer, (nn.LayerNorm, nn.RMSNorm)):
+                        # Keep activation for the full backward hook to fix grad_input.
+                        this_layer._ghost_saved_activation = getattr(this_layer, "activations", None)
+                        return grad
 
-                return None
+                    _cleanup_layer_state(this_layer)
+                    return grad
 
-            handles.append(layer.register_full_backward_hook(backward_hook))
+                if isinstance(output, torch.Tensor):
+                    output.register_hook(_grad_hook)
+                elif isinstance(output, (tuple, list)):
+                    for out in output:
+                        if isinstance(out, torch.Tensor):
+                            out.register_hook(_grad_hook)
+
+            handles.append(layer.register_forward_hook(_register_output_hook))
+
+            if isinstance(layer, (nn.LayerNorm, nn.RMSNorm)):
+
+                def norm_backward_hook(this_layer, grad_input, grad_output):
+                    if not grad_output:
+                        return None
+
+                    activation = getattr(this_layer, "_ghost_saved_activation", None)
+                    if activation is None:
+                        activation = getattr(this_layer, "activations", None)
+                    if activation is None:
+                        manager = getattr(this_layer, "_ghost_saved_tensor_mgr", None)
+                        if manager is not None:
+                            activation = manager.resolve_activation(this_layer)
+
+                    if activation is None:
+                        return None
+
+                    if isinstance(this_layer, nn.RMSNorm):
+                        corrected = _compute_rmsnorm_grad_input(
+                            this_layer, activation, grad_output[0]
+                        )
+                    else:
+                        corrected = _compute_layernorm_grad_input(
+                            this_layer, activation, grad_output[0]
+                        )
+                        backprops = grad_output[0].detach()
+                        if loss_reduction == "mean":
+                            backprops = backprops * float(backprops.shape[0])
+                        _, compute_layer_train_grad = _supported_layers_dotprod.get(
+                            type(this_layer), (None, None)
+                        )
+                        if compute_layer_train_grad is not None:
+                            compute_layer_train_grad(
+                                this_layer, activation, backprops, val_batch_size
+                            )
+
+                    _cleanup_layer_state(this_layer)
+
+                    if not grad_input:
+                        return None
+                    new_grad_input = list(grad_input)
+                    new_grad_input[0] = corrected
+                    return tuple(new_grad_input)
+
+                handles.append(layer.register_full_backward_hook(norm_backward_hook))
 
         else:
             is_atomic_layer = not list(layer.children())
@@ -288,6 +414,16 @@ def remove_hooks(model: nn.Module):
             delattr(layer, "_ghost_saved_tensor_mgr")
         if hasattr(layer, "_ghost_input_shape"):
             delattr(layer, "_ghost_input_shape")
+        if hasattr(layer, "_ghost_train_bs"):
+            delattr(layer, "_ghost_train_bs")
+        if hasattr(layer, "_ghost_total_bs"):
+            delattr(layer, "_ghost_total_bs")
+        if hasattr(layer, "_ghost_saved_activation"):
+            delattr(layer, "_ghost_saved_activation")
+        if hasattr(layer, "activations"):
+            delattr(layer, "activations")
+        if hasattr(layer, "backprops"):
+            delattr(layer, "backprops")
 
 
 def _scale_logged_grad_norms(layer: nn.Module, grad_scale: float) -> None:
@@ -336,27 +472,37 @@ def _select_compute_dtype(layer: nn.Module, A: torch.Tensor, B: torch.Tensor) ->
     return A.dtype
 
 
-def _prepare_sample_grad_or_dotprod(
+def _reshape_activation_if_needed(layer: nn.Module, activation: torch.Tensor) -> torch.Tensor:
+    input_shape = getattr(layer, "_ghost_input_shape", None)
+    if input_shape is None or not hasattr(activation, "shape"):
+        return activation
+    flat_shape = None
+    if len(input_shape) > 1:
+        flat_shape = (int(math.prod(input_shape[:-1])), input_shape[-1])
+    if flat_shape is not None and tuple(activation.shape) == tuple(flat_shape):
+        return activation.reshape(input_shape)
+    return activation
+
+
+def _compute_dotprod_from_backprops(
     layer: nn.Module,
-    grad_output: Tuple[torch.Tensor],
+    backprops: torch.Tensor,
     val_batch_size: int,
-    loss_reduction: str = 'mean',
+    loss_reduction: str = "mean",
     log_grad_norms: bool = False,
-):
+) -> None:
     """
-    Backward hook handler that captures backprops and computes the gradient dot product.
+    Compute dot products from a single backprop tensor (grad_output).
     """
-    backprops = grad_output[0].detach()
-    grad_scale = float(backprops.shape[0]) if loss_reduction == 'mean' else 1.0
+    backprops = backprops.detach()
     manager = getattr(layer, "_ghost_saved_tensor_mgr", None)
 
-    if not hasattr(layer, 'activations') or layer.activations is None:
+    if not hasattr(layer, "activations") or layer.activations is None:
         if manager is None:
             raise RuntimeError(
                 f"Missing saved tensor manager for layer {getattr(layer, 'name', '<unnamed>')}."
             )
 
-        # resolve the activation tensor from the saved tensors during forward pass
         activation = manager.resolve_activation(layer)
         if activation is None:
             raise RuntimeError(
@@ -364,28 +510,15 @@ def _prepare_sample_grad_or_dotprod(
                 "Ensure the saved_tensors_hooks context is active around forward/backward."
             )
 
-        # for linear layers, we need to reshape the activation tensor (batch_size * seq_len, d_model)
-        # back to (batch_size, seq_len, d_model) for the dot product computation.
-        input_shape = getattr(layer, "_ghost_input_shape", None)
-        if input_shape is not None and hasattr(activation, "shape"):
-            flat_shape = None
-            if len(input_shape) > 1:
-                flat_shape = (int(math.prod(input_shape[:-1])), input_shape[-1])
-            if flat_shape is not None and tuple(activation.shape) == tuple(flat_shape):
-                activation = activation.reshape(input_shape)
-
+        activation = _reshape_activation_if_needed(layer, activation)
         layer.activations = activation
 
-    # The function to compute the dot product is retrieved from the support dictionary.
-    # We assume the second function returned is for computing the training gradient.
     compute_layer_dotprod, _ = _supported_layers_dotprod.get(type(layer))
-
-    # select the compute dtype for the dot product computation
     compute_dtype = _select_compute_dtype(layer, layer.activations, backprops)
 
     if manager is not None and manager._debug:
         print(
-            "[prepare_sample_grad_or_dotprod] "
+            "[compute_dotprod_from_backprops] "
             f"[{layer.name}] activations dtype: {layer.activations.dtype}, "
             f"backprops dtype: {backprops.dtype}, compute_dtype: {compute_dtype}, accum_dtype: {ACCUM_DTYPE}"
         )
@@ -400,14 +533,86 @@ def _prepare_sample_grad_or_dotprod(
         accum_dtype=ACCUM_DTYPE,
     )
 
-    if grad_scale != 1.0:
-        if log_grad_norms:
-            _scale_logged_grad_norms(layer, grad_scale)
-        # Scale the backprops since the value is being divided by train_batch_size+val_batch_size.
-        backprops = backprops * grad_scale
 
-    # Store (scaled) backprops for the next function in the hook.
-    layer.backprops = backprops
+def _mask_embedding_grad_output(
+    layer: nn.Module,
+    grad_output: torch.Tensor,
+    val_batch_size: int,
+    loss_reduction: str,
+) -> torch.Tensor:
+    total_bs = getattr(layer, "_ghost_total_bs", grad_output.shape[0])
+    train_bs = getattr(layer, "_ghost_train_bs", total_bs - val_batch_size)
+    if train_bs <= 0 or train_bs >= total_bs:
+        return grad_output
+
+    if loss_reduction == "mean":
+        scale = float(total_bs) / float(train_bs)
+    else:
+        scale = 1.0 / float(train_bs)
+
+    masked = grad_output.clone()
+    if scale != 1.0:
+        masked[:train_bs] = masked[:train_bs] * scale
+    masked[train_bs:] = 0
+    return masked
+
+
+def _cleanup_layer_state(layer: nn.Module) -> None:
+    if hasattr(layer, "activations"):
+        del layer.activations
+    if hasattr(layer, "backprops"):
+        del layer.backprops
+    if hasattr(layer, "_ghost_saved_activation"):
+        delattr(layer, "_ghost_saved_activation")
+    manager = getattr(layer, "_ghost_saved_tensor_mgr", None)
+    if manager is not None and hasattr(layer, "name"):
+        manager.clear_layer(layer.name)
+
+
+def _compute_rmsnorm_grad_input(
+    layer: nn.RMSNorm, x: torch.Tensor, grad_output: torch.Tensor
+) -> torch.Tensor:
+    compute_dtype = torch.float32 if x.dtype in (torch.float16, torch.bfloat16) else x.dtype
+    x_f = x.to(compute_dtype)
+    go_f = grad_output.to(compute_dtype)
+
+    weight = getattr(layer, "weight", None)
+    if weight is not None:
+        go_f = go_f * weight.to(compute_dtype)
+
+    norm_dims = tuple(range(-len(layer.normalized_shape), 0))
+    inv_rms = torch.rsqrt(x_f.pow(2).mean(dim=norm_dims, keepdim=True) + layer.eps)
+    x_hat = x_f * inv_rms
+    go_xhat_mean = (go_f * x_hat).mean(dim=norm_dims, keepdim=True)
+    grad_input = inv_rms * (go_f - x_hat * go_xhat_mean)
+    return grad_input.to(grad_output.dtype)
+
+
+def _compute_layernorm_grad_input(
+    layer: nn.LayerNorm, x: torch.Tensor, grad_output: torch.Tensor
+) -> torch.Tensor:
+    compute_dtype = torch.float32 if x.dtype in (torch.float16, torch.bfloat16) else x.dtype
+    x_f = x.to(compute_dtype)
+    go_f = grad_output.to(compute_dtype)
+
+    weight = getattr(layer, "weight", None)
+    if weight is not None:
+        go_f = go_f * weight.to(compute_dtype)
+
+    norm_dims = tuple(range(-len(layer.normalized_shape), 0))
+    mean = x_f.mean(dim=norm_dims, keepdim=True)
+    var = x_f.var(dim=norm_dims, unbiased=False, keepdim=True)
+    rstd = torch.rsqrt(var + layer.eps)
+    x_hat = (x_f - mean) * rstd
+
+    n = 1
+    for dim in layer.normalized_shape:
+        n *= dim
+
+    go_sum = go_f.sum(dim=norm_dims, keepdim=True)
+    go_xhat_sum = (go_f * x_hat).sum(dim=norm_dims, keepdim=True)
+    grad_input = (1.0 / n) * rstd * (n * go_f - go_sum - x_hat * go_xhat_sum)
+    return grad_input.to(grad_output.dtype)
 
 
 def _apply_train_grad(
