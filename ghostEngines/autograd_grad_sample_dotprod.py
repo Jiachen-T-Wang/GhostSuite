@@ -332,7 +332,7 @@ def _select_compute_dtype(layer: nn.Module, A: torch.Tensor, B: torch.Tensor) ->
             UserWarning,
             stacklevel=2,
         )
-        
+
     return A.dtype
 
 
@@ -380,6 +380,7 @@ def _prepare_sample_grad_or_dotprod(
     # We assume the second function returned is for computing the training gradient.
     compute_layer_dotprod, _ = _supported_layers_dotprod.get(type(layer))
 
+    # select the compute dtype for the dot product computation
     compute_dtype = _select_compute_dtype(layer, layer.activations, backprops)
 
     if manager is not None and manager._debug:
