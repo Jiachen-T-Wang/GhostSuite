@@ -30,7 +30,6 @@ class _NamedSavedTensorManager:
         self._lock = threading.Lock()
         self._enabled: bool = False
         self._captured: Dict[str, List[torch.Tensor]] = {}
-        self._captured_all: List[torch.Tensor] = []
         self._tensor_meta: Dict[int, str] = {}
         self._layers_by_name: Dict[str, nn.Module] = {}
         self._val_batch_size: int = 0
@@ -53,7 +52,6 @@ class _NamedSavedTensorManager:
         with self._lock:
             self._enabled = True
             self._captured = {}
-            self._captured_all = []
             self._tensor_meta = {}
             self._used_ids = set()
         self._get_stack().clear()
@@ -62,7 +60,6 @@ class _NamedSavedTensorManager:
         with self._lock:
             self._enabled = False
             self._captured = {}
-            self._captured_all = []
             self._tensor_meta = {}
             self._used_ids = set()
         self._get_stack().clear()
@@ -94,7 +91,6 @@ class _NamedSavedTensorManager:
             return x
         stack = self._get_stack()
         with self._lock:
-            self._captured_all.append(x)
             if stack:
                 name = stack[-1]
                 self._captured.setdefault(name, []).append(x)
@@ -105,7 +101,7 @@ class _NamedSavedTensorManager:
                     "[ghost_saved_tensor] "
                     f"tid={threading.get_ident()} scope={scope} "
                     f"shape={tuple(x.shape)} dtype={x.dtype} device={x.device} "
-                    f"captured_all={len(self._captured_all)}"
+                    f"captured_entries={len(self._captured.get(scope, []))}"
                 )
         return x
 
@@ -195,7 +191,7 @@ class _NamedSavedTensorManager:
                 if not self._captured.get(name, []):
                     print(f"[resolve_activation] [{name}] no captures found")
 
-            capture_pool = self._captured.get(name, []) or self._captured_all
+            capture_pool = self._captured.get(name, [])
             if not capture_pool:
                 return None
 
