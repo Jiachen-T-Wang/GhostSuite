@@ -140,3 +140,62 @@ The above produces the following training log:
   - deterministic kernels enabled (if possible).
 
 
+
+
+
+
+
+## Observation: significant slow down on `time_metrics/end_to_end(s)`
+
+### Standard run for torchtitan
+
+```
+CONFIG_FILE="/scratch/gpfs/PMITTAL/tianhao/GhostSuite/tests/torchtitan/torchtitan/models/llama3/train_configs/llama3_130m_ghost.toml" ./tests/torchtitan/run_train_with_ghost.sh --training.steps=10 --ghost.enable=false --training.local_batch_size=4 --training.global_batch_size=4
+```
+The above produces the following training log:
+```
+[rank0]:[titan] 2026-01-11 21:22:12,680 - root - INFO - step:  1  loss: 12.2326  grad_norm:  0.5244  memory: 43.52GiB(31.13%)  tps: 8,080  tflops: 15.59  mfu: 1.58%
+[rank0]:[titan] 2026-01-11 21:22:12,680 - root - INFO - Synchronizing and adjusting timeout for all ProcessGroups to 0:01:40
+[rank0]:[titan] 2026-01-11 21:22:13,002 - root - INFO - step:  2  loss: 12.2097  grad_norm:  0.4884  memory: 45.30GiB(32.41%)  tps: 51,050  tflops: 98.49  mfu: 9.96%
+[rank0]:[titan] 2026-01-11 21:22:13,124 - root - INFO - step:  3  loss: 12.1155  grad_norm:  0.5911  memory: 45.30GiB(32.41%)  tps: 135,808  tflops: 262.02  mfu: 26.49%
+[rank0]:[titan] 2026-01-11 21:22:13,246 - root - INFO - step:  4  loss: 12.0053  grad_norm:  0.7386  memory: 45.30GiB(32.41%)  tps: 135,952  tflops: 262.29  mfu: 26.52%
+[rank0]:[titan] 2026-01-11 21:22:13,367 - root - INFO - step:  5  loss: 11.7173  grad_norm:  1.2430  memory: 45.30GiB(32.41%)  tps: 136,051  tflops: 262.48  mfu: 26.54%
+[rank0]:[titan] 2026-01-11 21:22:13,489 - root - INFO - step:  6  loss: 11.2483  grad_norm:  1.9420  memory: 45.30GiB(32.41%)  tps: 135,923  tflops: 262.24  mfu: 26.52%
+[rank0]:[titan] 2026-01-11 21:22:13,611 - root - INFO - step:  7  loss: 10.8102  grad_norm:  1.6551  memory: 45.30GiB(32.41%)  tps: 135,646  tflops: 261.70  mfu: 26.46%
+[rank0]:[titan] 2026-01-11 21:22:13,733 - root - INFO - step:  8  loss: 10.6356  grad_norm:  1.4500  memory: 45.30GiB(32.41%)  tps: 135,731  tflops: 261.87  mfu: 26.48%
+[rank0]:[titan] 2026-01-11 21:22:13,854 - root - INFO - step:  9  loss: 10.4951  grad_norm:  1.4273  memory: 45.30GiB(32.41%)  tps: 135,642  tflops: 261.70  mfu: 26.46%
+[rank0]:[titan] 2026-01-11 21:22:13,975 - root - INFO - step: 10  loss: 10.1709  grad_norm:  1.5206  memory: 45.30GiB(32.41%)  tps: 136,682  tflops: 263.70  mfu: 26.66%
+```
+
+### Ghost run for torchtitan
+
+```
+CONFIG_FILE="/scratch/gpfs/PMITTAL/tianhao/GhostSuite/tests/torchtitan/torchtitan/models/llama3/train_configs/llama3_130m_ghost.toml" ./tests/torchtitan/run_train_with_ghost.sh --training.steps=10 --training.local_batch_size=2 --training.global_batch_size=2
+```
+The above produces the following training log:
+```
+[rank0]:[titan] 2026-01-11 21:23:39,159 - root - INFO - step:  1  loss: 12.2521  grad_norm:  0.6113  memory: 43.52GiB(31.13%)  tps: 7,567  tflops: 14.60  mfu: 1.48%
+[rank0]:[titan] 2026-01-11 21:23:39,160 - root - INFO - Synchronizing and adjusting timeout for all ProcessGroups to 0:01:40
+[rank0]:[titan] 2026-01-11 21:23:39,358 - root - INFO - Building device mesh with parallelism: pp=1, dp_replicate=1, dp_shard=1, cp=1, tp=1, ep=1, etp=1
+[rank0]:[titan] 2026-01-11 21:23:39,363 - root - INFO - Successfully created meshes with active dimensions: []
+[rank0]:[titan] 2026-01-11 21:23:39,684 - root - INFO - step:  2  loss: 12.2273  grad_norm:  0.5423  memory: 47.71GiB(34.12%)  tps: 31,339  tflops: 60.46  mfu: 6.11%
+[rank0]:[titan] 2026-01-11 21:23:40,002 - root - INFO - step:  3  loss: 12.1733  grad_norm:  0.6184  memory: 47.71GiB(34.12%)  tps: 51,674  tflops: 99.70  mfu: 10.08%
+[rank0]:[titan] 2026-01-11 21:23:40,322 - root - INFO - step:  4  loss: 12.0984  grad_norm:  0.7449  memory: 47.71GiB(34.12%)  tps: 51,474  tflops: 99.31  mfu: 10.04%
+[rank0]:[titan] 2026-01-11 21:23:40,641 - root - INFO - step:  5  loss: 11.9422  grad_norm:  1.0203  memory: 47.71GiB(34.12%)  tps: 51,528  tflops: 99.41  mfu: 10.05%
+[rank0]:[titan] 2026-01-11 21:23:40,959 - root - INFO - step:  6  loss: 11.6608  grad_norm:  1.7049  memory: 47.71GiB(34.12%)  tps: 51,648  tflops: 99.64  mfu: 10.08%
+[rank0]:[titan] 2026-01-11 21:23:41,279 - root - INFO - step:  7  loss: 11.1394  grad_norm:  1.8498  memory: 47.71GiB(34.12%)  tps: 51,401  tflops: 99.17  mfu: 10.03%
+[rank0]:[titan] 2026-01-11 21:23:41,597 - root - INFO - step:  8  loss: 10.8308  grad_norm:  1.7437  memory: 47.71GiB(34.12%)  tps: 51,710  tflops: 99.76  mfu: 10.09%
+[rank0]:[titan] 2026-01-11 21:23:41,916 - root - INFO - step:  9  loss: 10.6854  grad_norm:  1.5282  memory: 47.71GiB(34.12%)  tps: 51,499  tflops: 99.36  mfu: 10.05%
+[rank0]:[titan] 2026-01-11 21:23:42,234 - root - INFO - step: 10  loss: 10.5298  grad_norm:  1.5869  memory: 47.71GiB(34.12%)  tps: 51,719  tflops: 99.78  mfu: 10.09%
+```
+
+### Analysis (no code changes)
+- If `val_batch_size=2` in the ghost run (total batch size = 2 train + 2 val), then **total tokens per step match** the standard run. The slowdown still makes sense because ghost adds extra compute and synchronization even when total tokens are equal.
+- If `val_batch_size` is larger (the config default is 4), then the ghost run also does **more** forward/backward work per step, which further increases end-to-end time. (Worth double-checking the effective `val_batch_size` passed at runtime.)
+- Ghost adds substantial per-step overhead even at equal total batch size:
+  - **Dot-product computation** for every supported layer (extra matmuls/reductions in `ghostEngines/supported_layers_grad_samplers_dotprod.py`).
+  - **Saved-tensors hooks** for every saved activation (pack/unpack, masking clones) and norm-layer grad_input fixes.
+  - **CPU transfers** inside `GradDotProdEngine.aggregate_and_log()` (dot products + X_train/Y_train moved to CPU each step, even if `save_train_batch=false`).
+  - **Extra tensor ops** (`torch.cat` for train+val, activation masking clones) that increase memory bandwidth use.
+- `time_metrics/end_to_end(s)` includes data loading + compute time; ghost’s additional compute + CPU sync points (dotprod aggregation) directly increase this metric.
+- To isolate overhead, compare against a non-ghost run with **total batch size = train + val** (same token count) and verify the runtime `val_batch_size` used by ghost.
