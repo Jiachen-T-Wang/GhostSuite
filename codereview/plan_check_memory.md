@@ -1,8 +1,8 @@
 # Plan: Check Ghost GradDotProd Memory Release
 
 ## What I observed in code
-- `tests/torchtitan/torchtitan/train_with_ghost.py` forces `global_batch_size = local_batch_size` and concatenates train+val. With `local_batch_size=2` and `val_batch_size=4`, forward/backward uses batch=6, versus batch=2 with gradient accumulation in the non-ghost path. This alone should raise activation memory by ~3x.
-- Metrics use `labels.numel()` from the *train* batch (`tests/torchtitan/torchtitan/train.py:405-408`), so throughput/MFU is undercounted when ghost adds validation tokens.
+- `examples/torchtitan/torchtitan/train_with_ghost.py` forces `global_batch_size = local_batch_size` and concatenates train+val. With `local_batch_size=2` and `val_batch_size=4`, forward/backward uses batch=6, versus batch=2 with gradient accumulation in the non-ghost path. This alone should raise activation memory by ~3x.
+- Metrics use `labels.numel()` from the *train* batch (`examples/torchtitan/torchtitan/train.py:405-408`), so throughput/MFU is undercounted when ghost adds validation tokens.
 - `ghostEngines/autograd_grad_sample_dotprod.py:_NamedSavedTensorManager.unpack_hook` does `x.clone()` when masking. That duplicates saved activations during backward.
 - Norm layers keep a second copy of the original activation (`_ghost_saved_activation`) while the masked clone is used for autograd. That is an extra activation copy for each norm layer.
 - Saved tensors are held in `_NamedSavedTensorManager._captured` until `_cleanup_layer_state` runs. If cleanup does not run for any layer, those tensors stay alive for the remainder of backward.
@@ -15,7 +15,7 @@
 
 ## Tests / instrumentation to add
 ### A. Per-layer backward memory trace (ghost vs baseline)
-- Create `tests/torchtitan/scripts/ghost_memory_trace.py` (or a new test under `tests/torchtitan/tests/`).
+- Create `examples/torchtitan/scripts/ghost_memory_trace.py` (or a new test under `examples/torchtitan/tests/`).
 - Subclass `Trainer` and `GhostTrainer` to inject hooks without modifying core logic:
   - Register `register_full_backward_hook` on each supported layer.
   - At hook entry/exit, log `torch.cuda.memory_allocated()` and `torch.cuda.memory_reserved()` (plus `torch.cuda.synchronize()` for accurate timing).

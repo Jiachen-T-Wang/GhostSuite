@@ -3,8 +3,8 @@
 ## Context: what mixed precision mode is active
 
 - The debug config sets `training.dtype = "float32"` and `training.mixed_precision_param = "bfloat16"` with no FSDP/TP/PP (`parallelism.*_degree = 1`). In this setup, `maybe_enable_amp(...)` chooses AMP autocast (bfloat16) rather than FSDP mixed precision. Parameters stay in fp32; autocast selectively runs compute-heavy ops (e.g., `nn.Linear`, matmuls) in bf16 while keeping numerically sensitive ops (e.g., norms, softmax) in fp32.
-  - Config defaults: `tests/torchtitan/torchtitan/config/job_config.py`
-  - AMP path: `tests/torchtitan/torchtitan/distributed/utils.py`
+  - Config defaults: `examples/torchtitan/torchtitan/config/job_config.py`
+  - AMP path: `examples/torchtitan/torchtitan/distributed/utils.py`
   - AMP is used in `train_with_ghost.py` around the forward + loss.
 
 ## What the log lines represent
@@ -22,15 +22,15 @@
 
 - **`Attention forward: x dtype: torch.float32`**
   - `x` is the output of `self.attention_norm(x)` from `TransformerBlock`. RMSNorm runs in fp32 under autocast, and the residual stream is fp32 (float32 + bf16 promotes to float32), so the attention input stays fp32.
-  - Code: `tests/torchtitan/torchtitan/models/llama3/model/model.py` (`TransformerBlock.forward`, `Attention.forward`)
+  - Code: `examples/torchtitan/torchtitan/models/llama3/model/model.py` (`TransformerBlock.forward`, `Attention.forward`)
 
 - **`Attention forward: xq/xk/xv dtype: torch.bfloat16`**
   - `wq/wk/wv` are `nn.Linear` ops. Under autocast they execute in bf16, so their outputs are bf16.
-  - Code: `tests/torchtitan/torchtitan/models/llama3/model/model.py` (`Attention.forward`)
+  - Code: `examples/torchtitan/torchtitan/models/llama3/model/model.py` (`Attention.forward`)
 
 - **`attention after rotary: xq/xk dtype: torch.bfloat16`**
   - `apply_rotary_emb(...)` explicitly converts `xq/xk` to fp32 for the complex math, then casts back to the original dtype via `type_as(xq/xk)`. So the *returned* tensors are bf16 even though the internal math is fp32.
-  - Code: `tests/torchtitan/torchtitan/models/llama3/model/model.py` (`apply_rotary_emb`)
+  - Code: `examples/torchtitan/torchtitan/models/llama3/model/model.py` (`apply_rotary_emb`)
 
 - **`[hook] ... attention.wq/wk/wv: A dtype: torch.float32, B dtype: torch.float32`**
   - `A` is fp32 because it is the attention-norm output. `B` prints as fp32 because the hook promotes `A` and `B` to a common type; even if the raw backprop were bf16, the promoted dtype is fp32 when `A` is fp32.
@@ -54,7 +54,7 @@
 - **`[hook] _compute_linear_dot_product for output: A dtype: torch.float32, B dtype: torch.float32`**
   - The final RMSNorm keeps the residual stream in fp32, so the output projection receives fp32 activations.
   - The loss explicitly casts logits to fp32 via `pred.flatten(...).float()`, so the gradient w.r.t. logits is fp32, matching the hook print.
-  - Code: `tests/torchtitan/torchtitan/models/llama3/model/model.py` (final `norm`, `output`), loss in `tests/torchtitan/torchtitan/components/loss.py`.
+  - Code: `examples/torchtitan/torchtitan/models/llama3/model/model.py` (final `norm`, `output`), loss in `examples/torchtitan/torchtitan/components/loss.py`.
 
 ## Takeaway
 

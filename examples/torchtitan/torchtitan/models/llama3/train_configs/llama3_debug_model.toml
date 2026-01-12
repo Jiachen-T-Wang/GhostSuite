@@ -1,0 +1,102 @@
+[job]
+dump_folder = "./outputs"
+description = "Llama 3-tiny (1.5M) training with Ghost GradDotProd"
+
+[profiling]
+enable_profiling = false
+save_traces_folder = "profile_trace"
+profile_freq = 100
+enable_memory_snapshot = false
+save_memory_snapshot_folder = "memory_snapshot"
+
+[metrics]
+log_freq = 1
+enable_tensorboard = true
+save_tb_folder = "tb"
+enable_wandb = true
+
+[model]
+name = "llama3"
+flavor = "tiny"
+hf_assets_path = "./assets/hf/Llama-3.1-8B"
+
+[optimizer]
+name = "AdamW"
+lr = 3e-4
+eps = 1e-8
+beta1 = 0.9
+beta2 = 0.999
+weight_decay = 0.1
+implementation = "fused"
+
+[lr_scheduler]
+warmup_steps = 200
+decay_type = "cosine"
+decay_ratio = 0.0
+min_lr_factor = 0.1
+
+[training]
+local_batch_size = 12
+global_batch_size = 12
+seq_len = 32
+max_norm = 1.0
+steps = 1000
+dataset = "c4_500gb"
+
+[training.dataloader]
+num_workers = 4
+persistent_workers = true
+prefetch_factor = 4
+pin_memory = true
+
+[parallelism]
+data_parallel_replicate_degree = 1
+data_parallel_shard_degree = 1
+tensor_parallel_degree = 1
+pipeline_parallel_degree = 1
+context_parallel_degree = 1
+
+[checkpoint]
+enable = false
+folder = "checkpoint"
+interval = 500
+last_save_model_only = false
+export_dtype = "float32"
+async_mode = "disabled"
+
+[compile]
+enable = false
+components = ["model", "loss"]
+backend = "inductor"
+
+[activation_checkpoint]
+mode = "none"
+selective_ac_option = "op"
+
+[quantize.linear.float8]
+enable_fsdp_float8_all_gather = false
+precompute_float8_dynamic_scale_for_fsdp = false
+filter_fqns = ["output"]
+
+[validation]
+enable = false
+dataset = "pile_test"
+freq = 200
+steps = 1000
+local_batch_size = 4
+seq_len = 32
+
+[debug]
+seed = 42
+
+[ghost]
+enable = true
+val_batch_size = 4
+val_dataset = "pile_test"
+val_dataset_path = "/scratch/gpfs/PMITTAL/tianhao/PretrainData/pile/pile-test"
+save_dir = "./outputs/ghost_dotprods"
+save_interval = 50
+save_train_batch = false
+log_grad_norms = false
+use_dummy_bias = false
+enable_validation = false

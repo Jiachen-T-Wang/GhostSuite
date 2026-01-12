@@ -1,8 +1,8 @@
 # Saved tensor hook failure (TorchTitan) – detailed review
 
 ## What broke
-- `./tests/torchtitan/run_train_with_ghost.sh` failed during the first backward pass with `RuntimeError: Failed to capture saved activations...` originating from `ghostEngines/autograd_grad_sample_dotprod.py`.
-- A minimal CUDA repro (TwoLayerMLP using `GradDotProdEngine` on GPU) produced the same error, while the CPU-only `Examples/ghost_mlp.py` ran successfully.
+- `./examples/torchtitan/run_train_with_ghost.sh` failed during the first backward pass with `RuntimeError: Failed to capture saved activations...` originating from `ghostEngines/autograd_grad_sample_dotprod.py`.
+- A minimal CUDA repro (TwoLayerMLP using `GradDotProdEngine` on GPU) produced the same error, while the CPU-only `examples/ghost_mlp.py` ran successfully.
 
 ## Root cause
 - `_NamedSavedTensorManager` kept all capture buffers (`captured`, `captured_all`, `used_ids`) in `threading.local()` state. On CUDA, autograd executes module backward hooks on worker threads, so the forward-side pack hook populated the main thread’s buffers, but the backward hook read a different, empty thread-local store → missing activations and the runtime error.
@@ -15,5 +15,5 @@
 
 ## Validation
 - Minimal CUDA repro (TwoLayerMLP + `GradDotProdEngine` on GPU inside `saved_tensors_context`) now completes without error and reports loss.
-- `Examples/ghost_mlp.py` still runs end-to-end on CPU after the refactor.
-- (Recommended follow-up) Re-run `./tests/torchtitan/run_train_with_ghost.sh --training.steps=1` to verify the original failure path; expect the saved-activation lookup to succeed now that backward threads share the captured tensors.
+- `examples/ghost_mlp.py` still runs end-to-end on CPU after the refactor.
+- (Recommended follow-up) Re-run `./examples/torchtitan/run_train_with_ghost.sh --training.steps=1` to verify the original failure path; expect the saved-activation lookup to succeed now that backward threads share the captured tensors.

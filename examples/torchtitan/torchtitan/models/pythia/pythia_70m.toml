@@ -1,0 +1,88 @@
+# NOTE: Pythia-70M training via the HF Transformers modeling backend.
+
+[job]
+dump_folder = "./outputs"
+description = "Pythia-70M training"
+custom_config_module = "torchtitan.experiments.transformers_modeling_backend.job_config"
+
+[profiling]
+enable_profiling = false
+save_traces_folder = "profile_trace"
+profile_freq = 100
+enable_memory_snapshot = false
+save_memory_snapshot_folder = "memory_snapshot"
+
+[metrics]
+log_freq = 1
+enable_tensorboard = false
+save_tb_folder = "tb"
+enable_wandb = true
+
+[model]
+name = "transformers_modeling_backend"
+flavor = "full"
+hf_assets_path = "./assets/hf/pythia-70m" # for the tokenizer (and for HF weights if you later load them)
+
+[hf_transformers]
+model = "./assets/hf/pythia-70m" # load the HF config/architecture
+
+[optimizer]
+name = "AdamW"
+lr = 3e-4
+eps = 1e-8
+beta1 = 0.9
+beta2 = 0.999
+weight_decay = 0.1
+implementation = "fused"
+
+[lr_scheduler]
+warmup_steps = 200  # lr scheduler warm up
+decay_type = "cosine"
+decay_ratio = 0.0
+min_lr_factor = 0.1
+
+[training]
+steps = 10680
+local_batch_size = 128
+global_batch_size = -1
+seq_len = 1024
+max_norm = 1.0  # grad norm clipping
+dataset = "c4_500gb"
+
+[parallelism]
+data_parallel_replicate_degree = 1
+data_parallel_shard_degree = -1  # -1 automatically uses available ranks
+tensor_parallel_degree = 1
+pipeline_parallel_degree = 1
+context_parallel_degree = 1
+
+[checkpoint]
+enable = true
+folder = "checkpoint"
+interval = 500
+last_save_model_only = false
+export_dtype = "float32"
+async_mode = "disabled" # ["disabled", "async", "async_with_pinned_mem"]
+
+[compile]
+enable=true
+components = ["model", "loss"]
+backend = "inductor"
+
+[activation_checkpoint]
+mode = "none"  # ["none", "selective", "full"]
+selective_ac_option = "op"  # "int" = ac every positive int layer or 'op', ac based on ops policy
+
+[quantize.linear.float8]
+enable_fsdp_float8_all_gather = false
+precompute_float8_dynamic_scale_for_fsdp = false
+filter_fqns = ["output"]
+
+[validation]
+enable = true
+dataset = "pile_test"
+freq = 200
+steps = 1000  # Validation window; adjust if using different world size or seq_len
+
+[debug]
+seed = 42
