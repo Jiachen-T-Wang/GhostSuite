@@ -46,6 +46,12 @@ In `Examples/`, we provide three minimal examples for demonstrating core usage o
   - Projects gradients for transformer layers
   - Demonstrates similarity computation from saved projections
 
+### TorchTitan example
+Run the TorchTitan GradDotProd integration with the Llama 3 130M ghost config:
+
+```bash
+CONFIG_FILE="/scratch/gpfs/PMITTAL/tianhao/GhostSuite/tests/torchtitan/torchtitan/models/llama3/train_configs/llama3_130m_ghost.toml" ./tests/torchtitan/run_train_with_ghost.sh --training.steps=10 --training.local_batch_size=2 --training.global_batch_size=4
+```
 
 
 ## Full examples for language models
@@ -92,17 +98,20 @@ ghost_engine = GhostEngineManager(
     config=config,                    # Your training configuration
     model=model,                      # PyTorch model
     optimizer=optimizer,              # Model optimizer
-    val_data=(X_val, Y_val)          # Validation data (required for GradDotProd)
+    ddp_info={"master_process": is_master},  # Distributed info for logging/saving
+    val_data=(X_val, Y_val),          # Validation data (required for GradDotProd)
 )
 
 # 2. Training loop with Ghost Engine integration
 for iteration in range(max_steps):
     # Get training batch
     X_train, Y_train, batch_idx = get_batch()
-    
+
+    optimizer.zero_grad(set_to_none=True)
+
     # Attach batch information to engine
     ghost_engine.attach_train_batch(X_train, Y_train, iteration, batch_idx)
-    
+
     # Prepare input (concatenates val data for GradDotProd method)
     X_forward, Y_forward = ghost_engine.prepare_forward_input(X_train, Y_train)
     
@@ -111,27 +120,26 @@ for iteration in range(max_steps):
         outputs = model(input_ids=X_forward, labels=Y_forward)
         loss = outputs.loss
         loss.backward()
-    
+
     # Ghost engine gradient processing
     ghost_engine.prepare_gradients()    # Move accumulated gradients to .grad
-    
-    # Optional: gradient clipping can be added here
-    # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
-    
+
     # Optimizer step
     optimizer.step()
-    
+
     # Ghost engine post-processing
     ghost_engine.aggregate_and_log()    # Compute and log gradient metrics
     ghost_engine.clear_gradients()      # Clean up stored gradients
-    
-    # Standard cleanup
-    optimizer.zero_grad(set_to_none=True)
     
     # Periodic metric saving
     if ghost_engine.should_save_metrics(iteration):
         ghost_engine.save_metrics(iteration)
 ```
+
+Notes:
+- `saved_tensors_context()` is required for `GradDotProd` and is a no-op for other methods.
+- With gradient accumulation, call `aggregate_and_log()` after each microbatch and move `prepare_gradients()`/`optimizer.step()` to the end of the accumulation window.
+- For no-grad evaluation, use `ghost_engine.detach_for_evaluation()` and `ghost_engine.reattach_after_evaluation()`.
 
 
 ## Citation
