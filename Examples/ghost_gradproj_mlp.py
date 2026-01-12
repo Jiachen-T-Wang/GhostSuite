@@ -326,7 +326,7 @@ def main():
     parser.add_argument('--proj_dtype', type=str, default='float32',
                        choices=['float16', 'bfloat16', 'float32'],
                        help='Data type for storing projections')
-    parser.add_argument('--proj_dir', type=str, default='./Examples/grad_proj_mlp',
+    parser.add_argument('--proj_dir', type=str, default='./Examples/outputs/grad_proj_mlp',
                        help='Directory to save projections')
     parser.add_argument('--proj_save_interval', type=int, default=1,
                        help='Save projections every N iterations')
