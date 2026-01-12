@@ -34,7 +34,7 @@ pip install -r requirements.txt
 
 ## Quick Start
 
-In `Examples/`, we provide three minimal examples for demonstrating core usage of GhostEngines:
+In `examples/`, we provide three minimal examples for demonstrating core usage of GhostEngines:
 
 - **`ghost_mlp.py`**: Basic GradDotProd usage for MLP models
   - Trains for 10 steps on synthetic data
@@ -47,15 +47,17 @@ In `Examples/`, we provide three minimal examples for demonstrating core usage o
   - Demonstrates similarity computation from saved projections
 
 ### TorchTitan example
+TorchTitan (https://github.com/pytorch/torchtitan) is a PyTorch-native training stack for large-scale model development and experimentation.
+
 Run the TorchTitan GradDotProd integration with the Llama 3 130M ghost config:
 
 ```bash
-CONFIG_FILE="/scratch/gpfs/PMITTAL/tianhao/GhostSuite/tests/torchtitan/torchtitan/models/llama3/train_configs/llama3_130m_ghost.toml" ./tests/torchtitan/run_train_with_ghost.sh --training.steps=10 --training.local_batch_size=2 --training.global_batch_size=4
+CONFIG_FILE="/scratch/gpfs/PMITTAL/tianhao/GhostSuite/examples/torchtitan/torchtitan/models/llama3/train_configs/llama3_130m_ghost.toml" ./examples/torchtitan/run_train_with_ghost.sh --training.steps=10 --training.local_batch_size=2 --training.global_batch_size=4
 ```
 
 
 ## Full examples for language models
-The language-model examples under `Examples/GradDotProd_LM/` and `Examples/GradProj_LM/` are deprecated in v0.33 and will be updated soon. If you need to run them, please use v0.2: https://github.com/Jiachen-T-Wang/GhostSuite/tree/v0.2
+The language-model examples under `examples/GradDotProd_LM/` and `examples/GradProj_LM/` are deprecated in v0.33 and will be fixed soon. If you need to run them, please use v0.2: https://github.com/Jiachen-T-Wang/GhostSuite/tree/v0.2
 
 
 ## How the Ghost Engines Work
