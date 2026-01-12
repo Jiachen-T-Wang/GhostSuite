@@ -55,17 +55,7 @@ CONFIG_FILE="/scratch/gpfs/PMITTAL/tianhao/GhostSuite/tests/torchtitan/torchtita
 
 
 ## Full examples for language models
-
-### 1. GradDotProd Language Model (`Examples/GradDotProd_LM/`)
-Full demonstration of pair-wise gradient dot product computation during language model training on the Pile dataset. Useful for research projects such as online data selection that requires computing gradient similarities during the model training. 
-
-See `Examples/GradDotProd_LM/README.md` for detailed instructions. 
-
-
-### 2. Gradient Projection Language Model (`Examples/GradProj_LM/`)
-Full demonstration of per-sample gradient projection computation and storage for a languagem model checkpoint. Useful for research projects such as offline data selection that requires computing gradient similarities for a *fixed* model checkpoint. 
-
-See `Examples/GradProj_LM/README.md` for detailed instructions. 
+The language-model examples under `Examples/GradDotProd_LM/` and `Examples/GradProj_LM/` are deprecated in v0.33 and will be updated soon. If you need to run them, please use v0.2: https://github.com/Jiachen-T-Wang/GhostSuite/tree/v0.2
 
 
 ## How the Ghost Engines Work
