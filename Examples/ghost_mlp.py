@@ -120,6 +120,7 @@ def demo_train_with_engine() -> None:
         engine.clear_gradients()
 
     # Show validation loss to confirm the model runs end-to-end
+    engine.detach()
     with torch.no_grad():
         val_logits = model(X_val)
         val_loss = F.cross_entropy(val_logits, Y_val, reduction="mean")
