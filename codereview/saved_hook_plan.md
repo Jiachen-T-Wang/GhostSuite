@@ -2,7 +2,7 @@
 
 ## Goal
 - Replace forward-hook activation capture with `torch.autograd.graph.saved_tensors_hooks` so GhostDotProd reuses the bf16 tensors autograd already saves for backward, avoiding extra activation copies.
-- Keep `./tests/torchtitan/run_train_with_ghost.sh` working with the refactored path.
+- Keep `./examples/torchtitan/run_train_with_ghost.sh` working with the refactored path.
 
 ## Approach
 - Use a pack/unpack hook pair to intercept autograd-saved tensors.
@@ -39,7 +39,7 @@
 
 4) **Training loop integration**
    - Wrap forward+loss+backward in the new context manager:
-     - `tests/torchtitan/torchtitan/train_with_ghost.py` inside `forward_backward_step` (around `with self.train_context` and `with self.maybe_enable_amp`).
+     - `examples/torchtitan/torchtitan/train_with_ghost.py` inside `forward_backward_step` (around `with self.train_context` and `with self.maybe_enable_amp`).
      - `tests/benchmark_ghost_dotprod.py` in `run_loop`, `compute_ghost_dot_products`, and `compute_ghost_grad_norms`.
    - This matches the intended usage of `saved_tensors_hooks` and ensures the pack hook sees the autocast-saved tensors.
 
@@ -51,7 +51,7 @@
 
 ## Validation
 - Sanity: run `python tests/saved_hook.py` or `python tests/amp_test.py` to confirm saved tensors are bf16 under autocast.
-- Integration: run `./tests/torchtitan/run_train_with_ghost.sh` for 1 step and confirm dot-product logs are produced.
+- Integration: run `./examples/torchtitan/run_train_with_ghost.sh` for 1 step and confirm dot-product logs are produced.
 - Correctness (optional): `python tests/benchmark_ghost_dotprod.py --check-correctness` and compare dot products/norms.
 
 ## Open questions

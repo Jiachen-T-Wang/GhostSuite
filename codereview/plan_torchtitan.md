@@ -1,7 +1,7 @@
 # Plan: Ghost dot-product integration for torchtitan (llama3-130M)
 
 ## Context
-- Goal: run `./tests/torchtitan/run_train_with_ghost.sh` to train llama3-130M while computing per-sample train-vs-val gradient dot products using `GradDotProdEngine` on a validation batch from `pile_test`.
+- Goal: run `./examples/torchtitan/run_train_with_ghost.sh` to train llama3-130M while computing per-sample train-vs-val gradient dot products using `GradDotProdEngine` on a validation batch from `pile_test`.
 - Current state: `GradDotProdEngine` works for LayerNorm-based Llama-like model in `tests/benchmark_ghost_dotprod.py`. TorchTitan trainer has no ghost support and llama3 model uses `nn.RMSNorm` (not yet supported by ghost engine). Default llama3-130m config uses gradient accumulation (global_batch_size 120, local 12), compile is enabled, and validation is disabled.
 
 ## Plan

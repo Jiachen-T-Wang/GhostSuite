@@ -58,7 +58,7 @@
 
 ### Ghost run for torchtitan
 ```
-CONFIG_FILE="/scratch/gpfs/PMITTAL/tianhao/GhostSuite/tests/torchtitan/torchtitan/models/llama3/train_configs/llama3_130m_ghost.toml" ./tests/torchtitan/run_train_with_ghost.sh --training.steps=10
+CONFIG_FILE="/scratch/gpfs/PMITTAL/tianhao/GhostSuite/examples/torchtitan/torchtitan/models/llama3/train_configs/llama3_130m_ghost.toml" ./examples/torchtitan/run_train_with_ghost.sh --training.steps=10
 ```
 The above produces the following training log:
 ```
@@ -89,7 +89,7 @@ The above produces the following training log:
 
 ### Standard run for torchtitan
 ```
-CONFIG_FILE="/scratch/gpfs/PMITTAL/tianhao/GhostSuite/tests/torchtitan/torchtitan/models/llama3/train_configs/llama3_130m_ghost.toml" ./tests/torchtitan/run_train_with_ghost.sh --training.steps=10 --ghost.enable=false
+CONFIG_FILE="/scratch/gpfs/PMITTAL/tianhao/GhostSuite/examples/torchtitan/torchtitan/models/llama3/train_configs/llama3_130m_ghost.toml" ./examples/torchtitan/run_train_with_ghost.sh --training.steps=10 --ghost.enable=false
 ```
 The above produces the following training log:
 ```
@@ -150,7 +150,7 @@ The above produces the following training log:
 ### Standard run for torchtitan
 
 ```
-CONFIG_FILE="/scratch/gpfs/PMITTAL/tianhao/GhostSuite/tests/torchtitan/torchtitan/models/llama3/train_configs/llama3_130m_ghost.toml" ./tests/torchtitan/run_train_with_ghost.sh --training.steps=10 --ghost.enable=false --training.local_batch_size=4 --training.global_batch_size=4
+CONFIG_FILE="/scratch/gpfs/PMITTAL/tianhao/GhostSuite/examples/torchtitan/torchtitan/models/llama3/train_configs/llama3_130m_ghost.toml" ./examples/torchtitan/run_train_with_ghost.sh --training.steps=10 --ghost.enable=false --training.local_batch_size=4 --training.global_batch_size=4
 ```
 The above produces the following training log:
 ```
@@ -170,7 +170,7 @@ The above produces the following training log:
 ### Ghost run for torchtitan
 
 ```
-CONFIG_FILE="/scratch/gpfs/PMITTAL/tianhao/GhostSuite/tests/torchtitan/torchtitan/models/llama3/train_configs/llama3_130m_ghost.toml" ./tests/torchtitan/run_train_with_ghost.sh --training.steps=10 --training.local_batch_size=2 --training.global_batch_size=2
+CONFIG_FILE="/scratch/gpfs/PMITTAL/tianhao/GhostSuite/examples/torchtitan/torchtitan/models/llama3/train_configs/llama3_130m_ghost.toml" ./examples/torchtitan/run_train_with_ghost.sh --training.steps=10 --training.local_batch_size=2 --training.global_batch_size=2
 ```
 The above produces the following training log:
 ```
