@@ -331,12 +331,16 @@ def add_hooks(
                     _cleanup_layer_state(this_layer)
                     return grad
 
+                def _maybe_register_hook(out: torch.Tensor) -> None:
+                    if out.requires_grad:
+                        out.register_hook(_grad_hook)
+
                 if isinstance(output, torch.Tensor):
-                    output.register_hook(_grad_hook)
+                    _maybe_register_hook(output)
                 elif isinstance(output, (tuple, list)):
                     for out in output:
                         if isinstance(out, torch.Tensor):
-                            out.register_hook(_grad_hook)
+                            _maybe_register_hook(out)
 
             handles.append(layer.register_forward_hook(_register_output_hook))
 
