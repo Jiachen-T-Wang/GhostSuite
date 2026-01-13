@@ -419,6 +419,10 @@ class TransformerBlock(nn.Module):
             torch.Tensor: Output tensor after applying attention and feedforward layers.
 
         """
+
+        if _DEBUG_ATTENTION_DTYPE:
+            print(f"[model] Residual stream: x dtype: {x.dtype}")
+
         h = x + self.attention(
             self.attention_norm(x), freqs_cis, attention_masks, positions
         )
@@ -589,6 +593,9 @@ class Transformer(nn.Module, ModelProtocol):
         # passthrough for nonexistent layers, allows easy configuration of pipeline parallel stages
         # pyrefly: ignore [not-callable]
         h = self.tok_embeddings(tokens) if self.tok_embeddings else tokens
+
+        if _DEBUG_ATTENTION_DTYPE:
+            print(f"[model] output of token embedding layer: h dtype: {h.dtype}")
 
         for layer in self.layers.values():
             h = layer(
