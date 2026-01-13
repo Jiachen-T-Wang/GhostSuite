@@ -46,17 +46,15 @@ In `examples/`, we provide three minimal examples for demonstrating core usage o
   - Projects gradients for transformer layers
   - Demonstrates similarity computation from saved projections
 
-### TorchTitan example
+### LLM pretraining with TorchTitan
 TorchTitan (https://github.com/pytorch/torchtitan) is a PyTorch-native training stack for large-scale model development and experimentation.
 
 Run the TorchTitan GradDotProd integration with the Llama 3 130M ghost config:
 
 ```bash
-CONFIG_FILE="/scratch/gpfs/PMITTAL/tianhao/GhostSuite/examples/torchtitan/torchtitan/models/llama3/train_configs/llama3_130m_ghost.toml" ./examples/torchtitan/run_train_with_ghost.sh --training.steps=10 --training.local_batch_size=2 --training.global_batch_size=4
+CONFIG_FILE="./examples/torchtitan/torchtitan/models/llama3/train_configs/llama3_130m_ghost.toml" ./examples/torchtitan/run_train_with_ghost.sh
 ```
 
-
-## Full examples for language models
 The language-model examples under `examples/GradDotProd_LM/` and `examples/GradProj_LM/` are deprecated in v0.33 and will be fixed soon. If you need to run them, please use v0.2: https://github.com/Jiachen-T-Wang/GhostSuite/tree/v0.2
 
 
