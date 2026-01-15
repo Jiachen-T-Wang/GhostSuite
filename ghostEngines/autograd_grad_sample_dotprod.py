@@ -2,6 +2,7 @@ from typing import Dict, List, Optional, Tuple
 import math
 import os
 import threading
+import time
 import warnings
 
 import torch
@@ -13,6 +14,81 @@ from .supported_layers_grad_samplers_dotprod import (
 )
 
 ACCUM_DTYPE = torch.float32
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        return default
+    return parsed if parsed >= 0 else default
+
+
+_DOTPROD_BENCH_ENABLED = os.getenv("GHOST_DOTPROD_BENCH", "0") == "1"
+_DOTPROD_BENCH_EVERY = _env_int("GHOST_DOTPROD_BENCH_EVERY", 1)
+_DOTPROD_BENCH_WARMUP = _env_int("GHOST_DOTPROD_BENCH_WARMUP", 5)
+_DOTPROD_BENCH_SYNC = os.getenv("GHOST_DOTPROD_BENCH_SYNC", "1") == "1"
+_DOTPROD_BENCH_STATS: Dict[str, "_DotprodBenchStats"] = {}
+_DOTPROD_BENCH_LOCK = threading.Lock()
+
+
+class _DotprodBenchStats:
+    __slots__ = ("count", "measured", "total_s", "max_s", "min_s", "last_s")
+
+    def __init__(self) -> None:
+        self.count = 0
+        self.measured = 0
+        self.total_s = 0.0
+        self.max_s = 0.0
+        self.min_s = float("inf")
+        self.last_s = 0.0
+
+
+def _update_dotprod_bench_stats(
+    layer: nn.Module,
+    backprops: torch.Tensor,
+    elapsed_s: float,
+    compute_dtype: Optional[torch.dtype],
+) -> None:
+    layer_name = getattr(layer, "name", layer.__class__.__name__)
+    with _DOTPROD_BENCH_LOCK:
+        stats = _DOTPROD_BENCH_STATS.get(layer_name)
+        if stats is None:
+            stats = _DotprodBenchStats()
+            _DOTPROD_BENCH_STATS[layer_name] = stats
+        stats.count += 1
+        if stats.count <= _DOTPROD_BENCH_WARMUP:
+            return
+        stats.measured += 1
+        stats.total_s += elapsed_s
+        stats.last_s = elapsed_s
+        if elapsed_s > stats.max_s:
+            stats.max_s = elapsed_s
+        if elapsed_s < stats.min_s:
+            stats.min_s = elapsed_s
+        should_log = _DOTPROD_BENCH_EVERY > 0 and stats.measured % _DOTPROD_BENCH_EVERY == 0
+        if not should_log:
+            return
+        measured_count = stats.measured
+        avg_ms = (stats.total_s / measured_count) * 1e3
+        last_ms = stats.last_s * 1e3
+        min_ms = stats.min_s * 1e3
+        max_ms = stats.max_s * 1e3
+
+    activation = getattr(layer, "activations", None)
+    act_shape = tuple(activation.shape) if hasattr(activation, "shape") else None
+    bp_shape = tuple(backprops.shape) if hasattr(backprops, "shape") else None
+    device = backprops.device
+    print(
+        "[ghost dotprod bench] "
+        f"[{layer_name}] "
+        f"avg_ms={avg_ms:.3f} "
+        f"act_shape={act_shape} bp_shape={bp_shape} "
+        f"bp_dtype={backprops.dtype} compute_dtype={compute_dtype}"
+    )
 
 
 def requires_grad(module: nn.Module) -> bool:
@@ -533,6 +609,12 @@ def _compute_dotprod_from_backprops(
             f"backprops dtype: {backprops.dtype}, compute_dtype: {compute_dtype}, accum_dtype: {ACCUM_DTYPE}"
         )
 
+    bench_start = None
+    if _DOTPROD_BENCH_ENABLED:
+        if _DOTPROD_BENCH_SYNC and backprops.is_cuda:
+            torch.cuda.synchronize(backprops.device)
+        bench_start = time.perf_counter()
+
     compute_layer_dotprod(
         layer,
         layer.activations,
@@ -542,6 +624,12 @@ def _compute_dotprod_from_backprops(
         compute_dtype=compute_dtype,
         accum_dtype=ACCUM_DTYPE,
     )
+
+    if bench_start is not None:
+        if _DOTPROD_BENCH_SYNC and backprops.is_cuda:
+            torch.cuda.synchronize(backprops.device)
+        elapsed_s = time.perf_counter() - bench_start
+        _update_dotprod_bench_stats(layer, backprops, elapsed_s, compute_dtype)
 
 
 def _mask_embedding_grad_output(
