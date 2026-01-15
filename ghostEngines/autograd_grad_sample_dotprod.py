@@ -375,9 +375,15 @@ def add_hooks(
                         _, compute_layer_train_grad = _supported_layers_dotprod.get(
                             type(this_layer), (None, None)
                         )
+
                         if compute_layer_train_grad is not None:
                             compute_layer_train_grad(
                                 this_layer, activation, backprops, val_batch_size
+                            )
+                        else:
+                            raise ValueError(
+                                f"Layer {this_layer.__class__.__name__} is not supported for training gradient computation. "
+                                "Ensure it is included in the _supported_layers_dotprod dictionary."
                             )
 
                     _cleanup_layer_state(this_layer)
