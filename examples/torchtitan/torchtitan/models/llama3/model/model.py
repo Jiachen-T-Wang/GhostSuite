@@ -171,6 +171,11 @@ def apply_rotary_emb(
     return xq_out.type_as(xq), xk_out.type_as(xk)
 
 
+# this implementation will do deepcopy to KV heads
+# but compiler will fix it
+# also, PyTorch's F.scaled_dot_product_attention (SDPA) is a "dispatch" operator.
+# if you are running on an H100 GPU with the latest PyTorch, SDPA supports GQA natively.
+# so this code will actually waste memory in eager mode.
 def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
     """torch.repeat_interleave(x, dim=2, repeats=n_rep)"""
     bs, slen, n_kv_heads, head_dim = x.shape
@@ -178,8 +183,8 @@ def repeat_kv(x: torch.Tensor, n_rep: int) -> torch.Tensor:
         return x
     return (
         torch.unsqueeze(x, dim=3)
-        .expand(bs, slen, n_kv_heads, n_rep, head_dim)
-        .reshape(bs, slen, n_kv_heads * n_rep, head_dim)
+        .expand(bs, slen, n_kv_heads, n_rep, head_dim) # broadcast
+        .reshape(bs, slen, n_kv_heads * n_rep, head_dim) # merge & materialize
     )
 
 
@@ -206,11 +211,11 @@ class Attention(nn.Module):
         super().__init__()
         self.n_heads = model_args.n_heads
         self.n_kv_heads = (
-            model_args.n_heads
-            if model_args.n_kv_heads is None
-            else model_args.n_kv_heads
+            model_args.n_heads if model_args.n_kv_heads is None else model_args.n_kv_heads
         )
         self.n_rep = self.n_heads // self.n_kv_heads
+
+        # technically, d_model is not necessarily being equal to n_head * head_dim
         self.head_dim = model_args.dim // model_args.n_heads
 
         self.wq = nn.Linear(
@@ -223,6 +228,7 @@ class Attention(nn.Module):
         )
 
         self.attn_type = model_args.attn_type
+
         match self.attn_type:
             case "flex":
                 self.inner_attention = FlexAttentionWrapper()
