@@ -1,48 +1,50 @@
+from typing import Optional, TYPE_CHECKING
+
 import torch
+import torch.nn.functional as F
 import transformers.pytorch_utils
 from torch import nn
-import torch.nn.functional as F
-from typing import Optional
+
+from jaxtyping import Float, Int
 
 
-def _should_use_ghost_computation(layer: nn.Module, A: torch.Tensor, B: torch.Tensor, conv: bool = False):
+def _should_use_ghost_computation(
+    layer: nn.Module,
+    A: Float[torch.Tensor, "batch ..."],
+    B: Float[torch.Tensor, "batch ..."],
+    conv: bool = False,
+):
     """
-    Determines whether to use the efficient "ghost" computation method based
-    on the dimensions of the activation and backpropagation tensors.
-
-    This check is based on the heuristic described in the literature, comparing
-    the computational cost of materializing the full gradient versus using the
-    ghost computation trick.
-
+    Determines whether to use the "ghost" computation method for linear layers.
     Args:
         layer: The neural network layer.
         A: The activation tensor.
         B: The backpropagation tensor.
         conv: Flag indicating if the layer is a convolutional layer.
     """
+
     # The check only needs to be performed once per layer.
     if hasattr(layer, "use_ghost_computation"):
         return
 
     if not conv:
         # For linear layers
-        T = torch.prod(torch.tensor(A.shape[1:-1])).item() if A.dim() > 2 else 1
-        d = A.shape[-1]
-        p = B.shape[-1]
+        seq_len = torch.prod(torch.tensor(A.shape[1:-1])).item() if A.dim() > 2 else 1
     else:
         # For convolutional layers (after unfolding)
-        T = A.shape[-1]
-        d = A.shape[1]
-        p = B.shape[1]
+        seq_len = A.shape[-1]
 
     # The total number of parameters in the weight matrix
     num_weight_params = layer.weight.numel()
 
-    # Test: 2*T^2 <= d*p  (or num_weight_params)
-    layer.use_ghost_computation = bool(2 * T**2 <= num_weight_params)
+    # criterion: 2*seq_len^2 <= num_weight_params (this is just a heuristic)
+    layer.use_ghost_computation = bool(2 * seq_len**2 <= num_weight_params)
 
 
-def _create_or_accumulate_train_grad(param: torch.Tensor, grad: torch.Tensor) -> None:
+def _create_or_accumulate_train_grad(
+    param: Float[torch.Tensor, "..."],
+    grad: Float[torch.Tensor, "..."],
+) -> None:
     """Creates or accumulates a gradient for a given parameter in the .train_grad attribute.
 
     This function adds a computed gradient to the .train_grad attribute of a parameter.
@@ -70,13 +72,10 @@ def _create_or_accumulate_train_grad(param: torch.Tensor, grad: torch.Tensor) ->
         param.train_grad = new_grad
 
 
-# Linear Layer Implementation
-# #############################################################################
-
 def _compute_linear_dot_product(
     layer: nn.Linear,
-    A: torch.Tensor,
-    B: torch.Tensor,
+    A: Float[torch.Tensor, "batch ... d_in"],
+    B: Float[torch.Tensor, "batch ... d_out"],
     val_batch_size: int,
     log_grad_norms: bool = False,
     compute_dtype: Optional[torch.dtype] = None,
@@ -96,18 +95,18 @@ def _compute_linear_dot_product(
     train_bs = total_bs - val_batch_size
     
     # Setup Dimensions
-    d = A.size(-1)
-    p = B.size(-1)
-    A_flat = A.to(compute_dtype).reshape(-1, d)
-    B_flat = B.to(compute_dtype).reshape(-1, p)
-    
-    tokens_per_sample = A.numel() // (total_bs * d)
-    split_idx = train_bs * tokens_per_sample
+    d_in = A.size(-1)
+    d_out = B.size(-1)
+    A_flat = A.to(compute_dtype).reshape(-1, d_in)
+    B_flat = B.to(compute_dtype).reshape(-1, d_out)
 
-    A_train = A_flat[:split_idx]  # [N_train, d]
-    A_val = A_flat[split_idx:]    # [N_val, d]
-    B_train = B_flat[:split_idx]  # [N_train, p]
-    B_val = B_flat[split_idx:]    # [N_val, p]
+    seq_len = A.shape[1]
+    split_idx = train_bs * seq_len
+
+    A_train = A_flat[:split_idx]  # [train_bs*seq_len, d_in]
+    A_val = A_flat[split_idx:]    # [val_bs*seq_len, d_in]
+    B_train = B_flat[:split_idx]  # [train_bs*seq_len, d_out]
+    B_val = B_flat[split_idx:]    # [val_bs*seq_len, d_out]
 
     # Pre-declare variables for logging reuse
     grad_val_for_norm = None
@@ -118,51 +117,44 @@ def _compute_linear_dot_product(
     if layer.use_ghost_computation:
         # --- ghost computation with associativity trick ---
 
-        # 1. Compute Val Gradient Summary (d x p)
-        # Note: This is effectively Grad_Val.T
-        val_interaction = torch.matmul(A_val.to(accum_dtype).T, B_val.to(accum_dtype))
+        # compute validation gradient [d_out, d_in]
+        grad_val = torch.matmul(B_val.T, A_val)
 
-        # Save for logging (Transposed to match standard shape [d, p])
-        if log_grad_norms:
-             grad_val_for_norm = val_interaction.T
+        # project grad_val by B_train to remove the d_out dimension 
+        # [train_bs*seq_len, d_out] @ [d_out, d_in] = [train_bs*seq_len, d_in]
+        grad_val_projected = torch.matmul(B_train, grad_val)
 
-        # 2. Project Training Gradients (N_train x d)
-        B_projected = torch.matmul(B_train.to(accum_dtype), val_interaction.T)
+        # element-wise product and sum over the d_in dimension
+        # [ train_bs*seq_len ]
+        token_scores = torch.sum(A_train * grad_val_projected, dim=1)
 
-        # 3. Element-wise Interaction
-        token_contrib = (A_train.to(accum_dtype) * B_projected).sum(dim=1)
-
-        # 4. Fold back and reduce
-        layer.weight.grad_dot_prod = token_contrib.view(train_bs, tokens_per_sample).sum(dim=1)
+        # [ train_bs*seq_len ] -> [ train_bs ]
+        layer.weight.grad_dot_prod = token_scores.view(train_bs, seq_len).sum(dim=1)
         
     else:
+        
         # --- materialize gradients ---
-        
-        # 1. Compute Val Gradient (d x p)
-        # Correctly contracts batch/time dims together
-        grad_val = torch.einsum('nd,np->dp', A_val.to(accum_dtype), B_val.to(accum_dtype))
+        # compute validation gradient [d_out, d_in]
+        grad_val = torch.matmul(B_val.T, A_val)
 
-        # 2. Compute Per-Sample Training Gradients (Batch x p x d) or (Batch x d x p)
-        # To match your einsum 'bpd' later, we need PxD. 
-        # But for 'grad_train' calculation, let's stick to your working logic.
-        
         # Reshape for sum-over-T contraction
-        A_train_3d = A_train.view(train_bs, tokens_per_sample, d).to(accum_dtype)
-        B_train_3d = B_train.view(train_bs, tokens_per_sample, p).to(accum_dtype)
+        A_train_3d = A_train.view(train_bs, seq_len, d_in)
+        B_train_3d = B_train.view(train_bs, seq_len, d_out)
+
+        B_train_T = B_train_3d.transpose(1, 2).contiguous()
+
+        # grad_train: collection of per-sample train gradients [train_bs, d_out, d_in]
+        grad_train = torch.bmm(B_train_T, A_train_3d)
+
+        layer.weight.grad_dot_prod = torch.matmul(grad_train.view(train_bs, -1), grad_val.view(-1))
         
-        # Contract T (Ghost logic for 'else' branch)
-        grad_train = torch.einsum('btd,btp->bpd', A_train_3d, B_train_3d)
 
-        # 3. Frobenius Inner Product
-        layer.weight.grad_dot_prod = torch.einsum('dp,bpd->b', grad_val, grad_train)
-        if log_grad_norms:
-            grad_val_for_norm = grad_val
-
-    if log_grad_norms:
-        raise NotImplementedError("Gradient norm logging not implemented for linear layer")
-
-
-def _compute_linear_train_grad(layer: nn.Linear, A: torch.Tensor, B: torch.Tensor, val_batch_size: int):
+def _compute_linear_train_grad(
+    layer: nn.Linear,
+    A: Float[torch.Tensor, "batch ... in_features"],
+    B: Float[torch.Tensor, "batch ... out_features"],
+    val_batch_size: int,
+):
     """
     Computes the training gradient for an nn.Linear layer's weight.
     This version always computes the average gradient to match PyTorch's default behavior.
@@ -197,8 +189,8 @@ def _compute_linear_train_grad(layer: nn.Linear, A: torch.Tensor, B: torch.Tenso
 
 def _compute_embedding_dot_product(
     layer: nn.Embedding,
-    A: torch.Tensor,
-    B: torch.Tensor,
+    A: Int[torch.Tensor, "batch ..."],
+    B: Float[torch.Tensor, "batch ... embed_dim"],
     val_batch_size: int,
     log_grad_norms: bool = False,
     compute_dtype: Optional[torch.dtype] = None,
@@ -253,7 +245,12 @@ def _compute_embedding_dot_product(
         layer.weight.grad_val_norm_sq = (grad_val.to(accum_dtype) ** 2).sum()
 
 
-def _compute_embedding_train_grad(layer: nn.Embedding, A: torch.Tensor, B: torch.Tensor, val_batch_size: int):
+def _compute_embedding_train_grad(
+    layer: nn.Embedding,
+    A: Int[torch.Tensor, "batch ..."],
+    B: Float[torch.Tensor, "batch ... embed_dim"],
+    val_batch_size: int,
+):
     """
     Computes the training gradient for an nn.Embedding layer.
     This version always computes the average gradient.
@@ -288,8 +285,8 @@ def _compute_embedding_train_grad(layer: nn.Embedding, A: torch.Tensor, B: torch
 
 def _compute_layernorm_dot_product(
     layer: nn.LayerNorm,
-    A: torch.Tensor,
-    B: torch.Tensor,
+    A: Float[torch.Tensor, "batch ... features"],
+    B: Float[torch.Tensor, "batch ... features"],
     val_batch_size: int,
     log_grad_norms: bool = False,
     compute_dtype: Optional[torch.dtype] = None,
@@ -380,8 +377,8 @@ def _compute_layernorm_dot_product(
 
 def _compute_layernorm_train_grad(
     layer: nn.LayerNorm,
-    A: torch.Tensor,
-    B: torch.Tensor,
+    A: Float[torch.Tensor, "batch ... features"],
+    B: Float[torch.Tensor, "batch ... features"],
     val_batch_size: int
 ) -> None:
     """
@@ -446,8 +443,8 @@ def _compute_layernorm_train_grad(
 
 def _compute_rmsnorm_dot_product(
     layer: nn.RMSNorm,
-    A: torch.Tensor,
-    B: torch.Tensor,
+    A: Float[torch.Tensor, "batch ... features"],
+    B: Float[torch.Tensor, "batch ... features"],
     val_batch_size: int,
     log_grad_norms: bool = False,
     compute_dtype: Optional[torch.dtype] = None,
@@ -503,8 +500,8 @@ def _compute_rmsnorm_dot_product(
 
 def _compute_rmsnorm_train_grad(
     layer: nn.RMSNorm,
-    A: torch.Tensor,
-    B: torch.Tensor,
+    A: Float[torch.Tensor, "batch ... features"],
+    B: Float[torch.Tensor, "batch ... features"],
     val_batch_size: int,
 ):
     """Compute and apply averaged training gradient for nn.RMSNorm weight."""
@@ -528,8 +525,8 @@ def _compute_rmsnorm_train_grad(
 
 def _compute_Conv1D_dot_product(
     layer: nn.Linear,
-    A: torch.Tensor,
-    B: torch.Tensor,
+    A: Float[torch.Tensor, "batch seq in_features"],
+    B: Float[torch.Tensor, "batch seq out_features"],
     val_batch_size: int,
     log_grad_norms: bool = False,
     compute_dtype: Optional[torch.dtype] = None,
@@ -664,8 +661,8 @@ def _compute_Conv1D_dot_product(
 
 def _compute_Conv1D_train_grad(
     layer: transformers.pytorch_utils.Conv1D,
-    A: torch.Tensor,
-    B: torch.Tensor,
+    A: Float[torch.Tensor, "batch seq in_features"],
+    B: Float[torch.Tensor, "batch seq out_features"],
     val_batch_size: int,
 ) -> torch.Tensor:
     """
@@ -709,8 +706,8 @@ def _compute_Conv1D_train_grad(
 
 def _compute_conv2d_dot_product(
     layer: nn.Conv2d,
-    A: torch.Tensor,
-    B: torch.Tensor,
+    A: Float[torch.Tensor, "batch in_channels height width"],
+    B: Float[torch.Tensor, "batch out_channels out_height out_width"],
     val_batch_size: int,
     log_grad_norms: bool = False,
     compute_dtype: Optional[torch.dtype] = None,
@@ -794,8 +791,8 @@ def _compute_conv2d_dot_product(
 
 def _compute_conv2d_train_grad(
     layer: nn.Conv2d,
-    A: torch.Tensor,
-    B: torch.Tensor,
+    A: Float[torch.Tensor, "batch in_channels height width"],
+    B: Float[torch.Tensor, "batch out_channels out_height out_width"],
     val_batch_size: int,
 ) -> torch.Tensor:
     """Compute averaged training gradients for nn.Conv2d weight."""
