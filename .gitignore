@@ -5,10 +5,14 @@ __pycache__/
 *.so
 Results/
 Demo/
-init.sh
 llava_dataloader.py
 Plots/
 results/
 README_TODO.md
 core*
 outputs/
+.venv/
+.uv_smoke_test.log
+# Ignore stray init.sh (e.g. examples/torchtitan/init.sh) but track the root one.
+init.sh
+!/init.sh

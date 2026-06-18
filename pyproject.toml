@@ -1,0 +1,47 @@
+# GhostSuite root project — uv-managed environment.
+# See docs/v0.35/uv_migration_plan_2026-06-18.md for the migration rationale.
+#
+# torch is pinned to the stable 2.11.0+cu128 release (the finalized version of
+# the previously-used 2.11.0.dev nightly, which was pruned from the nightly
+# index). Other major libraries are pinned to the versions validated in the
+# former conda env; uv.lock captures the full transitive resolution.
+
+[project]
+name = "ghostsuite"
+version = "0.35.0"
+description = "Ghost engines for per-sample gradient dot-products and projections."
+readme = "README.md"
+requires-python = "==3.12.*"
+dependencies = [
+    "torch==2.11.0+cu128",
+    "numpy==2.3.5",
+    "transformers==4.57.1",
+    "datasets==4.4.2",
+    "tqdm==4.67.1",
+    "wandb==0.23.1",
+    "jaxtyping==0.3.5",
+    "einops==0.8.1",
+    "tiktoken",
+    "matplotlib",
+    # Local, editable (see [tool.uv.sources]); brings its own deps.
+    "torchtitan",
+]
+
+# ghostEngines (this repo) is packaged below and installed editable by uv sync.
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ghostEngines"]
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchtitan = { path = "examples/torchtitan", editable = true }
+
+# Dedicated CUDA 12.8 wheel index for torch; explicit so it is used only for
+# packages that opt in via [tool.uv.sources], not for general resolution.
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
