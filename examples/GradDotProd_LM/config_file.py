@@ -12,7 +12,9 @@ from shared.utils import build_result_dir
 
 
 # Directory configurations
-RESULTS_DIR = '/scratch/gpfs/PMITTAL/tianhao/GhostSuite/examples/GradDotProd_LM/results'
+# Anchored to this file's directory so each git worktree writes to its own
+# results/ tree instead of a shared absolute path.
+RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'results')
 
 
 def parse_arguments():
