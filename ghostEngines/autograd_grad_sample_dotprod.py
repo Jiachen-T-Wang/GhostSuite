@@ -404,6 +404,12 @@ def add_hooks(
                     )
 
                     if isinstance(this_layer, nn.Embedding):
+                        if _SUBTRACT_VAL:
+                            # subtract-val does no masking: autograd yields the full combined
+                            # grad and the engine recovers the train grad via scale*(grad -
+                            # grad_val) post-backward. Masking here would double-correct it.
+                            _cleanup_layer_state(this_layer)
+                            return grad
                         masked_grad = _mask_embedding_grad_output(
                             this_layer, grad, val_batch_size, loss_reduction
                         )
