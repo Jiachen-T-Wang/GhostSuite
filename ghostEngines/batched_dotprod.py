@@ -28,6 +28,7 @@ before ``prepare_gradients()``). The default eager path is untouched.
 from typing import Dict, List, Optional, Tuple
 
 import os
+import time
 
 import torch
 from torch import nn
@@ -37,6 +38,56 @@ from .supported_layers_grad_samplers_dotprod import _maybe_store_grad_val
 
 _BATCHED_DOTPROD = os.getenv("GHOST_BATCHED_DOTPROD", "0") == "1"
 _BATCHED_COMPILE = os.getenv("GHOST_BATCHED_DOTPROD_COMPILE", "0") == "1"
+
+# Investigation-only: per-group timing of the grouped dot-product pass. Default OFF so the
+# tps runs are unaffected. When GHOST_BATCHED_DOTPROD_BENCH=1, each group's compute is wrapped
+# in CUDA-synced timers and an average per-group (ms) is printed after a warmup, mirroring the
+# per-layer eager bench in autograd_grad_sample_dotprod. Used to check per-layer/per-group
+# uniformity of the 1b speedup.
+_BATCHED_BENCH = os.getenv("GHOST_BATCHED_DOTPROD_BENCH", "0") == "1"
+_BATCHED_BENCH_WARMUP = int(os.getenv("GHOST_BATCHED_DOTPROD_BENCH_WARMUP", "5"))
+_BATCHED_BENCH_STATS: Dict[str, list] = {}
+_BATCHED_BENCH_STEP = [0]
+
+
+def _bench_group(tag: str, device, fn, *fn_args):
+    """Run fn(*fn_args) and, under GHOST_BATCHED_DOTPROD_BENCH, record CUDA-synced elapsed ms."""
+    if not _BATCHED_BENCH:
+        return fn(*fn_args)
+    is_cuda = getattr(device, "type", None) == "cuda"
+    if is_cuda:
+        torch.cuda.synchronize(device)
+    t0 = time.perf_counter()
+    out = fn(*fn_args)
+    if is_cuda:
+        torch.cuda.synchronize(device)
+    elapsed_ms = (time.perf_counter() - t0) * 1e3
+    _BATCHED_BENCH_STATS.setdefault(tag, []).append(elapsed_ms)
+    return out
+
+
+def _bench_report():
+    """Print averaged per-group timings (post-warmup) and reset for the next step."""
+    if not _BATCHED_BENCH:
+        return
+    step = _BATCHED_BENCH_STEP[0]
+    _BATCHED_BENCH_STEP[0] += 1
+    if step < _BATCHED_BENCH_WARMUP:
+        _BATCHED_BENCH_STATS.clear()
+        return
+    if not _BATCHED_BENCH_STATS:
+        return
+    total = 0.0
+    lines = []
+    for tag, vals in _BATCHED_BENCH_STATS.items():
+        ms = vals[-1]
+        total += ms
+        lines.append((ms, tag))
+    lines.sort(reverse=True)
+    print(f"[ghost batched bench] step={step} total_grouped_ms={total:.3f}")
+    for ms, tag in lines:
+        print(f"[ghost batched bench]   {ms:8.3f} ms  {tag}")
+    _BATCHED_BENCH_STATS.clear()
 
 # Types supported by the batched path. Anything else under the flag fails loudly (plan §4
 # scope decision #4): no silent fallback that could quietly diverge.
@@ -197,7 +248,10 @@ def run_batched_dotprod(pending: List[Tuple[nn.Module, torch.Tensor, torch.Tenso
         if isinstance(layer, nn.Embedding):
             total_bs = A.shape[0]
             train_bs = total_bs - val_batch_size
-            _embedding_single(layer, A, B, train_bs, val_batch_size)
+            _bench_group(
+                f"Embedding[{getattr(layer, 'name', '?')}] (single)", B.device,
+                _embedding_single, layer, A, B, train_bs, val_batch_size,
+            )
             continue
 
         if isinstance(layer, nn.Linear):
@@ -231,7 +285,10 @@ def run_batched_dotprod(pending: List[Tuple[nn.Module, torch.Tensor, torch.Tenso
         total_bs = A_stack.shape[1]
         train_bs = total_bs - val_bs
         fn = _get_fn("linear_ghost", _linear_group_ghost)
-        dot, grad_val = fn(A_stack, B_stack, train_bs, val_bs)
+        d_in = A_stack.shape[-1]
+        d_out = B_stack.shape[-1]
+        tag = f"Linear ghost x{len(layers)} [d_in={d_in},d_out={d_out}] (e.g. {getattr(layers[0], 'name', '?')})"
+        dot, grad_val = _bench_group(tag, A_stack.device, fn, A_stack, B_stack, train_bs, val_bs)
         for g, layer in enumerate(layers):
             layer.weight.grad_dot_prod = dot[g]
             _maybe_store_grad_val(layer.weight, grad_val[g])
@@ -245,7 +302,10 @@ def run_batched_dotprod(pending: List[Tuple[nn.Module, torch.Tensor, torch.Tenso
         total_bs = A_stack.shape[1]
         train_bs = total_bs - val_bs
         fn = _get_fn("rmsnorm", _rmsnorm_group)
-        dot, grad_val = fn(A_stack, B_stack, train_bs, val_bs, eps)
+        tag = f"RMSNorm x{len(layers)} [shape={tuple(A_stack.shape[1:])}] (e.g. {getattr(layers[0], 'name', '?')})"
+        dot, grad_val = _bench_group(tag, A_stack.device, fn, A_stack, B_stack, train_bs, val_bs, eps)
         for g, layer in enumerate(layers):
             layer.weight.grad_dot_prod = dot[g]
             _maybe_store_grad_val(layer.weight, grad_val[g])
+
+    _bench_report()
