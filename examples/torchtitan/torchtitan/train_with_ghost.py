@@ -15,10 +15,14 @@ from torchtitan.components.dataloader import DataloaderExhaustedError
 from torchtitan.tools.logging import init_logger, logger
 
 
-# Phase 2: graph-clean custom-Function dot-product path. When GHOST_AUTOGRAD_FN=1 the engine
-# has no backward hooks / lock / setattr, so torch.compile (model + dot-products in one graph)
-# is supported. GHOST_COMPILE_LOSS=1 supplies the compile-friendly cross-entropy.
+# Compile-compatible Function paths. Both remove the eager backward hooks / lock / setattr, so
+# torch.compile can regional-compile the model. GHOST_AUTOGRAD_FN fuses the dot-product into the
+# joint graph (Phase 2); GHOST_DECOUPLED_FN keeps native backward + runs the dot-product in the
+# decoupled 1b grouped post-backward pass (re-examination doc §3). GHOST_COMPILE_LOSS=1 supplies
+# the compile-friendly cross-entropy for either.
 _AUTOGRAD_FN = os.getenv("GHOST_AUTOGRAD_FN", "0") == "1"
+_DECOUPLED_FN = os.getenv("GHOST_DECOUPLED_FN", "0") == "1"
+_FN_PATH = _AUTOGRAD_FN or _DECOUPLED_FN
 
 
 class GhostTrainer(Trainer):
@@ -36,12 +40,12 @@ class GhostTrainer(Trainer):
         # the per-layer buffer mutations cleanly; compile-then-attach yields an invalid graph
         # output for the buffer copy_). See ghost_phase2_results.
         self._deferred_compile = False
-        if not _AUTOGRAD_FN:
+        if not _FN_PATH:
             job_config.compile.enable = False
         elif job_config.compile.enable:
             logger.warning(
-                "GHOST_AUTOGRAD_FN=1 with compile.enable=true: deferring regional compile "
-                "until after the ghost custom-Function manager is attached."
+                "Ghost Function path with compile.enable=true: deferring regional compile "
+                "until after the ghost manager is attached (and buffers warmed up)."
             )
             self._deferred_compile = True
             self._compile_config = job_config.compile
@@ -116,8 +120,9 @@ class GhostTrainer(Trainer):
             batch_idx=microbatch_idx,
         )
 
-        if self.ghost_helper.use_autograd_fn:
-            # Graph-clean path: no saved_tensors_hooks; dot-products land in per-layer buffers.
+        if self.ghost_helper.use_fn_path:
+            # Function paths: no saved_tensors_hooks; dot-products land in per-layer buffers
+            # (autograd-fn) or are computed from captured (A, B) post-backward (decoupled).
             with self.train_context(None):
                 with self.maybe_enable_amp:
                     pred = self.model_parts[0](combined_input["input"])
@@ -155,10 +160,10 @@ class GhostTrainer(Trainer):
             accumulated_losses.append(loss.detach())
 
         # Move accumulated train grads into .grad for optimizer step.
-        if self.ghost_helper.use_autograd_fn:
+        if self.ghost_helper.use_fn_path:
             if self.gradient_accumulation_steps != 1:
                 raise RuntimeError(
-                    "GHOST_AUTOGRAD_FN currently requires gradient_accumulation_steps == 1 "
+                    "Ghost Function paths currently require gradient_accumulation_steps == 1 "
                     "(buffers hold only the last microbatch's grad_val). "
                     f"Got {self.gradient_accumulation_steps}."
                 )
