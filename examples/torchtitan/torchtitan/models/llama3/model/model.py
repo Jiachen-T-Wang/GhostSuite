@@ -39,53 +39,26 @@ _DEBUG_ATTENTION_DTYPE = os.getenv("TORCHTITAN_DEBUG_ATTENTION_DTYPE", "0") == "
 # require compiled autograd and should not trip the "module backward hooks require compiled
 # autograd" error. The hooked Linear/Embedding/RMSNorm layers stay eager.
 #
-# GPU gating: lever 1c is a *measured win on some GPUs and a regression on others* — +2.8% on
-# A100-SXM4-80GB but -2.6% on H200 (docs/investigations/ghost_1bc_h200_verification_2026-06-19.md).
-# So GHOST_REGIONAL_COMPILE defaults to "auto": enable only on GPUs whose name matches the
-# benchmarked-beneficial allowlist below, off everywhere else (incl. H200 and unknown GPUs).
-# Explicit "1"/"0" (and on/off/true/false/yes/no) force the decision and bypass the gate.
-_REGIONAL_COMPILE_TRUTHY = {"1", "true", "on", "yes"}
-_REGIONAL_COMPILE_FALSY = {"0", "false", "off", "no"}
-_REGIONAL_COMPILE_AUTO = {"", "auto"}
-# GPU name substrings where 1c is a confirmed net speedup. Add others only after benchmarking
-# (re-run docs/logs/phase1_1bc_* and confirm tps improves) — do not guess.
-_REGIONAL_COMPILE_GPU_ALLOWLIST = ("A100",)
-
+# Explicit on/off via GHOST_REGIONAL_COMPILE (1/0), normally set from the `--ghost.regional_compile`
+# command-line flag (see torchtitan.train_with_ghost). It is an explicit knob, NOT auto-gated:
+# 1c is GPU-dependent (measured +2.8% on A100 but -2.6% on H200 —
+# docs/investigations/ghost_1bc_h200_verification_2026-06-19.md), so the caller chooses per
+# hardware. Resolved lazily on first forward (and cached) so the config->env bridge in
+# GhostTrainer.__init__ is in effect by the time it is read.
 _regional_compile_decision = None
 
 
 def _regional_compile_enabled() -> bool:
-    """Resolve lever 1c (regional compile) on/off, once, and cache it.
-
-    GHOST_REGIONAL_COMPILE: 1/on/... forces on, 0/off/... forces off; unset or "auto" gates by
-    GPU — on iff torch.cuda.get_device_name matches _REGIONAL_COMPILE_GPU_ALLOWLIST. Any other
-    value is a hard error (no silent fallback).
-    """
+    """Whether lever 1c (regional compile) is on. Reads GHOST_REGIONAL_COMPILE once, lazily."""
     global _regional_compile_decision
-    if _regional_compile_decision is not None:
-        return _regional_compile_decision
-
-    env = os.getenv("GHOST_REGIONAL_COMPILE", "auto").strip().lower()
-    if env in _REGIONAL_COMPILE_TRUTHY:
-        decision, reason = True, f"forced on (GHOST_REGIONAL_COMPILE={env})"
-    elif env in _REGIONAL_COMPILE_FALSY:
-        decision, reason = False, f"forced off (GHOST_REGIONAL_COMPILE={env})"
-    elif env in _REGIONAL_COMPILE_AUTO:
-        gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "<no-cuda>"
-        decision = any(tag in gpu for tag in _REGIONAL_COMPILE_GPU_ALLOWLIST)
-        reason = (
-            f"auto: GPU={gpu!r} "
-            f"{'in' if decision else 'not in'} allowlist {_REGIONAL_COMPILE_GPU_ALLOWLIST}"
+    if _regional_compile_decision is None:
+        _regional_compile_decision = os.getenv("GHOST_REGIONAL_COMPILE", "0") == "1"
+        print(
+            f"[ghost lever 1c] regional compile "
+            f"{'ENABLED' if _regional_compile_decision else 'disabled'} "
+            f"(GHOST_REGIONAL_COMPILE={os.getenv('GHOST_REGIONAL_COMPILE', '0')})"
         )
-    else:
-        raise ValueError(
-            f"GHOST_REGIONAL_COMPILE must be one of 1/0/auto (or on/off/true/false/yes/no), "
-            f"got {env!r}."
-        )
-
-    _regional_compile_decision = decision
-    print(f"[ghost lever 1c] regional compile {'ENABLED' if decision else 'disabled'} ({reason})")
-    return decision
+    return _regional_compile_decision
 
 
 def _swiglu_mul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:

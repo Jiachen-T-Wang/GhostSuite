@@ -993,6 +993,23 @@ class Ghost:
     enable_validation: bool = False
     """Whether to run the standard validation loop during ghost runs."""
 
+    # --- Dot-product runtime levers (explicit knobs; no GPU auto-selection) ---
+    # Bridged to the engine's GHOST_* env vars in GhostTrainer.__init__. An explicitly-set env
+    # var takes precedence over these (so ad-hoc `GHOST_*=...` benchmarking still works); the
+    # defaults below are the best-runtime combination measured on H200
+    # (docs/investigations/ghost_1bc_h200_verification_2026-06-19.md).
+    subtract_val: bool = True
+    """subtract-val fast path: recover train grad post-backward instead of masking activations."""
+
+    batched_dotprod: bool = True
+    """Lever 1b: store-only hooks + one grouped post-backward dot-product pass. Requires subtract_val."""
+
+    batched_dotprod_compile: bool = True
+    """Lever 1b: torch.compile the grouped dot-product core (once per group). Needs batched_dotprod."""
+
+    regional_compile: bool = False
+    """Lever 1c: regional torch.compile of RoPE/SwiGLU. GPU-dependent (+A100 / -H200); default off."""
+
 @dataclass
 class Debug:
     seed: int | None = None

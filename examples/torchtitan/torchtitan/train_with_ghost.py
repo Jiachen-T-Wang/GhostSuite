@@ -10,9 +10,13 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 from torchtitan.train import Trainer
-from torchtitan.ghost.dotprod_helper import GhostDotProdHelper
 from torchtitan.components.dataloader import DataloaderExhaustedError
 from torchtitan.tools.logging import init_logger, logger
+
+# NOTE: GhostDotProdHelper (and the ghostEngines it pulls in) is imported lazily inside
+# GhostTrainer.__init__ — AFTER the ghost lever config is bridged to GHOST_* env vars — because
+# ghostEngines reads those env vars at import time. Importing it at module top would freeze the
+# lever flags before the config/CLI values are applied.
 
 
 class GhostTrainer(Trainer):
@@ -21,6 +25,13 @@ class GhostTrainer(Trainer):
     def __init__(self, job_config):
         if not job_config.ghost.enable:
             raise RuntimeError("GhostTrainer requires ghost.enable=true.")
+
+        # Bridge the dot-product lever config (--ghost.subtract_val / .batched_dotprod /
+        # .batched_dotprod_compile / .regional_compile) to the GHOST_* env vars the engine reads
+        # at import time. An explicitly-set env var wins (so ad-hoc `GHOST_*=...` runs still
+        # work); otherwise the config value is applied. Must run before the lazy
+        # GhostDotProdHelper import below.
+        self._bridge_ghost_levers(job_config.ghost)
 
         # Disable compile for compatibility with ghost hooks.
         job_config.compile.enable = False
@@ -37,6 +48,10 @@ class GhostTrainer(Trainer):
 
         if len(self.model_parts) != 1:
             raise RuntimeError("GhostTrainer currently supports single model part (no pipeline parallelism).")
+
+        # Lazy import: ghostEngines reads GHOST_* at import time, so this must come after
+        # _bridge_ghost_levers() (called at the top of __init__).
+        from torchtitan.ghost.dotprod_helper import GhostDotProdHelper
 
         self.ghost_helper = GhostDotProdHelper(
             job_config=job_config,
@@ -56,6 +71,42 @@ class GhostTrainer(Trainer):
         logger.info(
             "Note: MFU will still include extra ghost dot-product compute as overhead "
             "since num_flops_per_token is model-only; expect MFU closer but not necessarily matching baseline."
+        )
+
+    @staticmethod
+    def _bridge_ghost_levers(ghost_cfg):
+        """Apply the dot-product lever config to the GHOST_* env vars the engine reads at import.
+
+        An already-set env var takes precedence (so ad-hoc ``GHOST_*=...`` runs win); otherwise
+        the config value is written. Validates lever 1b's subtract-val dependency. Must run
+        before GhostDotProdHelper / ghostEngines are imported.
+        """
+        mapping = [
+            ("GHOST_SUBTRACT_VAL", ghost_cfg.subtract_val),
+            ("GHOST_BATCHED_DOTPROD", ghost_cfg.batched_dotprod),
+            ("GHOST_BATCHED_DOTPROD_COMPILE", ghost_cfg.batched_dotprod_compile),
+            ("GHOST_REGIONAL_COMPILE", ghost_cfg.regional_compile),
+        ]
+        resolved = {}
+        for name, cfg_val in mapping:
+            if name in os.environ:
+                resolved[name] = os.environ[name] == "1"
+            else:
+                os.environ[name] = "1" if cfg_val else "0"
+                resolved[name] = bool(cfg_val)
+
+        if resolved["GHOST_BATCHED_DOTPROD"] and not resolved["GHOST_SUBTRACT_VAL"]:
+            raise ValueError(
+                "ghost.batched_dotprod (lever 1b) requires ghost.subtract_val=true — it recovers "
+                "train gradients via subtract-val after backward. Enable subtract_val or disable "
+                "batched_dotprod."
+            )
+
+        logger.info(
+            "Ghost levers: subtract_val=%s batched_dotprod=%s batched_dotprod_compile=%s "
+            "regional_compile=%s",
+            resolved["GHOST_SUBTRACT_VAL"], resolved["GHOST_BATCHED_DOTPROD"],
+            resolved["GHOST_BATCHED_DOTPROD_COMPILE"], resolved["GHOST_REGIONAL_COMPILE"],
         )
 
     def forward_backward_step(

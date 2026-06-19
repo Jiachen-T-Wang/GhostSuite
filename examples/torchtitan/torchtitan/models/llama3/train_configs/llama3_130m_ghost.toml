@@ -100,3 +100,12 @@ save_train_batch = false
 log_grad_norms = false
 use_dummy_bias = false
 enable_validation = true
+
+# Dot-product runtime levers (override on the command line, e.g. --ghost.no-batched_dotprod
+# or --ghost.regional_compile). These values are the best-runtime combination measured on H200
+# (docs/investigations/ghost_lever_combinations_h200_2026-06-19.md): subtract-val + lever 1b
+# (batched, compiled), with lever 1c off (1c regresses on H200; it helps on A100).
+subtract_val = true
+batched_dotprod = true
+batched_dotprod_compile = true
+regional_compile = false
