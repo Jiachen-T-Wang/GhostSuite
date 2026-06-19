@@ -33,6 +33,38 @@ from .args import RoPEScalingArgs, TransformerModelArgs
 
 _DEBUG_ATTENTION_DTYPE = os.getenv("TORCHTITAN_DEBUG_ATTENTION_DTYPE", "0") == "1"
 
+# Lever 1c: regional torch.compile of the parameter-free, *unhooked* elementwise regions of
+# the llama3 forward (RoPE apply + SwiGLU silu*mul). These regions carry no ghost backward
+# hooks (the hooks live on the Linear/Embedding/RMSNorm modules), so compiling them does not
+# require compiled autograd and should not trip the "module backward hooks require compiled
+# autograd" error. The hooked Linear/Embedding/RMSNorm layers stay eager. Opt-in; default off.
+_REGIONAL_COMPILE = os.getenv("GHOST_REGIONAL_COMPILE", "0") == "1"
+
+
+def _swiglu_mul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    """SwiGLU activation: silu(a) * b. Parameter-free, unhooked (lever 1c compile target)."""
+    return F.silu(a) * b
+
+
+# Compiled handles, built lazily once and reused across all blocks/steps (never per-call
+# recompile: dynamic=False, one artifact per region).
+_compiled_rope = None
+_compiled_swiglu = None
+
+
+def _get_compiled_rope():
+    global _compiled_rope
+    if _compiled_rope is None:
+        _compiled_rope = torch.compile(apply_rotary_emb, dynamic=False)
+    return _compiled_rope
+
+
+def _get_compiled_swiglu():
+    global _compiled_swiglu
+    if _compiled_swiglu is None:
+        _compiled_swiglu = torch.compile(_swiglu_mul, dynamic=False)
+    return _compiled_swiglu
+
 
 def precompute_freqs_cis(
     dim: int,
@@ -283,7 +315,10 @@ class Attention(nn.Module):
         xk = xk.view(bs, seqlen, -1, self.head_dim)
         xv = xv.view(bs, seqlen, -1, self.head_dim)
 
-        xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis, positions=positions)
+        if _REGIONAL_COMPILE:
+            xq, xk = _get_compiled_rope()(xq, xk, freqs_cis=freqs_cis, positions=positions)
+        else:
+            xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis, positions=positions)
 
         if _DEBUG_ATTENTION_DTYPE:
             print(f"[model] attention after rotary: xq dtype: {xq.dtype}, xk dtype: {xk.dtype}")
@@ -358,6 +393,8 @@ class FeedForward(nn.Module):
         self.w3 = nn.Linear(dim, hidden_dim, bias=False)
 
     def forward(self, x):
+        if _REGIONAL_COMPILE:
+            return self.w2(_get_compiled_swiglu()(self.w1(x), self.w3(x)))
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
 
     def init_weights(self, init_std: float):
