@@ -81,6 +81,15 @@ class GhostTrainer(Trainer):
         if self._deferred_compile:
             from torchtitan.models.llama3.infra.parallelize import apply_compile
 
+            # Opt-in: trade recompute for activation memory in the min-cut partitioner, to cut
+            # the in-graph-dot path's saved intermediates (the +38% peak-mem cost). 1.0 = save
+            # everything (default); <1.0 = recompute more in backward. Set before compile.
+            _mem_budget = os.getenv("GHOST_COMPILE_MEM_BUDGET")
+            if _mem_budget:
+                import torch._functorch.config as _fcfg
+                _fcfg.activation_memory_budget = float(_mem_budget)
+                logger.info("Set activation_memory_budget=%s", _mem_budget)
+
             self.ghost_helper.warmup_for_compile(
                 train_local_batch_size=job_config.training.local_batch_size,
                 seq_len=job_config.training.seq_len,
