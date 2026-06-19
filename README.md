@@ -59,7 +59,31 @@ Run the TorchTitan GradDotProd integration with the Llama 3 130M ghost config:
 CONFIG_FILE="./examples/torchtitan/torchtitan/models/llama3/train_configs/llama3_130m_ghost.toml" ./examples/torchtitan/run_train_with_ghost.sh
 ```
 
-The language-model examples under `examples/GradDotProd_LM/` and `examples/GradProj_LM/` are deprecated in v0.33 and will be fixed soon. If you need to run them, please use v0.2: https://github.com/Jiachen-T-Wang/GhostSuite/tree/v0.2
+### Standalone language-model examples
+
+Two standalone LM examples live under `examples/GradDotProd_LM/` (online gradient
+dot-products during training) and `examples/GradProj_LM/` (offline per-sample
+gradient projection to disk). Both ship with a built-in **synthetic data mode**
+(random tokens, no tokenized corpus required), which makes them a quick smoke
+test on a tiny model:
+
+```bash
+# GradDotProd: online dot-products (tiny model, random tokens) — needs a GPU
+python examples/GradDotProd_LM/main.py --method GradDotProd \
+    --train_set synthetic --architecture GPT2-Tiny \
+    --batch_size 8 --val_batch_size 4 --max_steps 12 \
+    --model_dtype float32 --train_dtype float32
+
+# GradProj: offline projections (tiny model, random tokens) — runs on CPU too
+python examples/GradProj_LM/main.py --data_source synthetic \
+    --architecture GPT2-Tiny --device cuda --batch_size 4 --max_samples 8 \
+    --proj_dtype float32 --model_dtype float32 --train_dtype float32 \
+    --output_dir ./outputs_smoke
+```
+
+To train on real data, tokenize the Pile (see each example's `README.md`) and
+pass `--train_set pile` / `--data_source pile`. The example READMEs document the
+full set of options.
 
 
 ## How the Ghost Engines Work

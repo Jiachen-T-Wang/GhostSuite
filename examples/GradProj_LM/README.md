@@ -20,7 +20,21 @@ This methodology is adapted from [**LogIX**](https://arxiv.org/abs/2405.13954), 
 
 ## Quick Start
 
-### Get Tokenized Dataset
+### Smoke test (synthetic data, no corpus needed)
+The fastest way to check the example runs end-to-end is the built-in synthetic
+data mode (random tokens) on the tiny model. Runs on GPU or CPU, no dataset:
+
+```bash
+python examples/GradProj_LM/main.py --data_source synthetic \
+    --architecture GPT2-Tiny --device cuda --batch_size 4 --max_samples 8 \
+    --proj_dtype float32 --model_dtype float32 --train_dtype float32 \
+    --output_dir ./outputs_smoke
+```
+
+A pass writes `proj_iter_*.pt` projection files plus `metadata.json` under the
+run directory inside `--output_dir`. (Pass `--device cpu` to run without a GPU.)
+
+### Get Tokenized Dataset (for real runs)
 Process the Pile dataset by domain:
 ```bash
 python examples/shared/data_processing/tokenize_pile_by_domain.py
