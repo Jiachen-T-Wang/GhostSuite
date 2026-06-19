@@ -15,6 +15,12 @@ from torchtitan.components.dataloader import DataloaderExhaustedError
 from torchtitan.tools.logging import init_logger, logger
 
 
+# Phase 2: graph-clean custom-Function dot-product path. When GHOST_AUTOGRAD_FN=1 the engine
+# has no backward hooks / lock / setattr, so torch.compile (model + dot-products in one graph)
+# is supported. GHOST_COMPILE_LOSS=1 supplies the compile-friendly cross-entropy.
+_AUTOGRAD_FN = os.getenv("GHOST_AUTOGRAD_FN", "0") == "1"
+
+
 class GhostTrainer(Trainer):
     """Trainer subclass that appends a fixed validation batch for ghost GradDotProd."""
 
@@ -22,8 +28,24 @@ class GhostTrainer(Trainer):
         if not job_config.ghost.enable:
             raise RuntimeError("GhostTrainer requires ghost.enable=true.")
 
-        # Disable compile for compatibility with ghost hooks.
-        job_config.compile.enable = False
+        # Compile is only allowed on the graph-clean custom-Function path; the eager hook
+        # engine still hard-disables it (its hooks force compiled autograd + graph breaks).
+        # On the custom-Function path we DEFER compile: the model must be built uncompiled so
+        # the ghost manager can monkeypatch the supported layers' forward FIRST, then we
+        # regional-compile each block (attach-then-compile is the order Inductor functionalizes
+        # the per-layer buffer mutations cleanly; compile-then-attach yields an invalid graph
+        # output for the buffer copy_). See ghost_phase2_results.
+        self._deferred_compile = False
+        if not _AUTOGRAD_FN:
+            job_config.compile.enable = False
+        elif job_config.compile.enable:
+            logger.warning(
+                "GHOST_AUTOGRAD_FN=1 with compile.enable=true: deferring regional compile "
+                "until after the ghost custom-Function manager is attached."
+            )
+            self._deferred_compile = True
+            self._compile_config = job_config.compile
+            job_config.compile.enable = False
 
         # Route validation loader to ghost config; optional validation loop stays controlled by ghost.enable_validation.
         job_config.validation.enable = job_config.ghost.enable_validation
@@ -46,6 +68,21 @@ class GhostTrainer(Trainer):
             parallel_dims=self.parallel_dims,
             device=self.device,
         )
+
+        # Now that the ghost manager has monkeypatched the supported layers' forward, apply
+        # the deferred regional compile (per TransformerBlock) so each block's graph traces
+        # the custom Functions and Inductor functionalizes the per-layer buffer writes. First
+        # run an eager warmup forward+backward so all per-layer buffers are allocated OUTSIDE
+        # the compiled graph (compile must not allocate/setattr inside the traced region).
+        if self._deferred_compile:
+            from torchtitan.models.llama3.infra.parallelize import apply_compile
+
+            self.ghost_helper.warmup_for_compile(
+                train_local_batch_size=job_config.training.local_batch_size,
+                seq_len=job_config.training.seq_len,
+            )
+            apply_compile(self.model_parts[0], self._compile_config)
+            logger.info("Applied deferred regional compile after ghost attach + warmup.")
 
         logger.info(
             "Ghost GradDotProd enabled | val_batch_size=%d | save_interval=%d | save_train_batch=%s",
@@ -79,6 +116,17 @@ class GhostTrainer(Trainer):
             batch_idx=microbatch_idx,
         )
 
+        if self.ghost_helper.use_autograd_fn:
+            # Graph-clean path: no saved_tensors_hooks; dot-products land in per-layer buffers.
+            with self.train_context(None):
+                with self.maybe_enable_amp:
+                    pred = self.model_parts[0](combined_input["input"])
+                    loss = self.loss_fn(pred, combined_labels)
+                del pred
+                loss.backward()
+            self.ghost_helper.collect_step_dot()
+            return loss
+
         with self.ghost_helper.engine.saved_tensors_context():
             with self.train_context(None):
                 with self.maybe_enable_amp:
@@ -107,7 +155,16 @@ class GhostTrainer(Trainer):
             accumulated_losses.append(loss.detach())
 
         # Move accumulated train grads into .grad for optimizer step.
-        self.ghost_helper.engine.prepare_gradients()
+        if self.ghost_helper.use_autograd_fn:
+            if self.gradient_accumulation_steps != 1:
+                raise RuntimeError(
+                    "GHOST_AUTOGRAD_FN currently requires gradient_accumulation_steps == 1 "
+                    "(buffers hold only the last microbatch's grad_val). "
+                    f"Got {self.gradient_accumulation_steps}."
+                )
+            self.ghost_helper.prepare_gradients_fn()
+        else:
+            self.ghost_helper.engine.prepare_gradients()
 
         grad_norm = torch.nn.utils.clip_grad_norm_(
             [p for m in self.model_parts for p in m.parameters()],

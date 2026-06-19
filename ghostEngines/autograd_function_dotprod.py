@@ -45,6 +45,29 @@ _AUTOGRAD_FN = os.getenv("GHOST_AUTOGRAD_FN", "0") == "1"
 _SUPPORTED = (nn.Linear, nn.Embedding, nn.RMSNorm)
 
 
+# Opaque buffer write. The dot-product / grad_val are produced inside the custom Function's
+# backward and must land in an external preallocated buffer.
+#
+# Under torchtitan's regional (per-TransformerBlock, fullgraph) compile, AOTAutograd traces the
+# custom Function's backward into the block's joint graph. A bare ``buf.copy_(val)`` then makes
+# Inductor's partitioner emit an invalid graph output ("Node ... was invalid, but is output"),
+# because the dot-product computation feeds ONLY a side effect and is dead w.r.t. the real grad
+# outputs. Two pieces fix this:
+#   1. register the write as a custom op with ``mutates_args`` -> opaque to functionalization;
+#   2. return a fresh scalar marker (NOT aliasing the mutated buffer) that each backward ties
+#      into ``grad_input`` via ``+ 0.0 * marker`` -- this keeps the dot-product chain *live*,
+#      so the partitioner places it in the backward graph instead of discarding it.
+@torch.library.custom_op("ghost::store_buffer", mutates_args={"buf"})
+def _store_buffer(buf: torch.Tensor, val: torch.Tensor) -> torch.Tensor:
+    buf.copy_(val)
+    return val.new_zeros(())
+
+
+@_store_buffer.register_fake
+def _store_buffer_fake(buf: torch.Tensor, val: torch.Tensor) -> torch.Tensor:
+    return val.new_zeros(())
+
+
 # ---------------------------------------------------------------------------------------
 # Per-layer buffer bundle. Holds preallocated output tensors the Function backward writes.
 # ---------------------------------------------------------------------------------------
@@ -94,10 +117,11 @@ class _GhostLinearFn(torch.autograd.Function):
 
         # Standard linear grads. grad_weight is the FULL combined-batch grad; subtract-val
         # recovers the train grad post-backward as (total/train)*(grad_weight - grad_val).
-        grad_input = grad_output.matmul(weight)
+        # Match standard autograd: grad_input in grad_output dtype, grad_weight in weight dtype.
+        grad_input = grad_output.matmul(weight.to(grad_output.dtype))
         # grad_weight = sum_n grad_output_n^T @ input_n over the flattened (batch*seq) rows.
-        go2d = grad_output.reshape(-1, grad_output.shape[-1])
-        in2d = input.reshape(-1, input.shape[-1])
+        go2d = grad_output.reshape(-1, grad_output.shape[-1]).to(weight.dtype)
+        in2d = input.reshape(-1, input.shape[-1]).to(weight.dtype)
         grad_weight = go2d.t().matmul(in2d)
 
         # --- ghost associativity dot-product (mirrors _compute_linear_dot_product) ---
@@ -121,8 +145,10 @@ class _GhostLinearFn(torch.autograd.Function):
         token_scores = (A_train * grad_val_projected).sum(dim=1)   # [train_bs*seq]
         dot = token_scores.view(train_bs, seq).sum(dim=1)          # [train_bs]
 
-        ctx.dot_buf.copy_(dot)
-        ctx.gradval_buf.copy_(grad_val.to(ACCUM_DTYPE))
+        m1 = torch.ops.ghost.store_buffer(ctx.dot_buf, dot)
+        m2 = torch.ops.ghost.store_buffer(ctx.gradval_buf, grad_val.to(ACCUM_DTYPE))
+        # Keep the dot-product chain live for the partitioner (zero-weight dep on grad_input).
+        grad_input = grad_input + (0.0 * (m1 + m2)).to(grad_input.dtype)
 
         # grads for (input, weight, dot_buf, gradval_buf, train_bs, val_bs)
         return grad_input, grad_weight, None, None, None, None
@@ -166,8 +192,8 @@ class _GhostEmbeddingFn(torch.autograd.Function):
 
         dot = (B_train * grad_val[idx_train]).to(ACCUM_DTYPE).sum(dim=[1, 2])
 
-        ctx.dot_buf.copy_(dot)
-        ctx.gradval_buf.copy_(grad_val.to(ACCUM_DTYPE))
+        m1 = torch.ops.ghost.store_buffer(ctx.dot_buf, dot)
+        m2 = torch.ops.ghost.store_buffer(ctx.gradval_buf, grad_val.to(ACCUM_DTYPE))
 
         # The standard embedding weight grad is needed for subtract-val recovery; let autograd
         # produce it by returning the embedding grad_weight. F.embedding's native backward
@@ -176,6 +202,8 @@ class _GhostEmbeddingFn(torch.autograd.Function):
         grad_weight.index_add_(0, idx.reshape(-1), B.reshape(-1, d_f).to(weight.dtype))
         if ctx.padding_idx is not None and ctx.padding_idx >= 0:
             grad_weight[ctx.padding_idx] = 0
+        # Keep the dot-product chain live for the partitioner.
+        grad_weight = grad_weight + (0.0 * (m1 + m2)).to(grad_weight.dtype)
 
         # grads for (weight, input_idx, dot_buf, gradval_buf, train_bs, val_bs, padding_idx)
         return grad_weight, None, None, None, None, None, None
@@ -233,12 +261,14 @@ class _GhostRMSNormFn(torch.autograd.Function):
         total_val = gw_val.sum(dim=list(range(gw_val.dim() - 1)))                      # [d]
         dot = torch.einsum("bf,f->b", per_sample, total_val)
 
-        ctx.dot_buf.copy_(dot)
-        ctx.gradval_buf.copy_(total_val.to(ACCUM_DTYPE))
+        m1 = torch.ops.ghost.store_buffer(ctx.dot_buf, dot)
+        m2 = torch.ops.ghost.store_buffer(ctx.gradval_buf, total_val.to(ACCUM_DTYPE))
 
         # weight grad: let autograd accumulate the full combined-batch grad for subtract-val.
         norm_A_full = A * torch.rsqrt((A ** 2).mean(dim=-1, keepdim=True) + eps)
         grad_weight = (B * norm_A_full).sum(dim=list(range(A.dim() - 1))).to(weight.dtype)
+        # Keep the dot-product chain live for the partitioner.
+        grad_input = grad_input + (0.0 * (m1 + m2)).to(grad_input.dtype)
 
         # grads for (input, weight, normalized_shape, eps, dot_buf, gradval_buf, train_bs, val_bs)
         return grad_input, grad_weight, None, None, None, None, None, None
@@ -265,34 +295,38 @@ class GhostAutogradFnManager:
         self._buffers: Dict[int, _GhostBuffers] = {}
 
     # -- buffer helpers -------------------------------------------------------------------
+    #
+    # Buffers are allocated lazily on the FIRST eager forward and cached in a per-layer
+    # closure cell. Under torch.compile the wrapped forward must do NO Python-side dict/setattr
+    # work (those break tracing / leave dangling graph outputs), so the closure reads the
+    # already-populated ``cell[0]`` buffer bundle directly. The integration runs one eager
+    # warmup forward before applying compile so the cells are populated when tracing begins.
 
-    def _get_or_alloc(self, layer, train_bs, grad_val_shape, device, weight) -> _GhostBuffers:
-        key = id(layer)
-        buf = self._buffers.get(key)
-        if buf is None:
-            dot = torch.zeros(train_bs, dtype=ACCUM_DTYPE, device=device)
-            grad_val = torch.zeros(grad_val_shape, dtype=ACCUM_DTYPE, device=device)
-            buf = _GhostBuffers(dot, grad_val)
-            self._buffers[key] = buf
-            layer._ghost_buffers = buf
-        return buf
+    @staticmethod
+    def _alloc(train_bs, grad_val_shape, device) -> _GhostBuffers:
+        dot = torch.zeros(train_bs, dtype=ACCUM_DTYPE, device=device)
+        grad_val = torch.zeros(grad_val_shape, dtype=ACCUM_DTYPE, device=device)
+        return _GhostBuffers(dot, grad_val)
 
     # -- forward wrappers -----------------------------------------------------------------
 
     def _wrap_linear(self, layer: nn.Linear):
-        mgr = self
         vbs = self.val_batch_size
+        cell = [None]  # holds the _GhostBuffers once allocated
+        buffers = self._buffers
+        weight = layer.weight
+        d_out, d_in = weight.shape
 
-        def forward(x, _layer=layer):
-            total_bs = x.shape[0]
-            train_bs = total_bs - vbs
-            d_in = _layer.weight.shape[1]
-            d_out = _layer.weight.shape[0]
-            buf = mgr._get_or_alloc(
-                _layer, train_bs, (d_out, d_in), x.device, _layer.weight
-            )
+        def forward(x):
+            buf = cell[0]
+            if buf is None:  # eager warmup only; not traced under compile
+                buf = GhostAutogradFnManager._alloc(
+                    x.shape[0] - vbs, (d_out, d_in), x.device
+                )
+                cell[0] = buf
+                buffers[id(layer)] = buf
             return _GhostLinearFn.apply(
-                x, _layer.weight, buf.dot, buf.grad_val, train_bs, vbs
+                x, weight, buf.dot, buf.grad_val, x.shape[0] - vbs, vbs
             )
 
         return forward
@@ -300,33 +334,44 @@ class GhostAutogradFnManager:
     def _wrap_embedding(self, layer: nn.Embedding):
         mgr = self
         vbs = self.val_batch_size
+        cell = [None]
+        buffers = self._buffers
+        weight = layer.weight
+        vocab, d = weight.shape
+        padding_idx = layer.padding_idx
 
-        def forward(idx, _layer=layer):
-            total_bs = idx.shape[0]
-            train_bs = total_bs - vbs
-            vocab, d = _layer.weight.shape
-            buf = mgr._get_or_alloc(_layer, train_bs, (vocab, d), idx.device, _layer.weight)
-            padding_idx = _layer.padding_idx
+        def forward(idx):
+            buf = cell[0]
+            if buf is None:
+                buf = GhostAutogradFnManager._alloc(
+                    idx.shape[0] - vbs, (vocab, d), idx.device
+                )
+                cell[0] = buf
+                buffers[id(layer)] = buf
             return _GhostEmbeddingFn.apply(
-                _layer.weight, idx, buf.dot, buf.grad_val, train_bs, vbs, padding_idx
+                weight, idx, buf.dot, buf.grad_val, idx.shape[0] - vbs, vbs, padding_idx
             )
 
         return forward
 
     def _wrap_rmsnorm(self, layer: nn.RMSNorm):
-        mgr = self
         vbs = self.val_batch_size
         normalized_shape = tuple(layer.normalized_shape)
         eps = layer.eps if layer.eps is not None else 1e-5
+        cell = [None]
+        buffers = self._buffers
+        weight = layer.weight
+        d = weight.shape[0]
 
-        def forward(x, _layer=layer):
-            total_bs = x.shape[0]
-            train_bs = total_bs - vbs
-            d = _layer.weight.shape[0]
-            buf = mgr._get_or_alloc(_layer, train_bs, (d,), x.device, _layer.weight)
+        def forward(x):
+            buf = cell[0]
+            if buf is None:
+                buf = GhostAutogradFnManager._alloc(x.shape[0] - vbs, (d,), x.device)
+                cell[0] = buf
+                buffers[id(layer)] = buf
             return _GhostRMSNormFn.apply(
-                x, _layer.weight, normalized_shape, eps,
-                buf.dot, buf.grad_val, train_bs, vbs,
+                x, weight, normalized_shape, eps,
+                buf.dot, buf.grad_val, x.shape[0] - vbs, vbs,
             )
 
         return forward
@@ -360,13 +405,22 @@ class GhostAutogradFnManager:
                         f"{[t.__name__ for t in _SUPPORTED]}. No silent eager fallback."
                     )
 
+    def warmup(self, example_input: torch.Tensor) -> None:
+        """Run one eager forward+backward so every wrapped layer's buffer cell is populated
+        before torch.compile traces the model. ``example_input`` is a combined train+val batch
+        of the SAME shape used in training (so buffer ``train_bs`` matches)."""
+        was_training = self.model.training
+        logits = self.model(example_input)
+        loss = logits.float().pow(2).mean()
+        loss.backward()
+        self.model.zero_grad(set_to_none=True)
+        self.model.train(was_training)
+
     def detach(self) -> None:
         for _, layer in self._layers:
             orig = self._orig_forward.get(id(layer))
             if orig is not None:
                 layer.forward = orig
-            if hasattr(layer, "_ghost_buffers"):
-                delattr(layer, "_ghost_buffers")
         self._layers.clear()
         self._orig_forward.clear()
         self._buffers.clear()
@@ -389,3 +443,22 @@ class GhostAutogradFnManager:
                 buf = self._buffers.get(id(layer))
                 return None if buf is None else buf.grad_val
         return None
+
+    def recover_train_grads(self) -> None:
+        """subtract-val: set each wrapped weight's ``.grad`` to the train-only mean grad
+        ``(total/train)*(autograd_grad - grad_val)``. Must run after ``loss.backward()`` and
+        before the optimizer step. Every wrapped layer must have an autograd ``.grad`` and a
+        populated ``grad_val`` buffer (fails loudly otherwise)."""
+        for name, layer in self._layers:
+            buf = self._buffers.get(id(layer))
+            if buf is None:
+                raise RuntimeError(f"GHOST_AUTOGRAD_FN: no buffer for layer '{name}'.")
+            param = layer.weight
+            if param.grad is None:
+                raise RuntimeError(
+                    f"GHOST_AUTOGRAD_FN: layer '{name}' weight has no autograd .grad."
+                )
+            total_bs = buf.dot.shape[0] + self.val_batch_size
+            train_bs = buf.dot.shape[0]
+            scale = float(total_bs) / float(train_bs)
+            param.grad = (scale * (param.grad.float() - buf.grad_val)).to(param.grad.dtype)
