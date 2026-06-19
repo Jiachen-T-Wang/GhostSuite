@@ -224,6 +224,10 @@ class GradDotProdEngine:
 
     def aggregate_and_log(self):
         """Aggregate per-layer dot products and append to the log list."""
+        # Lever 1b: in batched mode the backward hooks only stashed (A, B); compute all
+        # dot-products now, in one grouped/compiled pass, before aggregation.
+        if os.getenv("GHOST_BATCHED_DOTPROD", "0") == "1" and self._saved_tensor_mgr is not None:
+            self._saved_tensor_mgr.run_batched_dotprod()
         self._aggregate_and_log_dot_products()
 
     @contextmanager
