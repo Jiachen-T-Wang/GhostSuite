@@ -27,8 +27,9 @@ Logic and when to use which
 
 
 ## Installation
+This project uses [uv](https://docs.astral.sh/uv/) for environment management.
 ```bash
-pip install -r requirements.txt
+source init.sh   # runs 'uv sync' and activates this checkout's .venv
 ```
 
 
