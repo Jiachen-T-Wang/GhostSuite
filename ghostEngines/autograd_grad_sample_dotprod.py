@@ -15,6 +15,12 @@ from .supported_layers_grad_samplers_dotprod import (
 
 ACCUM_DTYPE = torch.float32
 
+# subtract-val: skip the unpack masking clone (the ~18 ms ghost overhead) and the fp32 norm
+# grad_input correction. Standard autograd then produces the FULL combined-batch grad; the
+# engine recovers the train grad post-backward as (total/train)*(grad - grad_val), reusing
+# the grad_val already computed for the dot-product. Exact up to fp precision.
+_SUBTRACT_VAL = os.getenv("GHOST_SUBTRACT_VAL", "0") == "1"
+
 
 def _env_int(name: str, default: int) -> int:
     value = os.getenv(name)
@@ -183,6 +189,11 @@ class _NamedSavedTensorManager:
 
     def unpack_hook(self, x: torch.Tensor) -> torch.Tensor:
         if not self._get_enabled():
+            return x
+
+        if _SUBTRACT_VAL:
+            # No masking: autograd sees the unmodified activation and produces the full
+            # combined-batch grad; the train grad is recovered by subtracting grad_val.
             return x
 
         if not x.is_floating_point():
@@ -420,7 +431,9 @@ def add_hooks(
 
             handles.append(layer.register_forward_hook(_register_output_hook))
 
-            if isinstance(layer, (nn.LayerNorm, nn.RMSNorm)):
+            if isinstance(layer, (nn.LayerNorm, nn.RMSNorm)) and not _SUBTRACT_VAL:
+                # subtract-val does no masking, so autograd's grad_input is already correct
+                # and this fp32 correction hook is unnecessary.
 
                 def norm_backward_hook(this_layer, grad_input, grad_output):
                     if not grad_output:

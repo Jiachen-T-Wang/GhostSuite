@@ -1,11 +1,25 @@
 from typing import Optional, TYPE_CHECKING
 
+import os
+
 import torch
 import torch.nn.functional as F
 import transformers.pytorch_utils
 from torch import nn
 
 from jaxtyping import Float, Int
+
+
+# subtract-val: stash the validation-gradient contribution per weight so the engine can
+# recover the train grad post-backward as (total/train)*(full_grad - grad_val), instead of
+# masking the saved activation. See autograd_grad_sample_dotprod._SUBTRACT_VAL.
+_SUBTRACT_VAL = os.getenv("GHOST_SUBTRACT_VAL", "0") == "1"
+
+
+def _maybe_store_grad_val(param, grad_val) -> None:
+    if _SUBTRACT_VAL and param is not None:
+        # fp32 for a clean subtraction against the fp32 autograd grad.
+        param._ghost_grad_val = grad_val.detach().to(torch.float32)
 
 
 def _should_use_ghost_computation(
@@ -130,9 +144,10 @@ def _compute_linear_dot_product(
 
         # [ train_bs*seq_len ] -> [ train_bs ]
         layer.weight.grad_dot_prod = token_scores.view(train_bs, seq_len).sum(dim=1)
-        
+        _maybe_store_grad_val(layer.weight, grad_val)
+
     else:
-        
+
         # --- materialize gradients ---
         # compute validation gradient [d_out, d_in]
         grad_val = torch.matmul(B_val.T, A_val)
@@ -147,6 +162,7 @@ def _compute_linear_dot_product(
         grad_train = torch.bmm(B_train_T, A_train_3d)
 
         layer.weight.grad_dot_prod = torch.matmul(grad_train.view(train_bs, -1), grad_val.view(-1))
+        _maybe_store_grad_val(layer.weight, grad_val)
         
 
 def _compute_linear_train_grad(
@@ -230,6 +246,7 @@ def _compute_embedding_dot_product(
 
     dot_products = (B_train_c * grad_val[A_train_long]).to(accum_dtype).sum(dim=[1, 2])
     layer.weight.grad_dot_prod = dot_products
+    _maybe_store_grad_val(layer.weight, grad_val)
 
     if log_grad_norms:
         # Compute per-sample train grad norm using unique tokens per sample
@@ -492,6 +509,7 @@ def _compute_rmsnorm_dot_product(
     layer.weight.grad_dot_prod = torch.einsum(
         "bf,f->b", per_sample_grad_weight.to(accum_dtype), total_grad_weight_val.to(accum_dtype)
     )
+    _maybe_store_grad_val(layer.weight, total_grad_weight_val)
 
     if log_grad_norms:
         layer.weight.grad_train_norm = (per_sample_grad_weight.to(accum_dtype) ** 2).sum(dim=1)

@@ -133,6 +133,8 @@ class GradDotProdEngine:
                 del param.train_grad
             if hasattr(param, 'grad_dot_prod'):
                 del param.grad_dot_prod
+            if hasattr(param, '_ghost_grad_val'):
+                del param._ghost_grad_val
             # Clean up temporary attributes left by hooks
             if hasattr(param, 'activations'):
                 del param.activations
@@ -149,6 +151,29 @@ class GradDotProdEngine:
             # This is a safeguard, though the new step logic doesn't require it as strictly.
             return
 
+        # subtract-val: standard autograd produced the full combined-batch grad; recover the
+        # train-only mean grad as (total/train)*(grad - grad_val), reusing grad_val from the
+        # dot-product. Avoids the unpack masking clone and the fp32 norm grad_input fix.
+        if os.getenv("GHOST_SUBTRACT_VAL", "0") == "1":
+            train_bs = int(self.X_train.shape[0])
+            total_bs = train_bs + self.val_batch_size
+            scale = float(total_bs) / float(train_bs)
+            for name, param in self.module.named_parameters():
+                if not param.initially_requires_grad or "dummy_bias" in name:
+                    continue
+                grad_val = getattr(param, "_ghost_grad_val", None)
+                if grad_val is None:
+                    raise ValueError(
+                        f"subtract-val: parameter {name} has no _ghost_grad_val; "
+                        "every grad-requiring param must be handled by a supported layer."
+                    )
+                if param.grad is None:
+                    raise ValueError(f"subtract-val: parameter {name} has no autograd .grad.")
+                param.grad = (scale * (param.grad.float() - grad_val)).to(param.grad.dtype)
+                del param._ghost_grad_val
+            self._lock_grad_creation()
+            return
+
         for name, param in self.module.named_parameters():
 
             if not param.initially_requires_grad:
@@ -157,7 +182,7 @@ class GradDotProdEngine:
             # if "dummy_bias" included in the name, skip it
             if "dummy_bias" in name:
                 continue
-            
+
             if hasattr(param, 'train_grad'):
                 # Ensure the train_grad attribute exists
                 if param.train_grad is None:
