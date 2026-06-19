@@ -8,9 +8,6 @@ import sys
 parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, parent_dir)
 
-# Define data directory directly
-PILE_DATA_DIR = '/scratch/gpfs/tw8948/pile_tokenized'
-
 
 def parse_arguments():
     """Parse command line arguments for gradient projection."""
@@ -18,7 +15,7 @@ def parse_arguments():
     
     # Model parameters
     parser.add_argument('--architecture', type=str, default='GPT2-Small',
-                       choices=['GPT2-Small', 'GPT2-Medium', 'GPT2-Large'],
+                       choices=['GPT2-Tiny', 'GPT2-Small', 'GPT2-Medium', 'GPT2-Large'],
                        help='GPT2 model architecture')
     
     # Projection parameters
@@ -62,6 +59,12 @@ def parse_arguments():
                        choices=['float32', 'float16', 'bfloat16'],
                        help='Training/gradient data type')
     
+    # Data source
+    parser.add_argument('--data_source', type=str, default='pile',
+                       choices=['pile', 'synthetic'],
+                       help="Data source: 'pile' (tokenized corpus on disk) or "
+                            "'synthetic' (random tokens, for smoke tests)")
+
     # Misc parameters
     parser.add_argument('--device', type=str, default='cuda',
                        help='Device to use (cuda or cpu)')
@@ -91,10 +94,21 @@ class ProjectionConfig:
         self.proj_save_interval = args.proj_save_interval
         self.proj_dir = args.output_dir
         
+        # Data source
+        self.data_source = args.data_source
+
         # Processing configuration
         self.batch_size = args.batch_size
         self.max_samples = args.max_samples
+        # Cap the sampling window to the model's block size (e.g. GPT2-Tiny=64)
+        # so synthetic/real windows never exceed what the model can forward.
         self.block_size = args.block_size
+        try:
+            from shared.GPT2_configs import get_model_config
+            model_block = get_model_config(self.architecture)['block_size']
+            self.block_size = min(self.block_size, model_block)
+        except (ImportError, ValueError, KeyError):
+            pass
         self.seed = args.seed
         
         # Precision settings
@@ -104,9 +118,6 @@ class ProjectionConfig:
         # System settings
         self.device = args.device
         self.verbose = args.verbose
-        
-        # Dataset configuration (from main config)
-        self.pile_data_dir = PILE_DATA_DIR
 
         # Setup output directory
         folder_name = f"proj_layers_{self.proj_layers}_rank_total_{self.proj_rank_total}_rank_min_{self.proj_rank_min}_seed_{self.proj_seed}_dtype_{self.proj_dtype}_row_on_{self.proj_row_orthonormal}_emb_{self.include_embeddings}"

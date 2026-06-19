@@ -5,6 +5,12 @@ This file contains the architecture specifications for different GPT-2 model siz
 
 # Model configurations for different GPT-2 sizes
 GPT2_CONFIGS = {
+    'GPT2-Tiny': {  # Tiny config for fast smoke / correctness checks (not a real model)
+        'n_layer': 2,
+        'n_head': 2,
+        'n_embd': 64,
+        'block_size': 64,
+    },
     'GPT2-Small': {  # GPT-2 Small (124M)
         'n_layer': 12,
         'n_head': 12,

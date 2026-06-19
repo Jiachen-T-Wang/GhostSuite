@@ -45,6 +45,7 @@ MODEL_DTYPE="float32"
 TRAIN_DTYPE="bfloat16"
 DYNAMIC_VAL_BATCH=true
 LOG_GRAD_NORMS=false
+USE_WANDB=false
 REPLAY_RUN_DIR=""
 REPLAY_FILTER_METRIC="dot_product"
 REPLAY_FILTER_THRESHOLD=0.0
@@ -95,6 +96,10 @@ while [[ $# -gt 0 ]]; do
         --train_set)
             TRAIN_SET="$2"
             shift 2
+            ;;
+        --wandb)
+            USE_WANDB=true
+            shift 1
             ;;
         --val_set)
             VAL_SET="$2"
@@ -260,7 +265,11 @@ echo "WandB run name: $WANDB_RUN_NAME"
 echo "WandB mode: $WANDB_MODE"
 
 # Build the command with all parameters
-CMD="python main.py --method \"$METHOD\" --architecture \"$ARCHITECTURE\" --batch_size \"$BATCH_SIZE\" --val_batch_size \"$VAL_BATCH_SIZE\" --warmup_step \"$WARMUP_STEP\" --learning_rate \"$LEARNING_RATE\" --optimizer \"$OPTIMIZER\" --max_steps \"$MAX_STEPS\" --seed \"$SEED\" --train_set \"$TRAIN_SET\" --val_set \"$VAL_SET\" --eval_interval \"$EVAL_INTERVAL\" --eval_iter \"$EVAL_ITER\" --eval_bs \"$EVAL_BS\" --dot_prod_save_interval \"$DOT_PROD_SAVE_INTERVAL\" --model_dtype \"$MODEL_DTYPE\" --train_dtype \"$TRAIN_DTYPE\" --wandb --wandb_project \"$WANDB_PROJECT\" --wandb_run_name \"$WANDB_RUN_NAME\" --wandb_mode \"$WANDB_MODE\""
+CMD="python main.py --method \"$METHOD\" --architecture \"$ARCHITECTURE\" --batch_size \"$BATCH_SIZE\" --val_batch_size \"$VAL_BATCH_SIZE\" --warmup_step \"$WARMUP_STEP\" --learning_rate \"$LEARNING_RATE\" --optimizer \"$OPTIMIZER\" --max_steps \"$MAX_STEPS\" --seed \"$SEED\" --train_set \"$TRAIN_SET\" --val_set \"$VAL_SET\" --eval_interval \"$EVAL_INTERVAL\" --eval_iter \"$EVAL_ITER\" --eval_bs \"$EVAL_BS\" --dot_prod_save_interval \"$DOT_PROD_SAVE_INTERVAL\" --model_dtype \"$MODEL_DTYPE\" --train_dtype \"$TRAIN_DTYPE\""
+# Weights & Biases is opt-in (requires a wandb login); enable with --wandb
+if [ "$USE_WANDB" = true ]; then
+    CMD="$CMD --wandb --wandb_project \"$WANDB_PROJECT\" --wandb_run_name \"$WANDB_RUN_NAME\" --wandb_mode \"$WANDB_MODE\""
+fi
 if [ "$DYNAMIC_VAL_BATCH" = true ]; then
     CMD="$CMD --dynamic_val_batch"
 fi
