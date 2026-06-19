@@ -16,7 +16,9 @@ results/*
 
 torchtitan/datasets/**/*.model
 
-# hf assets
+# hf assets (bulk downloads; in worktrees `assets/hf` is a symlink to the main
+# checkout's assets, which appears as an untracked node the `/*` glob misses)
+assets/hf
 assets/hf/*
 assets/tokenizer/*
 torchtitan/experiments/flux/assets/*
