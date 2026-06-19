@@ -95,6 +95,34 @@ class GhostTrainer(Trainer):
                 seq_len=job_config.training.seq_len,
             )
             apply_compile(self.model_parts[0], self._compile_config)
+
+            # Opt-in: also regional-compile the top-level layers (tok_embeddings / norm / output)
+            # that apply_compile skips, so their ghost in-graph dot folds into a compiled region
+            # instead of running eager. Each layer type is independently gated for the generality
+            # study (a win on `output` does not imply a win on `tok_embeddings`).
+            #   GHOST_COMPILE_TOPLEVEL=1 -> all three (unless a per-component flag overrides)
+            #   GHOST_COMPILE_EMB / GHOST_COMPILE_NORM / GHOST_COMPILE_OUTPUT = 0/1 -> per layer
+            _toplevel = os.getenv("GHOST_COMPILE_TOPLEVEL", "0") == "1"
+
+            def _flag(name: str) -> bool:
+                v = os.getenv(name)
+                return _toplevel if v is None else (v == "1")
+
+            _emb = _flag("GHOST_COMPILE_EMB")
+            _norm = _flag("GHOST_COMPILE_NORM")
+            _output = _flag("GHOST_COMPILE_OUTPUT")
+            if _emb or _norm or _output:
+                from torchtitan.models.llama3.infra.parallelize import (
+                    apply_compile_top_level,
+                )
+
+                apply_compile_top_level(
+                    self.model_parts[0],
+                    self._compile_config,
+                    compile_emb=_emb,
+                    compile_norm=_norm,
+                    compile_output=_output,
+                )
             logger.info("Applied deferred regional compile after ghost attach + warmup.")
 
         logger.info(
