@@ -10,10 +10,11 @@ from torch import nn
 from jaxtyping import Float, Int
 
 
-# subtract-val: stash the validation-gradient contribution per weight so the engine can
-# recover the train grad post-backward as (total/train)*(full_grad - grad_val), instead of
-# masking the saved activation. See autograd_grad_sample_dotprod._SUBTRACT_VAL.
-_SUBTRACT_VAL = os.getenv("GHOST_SUBTRACT_VAL", "0") == "1"
+# subtract-val (default on): stash the validation-gradient contribution per weight so the engine
+# can recover the train grad post-backward as (total/train)*(full_grad - grad_val), instead of
+# masking the saved activation. See autograd_grad_sample_dotprod._SUBTRACT_VAL. The default must
+# match that module's default, since the engine's subtract-val recovery requires this grad_val.
+_SUBTRACT_VAL = os.getenv("GHOST_SUBTRACT_VAL", "1") == "1"
 
 
 def _maybe_store_grad_val(param, grad_val) -> None:
@@ -114,7 +115,10 @@ def _compute_linear_dot_product(
     A_flat = A.to(compute_dtype).reshape(-1, d_in)
     B_flat = B.to(compute_dtype).reshape(-1, d_out)
 
-    seq_len = A.shape[1]
+    # Tokens-per-sample, inferred from the flattened batch so this works for both
+    # 3D (B, T, C) LM activations (seq_len = T) and 2D (B, C) MLP activations
+    # (seq_len = 1), as well as any higher-rank input.
+    seq_len = A_flat.size(0) // total_bs
     split_idx = train_bs * seq_len
 
     A_train = A_flat[:split_idx]  # [train_bs*seq_len, d_in]
@@ -353,6 +357,8 @@ def _compute_layernorm_dot_product(
     layer.weight.grad_dot_prod = torch.einsum(
         'bf,f->b', per_sample_grad_weight.to(accum_dtype), total_grad_weight_val.to(accum_dtype)
     )
+    # subtract-val: stash the validation weight-gradient for post-backward train-grad recovery.
+    _maybe_store_grad_val(layer.weight, total_grad_weight_val)
     weight_train_norm = None
     weight_val_norm_sq = None
     if log_grad_norms:
@@ -375,6 +381,8 @@ def _compute_layernorm_dot_product(
         layer.bias.grad_dot_prod = torch.einsum(
             'bf,f->b', per_sample_grad_bias.to(accum_dtype), total_grad_bias_val.to(accum_dtype)
         )
+        # subtract-val: stash the validation bias-gradient for train-grad recovery.
+        _maybe_store_grad_val(layer.bias, total_grad_bias_val)
         bias_train_norm = None
         bias_val_norm_sq = None
         if log_grad_norms:

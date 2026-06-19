@@ -15,11 +15,18 @@ from .supported_layers_grad_samplers_dotprod import (
 
 ACCUM_DTYPE = torch.float32
 
-# subtract-val: skip the unpack masking clone (the ~18 ms ghost overhead) and the fp32 norm
-# grad_input correction. Standard autograd then produces the FULL combined-batch grad; the
-# engine recovers the train grad post-backward as (total/train)*(grad - grad_val), reusing
+# subtract-val (DEFAULT): skip the unpack masking clone (the ~18 ms ghost overhead) and the
+# fp32 norm grad_input correction. Standard autograd then produces the FULL combined-batch grad;
+# the engine recovers the train grad post-backward as (total/train)*(grad - grad_val), reusing
 # the grad_val already computed for the dot-product. Exact up to fp precision.
-_SUBTRACT_VAL = os.getenv("GHOST_SUBTRACT_VAL", "0") == "1"
+#
+# This is the default because the legacy masking path (GHOST_SUBTRACT_VAL=0) mutates saved
+# activations to recover the train grad, which corrupts the backward of any op that shares those
+# tensors (e.g. a ReLU whose output feeds the next linear): the validation gradient is then zeroed
+# for every layer before the last, giving wrong dot products in residual-free models such as plain
+# MLPs. (Residual nets happen to be unaffected because the skip path carries the gradient.) Set
+# GHOST_SUBTRACT_VAL=0 only to reproduce that legacy behavior.
+_SUBTRACT_VAL = os.getenv("GHOST_SUBTRACT_VAL", "1") == "1"
 
 
 def _env_int(name: str, default: int) -> int:
