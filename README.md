@@ -29,6 +29,9 @@ Logic and when to use which
 ## Installation
 This project uses [uv](https://docs.astral.sh/uv/) for environment management.
 ```bash
+# Install uv if you don't have it (see https://docs.astral.sh/uv/ for options):
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
 source init.sh   # runs 'uv sync' and activates this checkout's .venv
 ```
 
