@@ -6,6 +6,7 @@
 
 import contextlib
 import functools
+import os
 from typing import Callable, TypeAlias
 
 import torch
@@ -15,6 +16,15 @@ from torchtitan.tools.logging import logger
 
 LossFunction: TypeAlias = Callable[..., torch.Tensor]
 
+# Phase 2 (ghost torch.compile): F.cross_entropy / F.nll_loss compute the mean over the
+# *count of non-ignored tokens*, a data-dependent scalar that Inductor codegens via
+# aten::_local_scalar_dense and crashes the compiled backward with "found type 'int'". With
+# GHOST_COMPILE_LOSS=1 we swap in a manual log_softmax + gather whose normalizer is a
+# python-float constant (1/N), so the compiled graph has no data-dependent scalar. The llama3
+# dataloader does not emit ignore_index (-100) tokens, so this is numerically equal to the
+# default mean cross-entropy. Default path (flag off) is untouched.
+_COMPILE_LOSS = os.getenv("GHOST_COMPILE_LOSS", "0") == "1"
+
 
 def cross_entropy_loss(pred: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
     """Common cross-entropy loss function for Transformer models training."""
@@ -23,9 +33,26 @@ def cross_entropy_loss(pred: torch.Tensor, labels: torch.Tensor) -> torch.Tensor
     )
 
 
+def compile_friendly_cross_entropy_loss(
+    pred: torch.Tensor, labels: torch.Tensor
+) -> torch.Tensor:
+    """Manual log_softmax + gather cross-entropy with a constant (1/N) normalizer.
+
+    Numerically equal to ``cross_entropy_loss`` when no labels are ignore_index, but emits no
+    data-dependent scalar (the token count), so the compiled backward avoids the
+    ``aten::_local_scalar_dense ... found type 'int'`` Inductor error. See _COMPILE_LOSS.
+    """
+    logits = pred.flatten(0, 1).float()
+    target = labels.flatten(0, 1)
+    logp = torch.log_softmax(logits, dim=-1)
+    nll = -logp.gather(-1, target.unsqueeze(-1)).squeeze(-1)
+    # Constant python-float normalizer instead of .mean() (which divides by a traced count).
+    return nll.sum() * (1.0 / nll.shape[0])
+
+
 def build_cross_entropy_loss(job_config: JobConfig, **kwargs):
     del kwargs  # delete any unused arguments
-    loss_fn = cross_entropy_loss
+    loss_fn = compile_friendly_cross_entropy_loss if _COMPILE_LOSS else cross_entropy_loss
     if job_config.compile.enable and "loss" in job_config.compile.components:
         logger.info("Compiling the loss function with torch.compile")
         loss_fn = torch.compile(loss_fn, backend=job_config.compile.backend)
@@ -45,6 +72,10 @@ class RescaleAccumulatedLoss:
     def __call__(self, *args, **kwargs):
         loss = self.unwrapped_loss_fn(*args, **kwargs)
         if self.skip_rescale:
+            return loss
+        # Phase 2: under the compile-loss flag with a single accumulation step the divide is a
+        # no-op (loss / 1) but still emits a scalar op that can trip compiled codegen; skip it.
+        if _COMPILE_LOSS and self.accumulation_steps == 1:
             return loss
         return loss / self.accumulation_steps
 
