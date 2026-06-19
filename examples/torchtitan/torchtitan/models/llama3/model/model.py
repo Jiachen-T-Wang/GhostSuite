@@ -37,8 +37,55 @@ _DEBUG_ATTENTION_DTYPE = os.getenv("TORCHTITAN_DEBUG_ATTENTION_DTYPE", "0") == "
 # the llama3 forward (RoPE apply + SwiGLU silu*mul). These regions carry no ghost backward
 # hooks (the hooks live on the Linear/Embedding/RMSNorm modules), so compiling them does not
 # require compiled autograd and should not trip the "module backward hooks require compiled
-# autograd" error. The hooked Linear/Embedding/RMSNorm layers stay eager. Opt-in; default off.
-_REGIONAL_COMPILE = os.getenv("GHOST_REGIONAL_COMPILE", "0") == "1"
+# autograd" error. The hooked Linear/Embedding/RMSNorm layers stay eager.
+#
+# GPU gating: lever 1c is a *measured win on some GPUs and a regression on others* — +2.8% on
+# A100-SXM4-80GB but -2.6% on H200 (docs/investigations/ghost_1bc_h200_verification_2026-06-19.md).
+# So GHOST_REGIONAL_COMPILE defaults to "auto": enable only on GPUs whose name matches the
+# benchmarked-beneficial allowlist below, off everywhere else (incl. H200 and unknown GPUs).
+# Explicit "1"/"0" (and on/off/true/false/yes/no) force the decision and bypass the gate.
+_REGIONAL_COMPILE_TRUTHY = {"1", "true", "on", "yes"}
+_REGIONAL_COMPILE_FALSY = {"0", "false", "off", "no"}
+_REGIONAL_COMPILE_AUTO = {"", "auto"}
+# GPU name substrings where 1c is a confirmed net speedup. Add others only after benchmarking
+# (re-run docs/logs/phase1_1bc_* and confirm tps improves) — do not guess.
+_REGIONAL_COMPILE_GPU_ALLOWLIST = ("A100",)
+
+_regional_compile_decision = None
+
+
+def _regional_compile_enabled() -> bool:
+    """Resolve lever 1c (regional compile) on/off, once, and cache it.
+
+    GHOST_REGIONAL_COMPILE: 1/on/... forces on, 0/off/... forces off; unset or "auto" gates by
+    GPU — on iff torch.cuda.get_device_name matches _REGIONAL_COMPILE_GPU_ALLOWLIST. Any other
+    value is a hard error (no silent fallback).
+    """
+    global _regional_compile_decision
+    if _regional_compile_decision is not None:
+        return _regional_compile_decision
+
+    env = os.getenv("GHOST_REGIONAL_COMPILE", "auto").strip().lower()
+    if env in _REGIONAL_COMPILE_TRUTHY:
+        decision, reason = True, f"forced on (GHOST_REGIONAL_COMPILE={env})"
+    elif env in _REGIONAL_COMPILE_FALSY:
+        decision, reason = False, f"forced off (GHOST_REGIONAL_COMPILE={env})"
+    elif env in _REGIONAL_COMPILE_AUTO:
+        gpu = torch.cuda.get_device_name(0) if torch.cuda.is_available() else "<no-cuda>"
+        decision = any(tag in gpu for tag in _REGIONAL_COMPILE_GPU_ALLOWLIST)
+        reason = (
+            f"auto: GPU={gpu!r} "
+            f"{'in' if decision else 'not in'} allowlist {_REGIONAL_COMPILE_GPU_ALLOWLIST}"
+        )
+    else:
+        raise ValueError(
+            f"GHOST_REGIONAL_COMPILE must be one of 1/0/auto (or on/off/true/false/yes/no), "
+            f"got {env!r}."
+        )
+
+    _regional_compile_decision = decision
+    print(f"[ghost lever 1c] regional compile {'ENABLED' if decision else 'disabled'} ({reason})")
+    return decision
 
 
 def _swiglu_mul(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
@@ -315,7 +362,7 @@ class Attention(nn.Module):
         xk = xk.view(bs, seqlen, -1, self.head_dim)
         xv = xv.view(bs, seqlen, -1, self.head_dim)
 
-        if _REGIONAL_COMPILE:
+        if _regional_compile_enabled():
             xq, xk = _get_compiled_rope()(xq, xk, freqs_cis=freqs_cis, positions=positions)
         else:
             xq, xk = apply_rotary_emb(xq, xk, freqs_cis=freqs_cis, positions=positions)
@@ -393,7 +440,7 @@ class FeedForward(nn.Module):
         self.w3 = nn.Linear(dim, hidden_dim, bias=False)
 
     def forward(self, x):
-        if _REGIONAL_COMPILE:
+        if _regional_compile_enabled():
             return self.w2(_get_compiled_swiglu()(self.w1(x), self.w3(x)))
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
 
