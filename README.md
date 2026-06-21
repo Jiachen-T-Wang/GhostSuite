@@ -59,7 +59,42 @@ Run the TorchTitan GradDotProd integration with the Llama 3 130M ghost config:
 CONFIG_FILE="./examples/torchtitan/torchtitan/models/llama3/train_configs/llama3_130m_ghost.toml" ./examples/torchtitan/run_train_with_ghost.sh
 ```
 
-The language-model examples under `examples/GradDotProd_LM/` and `examples/GradProj_LM/` are deprecated in v0.33 and will be fixed soon. If you need to run them, please use v0.2: https://github.com/Jiachen-T-Wang/GhostSuite/tree/v0.2
+The language-model examples under `examples/GradDotProd_LM/` and `examples/GradProj_LM/` are deprecated and currently unmaintained. If you need to run them, please use v0.2: https://github.com/Jiachen-T-Wang/GhostSuite/tree/v0.2
+
+#### Dot-product levers and the speed ↔ memory tradeoff
+
+The TorchTitan GradDotProd integration computes the train↔val gradient dot-products by running a
+single forward/backward on a **combined `train + val` batch**. Its runtime levers are exposed as
+`--ghost.*` flags (defaults live in `llama3_130m_ghost.toml`); the default is the fastest
+combination measured on an H200:
+
+| `--ghost.*` lever | default | effect |
+|---|---|---|
+| `subtract_val` | on | recover train grads after backward instead of masking activations |
+| `decoupled_fn` | on | graph-clean decoupled-Function path so `torch.compile` can compile the model |
+| `compile_toplevel` | on | also compile the output Linear's dot (memory-free; the rest of the gain) |
+| `batched_dotprod` | off | eager grouped dot-product — the no-compile fallback (superseded by `decoupled_fn`) |
+| `regional_compile` | off | regional compile of RoPE/SwiGLU (helps A100, regresses H200) |
+
+The default also sets `[compile] enable = true`. Together these run a compiled fast path that is
+**~25% faster** than the eager engine **at the same loss** (bit-identical), but at a **higher peak
+memory** because `torch.compile` saves more activations. The cost buys back via activation
+checkpointing, giving a single speed↔memory dial (numbers: Llama-3 130M, seq 4096, train bs2 + val
+bs2, single H200; throughput is tokens/s, loss-identical in every row):
+
+| config | extra flags | throughput vs eager | peak memory |
+|---|---|---:|---:|
+| **max speed** (default) | *(none)* | **+25%** | +38% |
+| balanced | `--activation_checkpoint.mode=selective --activation_checkpoint.selective_ac_option=2` | +15% | +14% |
+| min memory | `--activation_checkpoint.mode=full` | +8% | **−10%** (below eager) |
+
+Caveats: the combined `train + val` batch and the compiled path both raise peak memory, so a ghost
+run hits the memory ceiling **earlier** than a same-train-batch baseline (the fp32 logits tensor,
+`batch · seq · vocab · 4` bytes, dominates for large-vocab models) — expect OOM roughly one batch
+step before baseline at the max-speed setting. The numbers above are H200/Llama-3-130M; on an
+80 GB A100 the max-speed memory headroom is tighter, so prefer the *balanced* or *min memory*
+dial. To fall back to the pure eager engine, run with
+`--ghost.no-decoupled_fn --ghost.no-batched_dotprod` (compile is auto-disabled on the eager path).
 
 
 ## How the Ghost Engines Work
@@ -68,7 +103,7 @@ The language-model examples under `examples/GradDotProd_LM/` and `examples/GradP
 1. **Batch Concatenation**: Training and validation batches are concatenated for a single forward pass
 2. **Gradient Computation**: During backpropagation, the engine computes:
    - Per-parameter gradient dot products between validation and training samples. 
-   - Aggregated training gradients are recovered seperately and stored in `.grad` before optimizer step. 
+   - Aggregated training gradients are recovered separately and stored in `.grad` before optimizer step. 
 
 ### GradProj Engine
 - Uses LoRA-style low-rank projection matrices
@@ -82,7 +117,7 @@ See individual example directories for detailed documentation and configuration 
 
 ## Integrating Ghost Engine with Your Training Loop
 
-The `GhostEngineManager` provides a convenient interface for integrating gradient computation engines into your training loop. Here's an overview of how to modify your training loop:
+The `GhostEngineManager` provides a convenient interface for integrating gradient computation engines into your training loop. This is the **generic eager API** for custom loops; the TorchTitan integration above wraps the same engines but adds the compiled fast path (`decoupled_fn` + `torch.compile`), which bypasses the `saved_tensors_context()` hook shown here. Here's an overview of how to modify your training loop:
 
 ```python
 from ghostEngines import GhostEngineManager
