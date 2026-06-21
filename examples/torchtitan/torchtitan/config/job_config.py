@@ -996,13 +996,26 @@ class Ghost:
     # --- Dot-product runtime levers (explicit knobs; no GPU auto-selection) ---
     # Bridged to the engine's GHOST_* env vars in GhostTrainer.__init__. An explicitly-set env
     # var takes precedence over these (so ad-hoc `GHOST_*=...` benchmarking still works); the
-    # defaults below are the best-runtime combination measured on H200
-    # (docs/investigations/ghost_1bc_h200_verification_2026-06-19.md).
+    # defaults below are the best-runtime combination measured on H200: subtract-val + the
+    # decoupled-Function path under torch.compile, plus output-layer top-level compile
+    # (docs/investigations/ghost_outemb_plus_ac_2026-06-19.md, +23-25% tps over eager, loss-identical).
     subtract_val: bool = True
     """subtract-val fast path: recover train grad post-backward instead of masking activations."""
 
-    batched_dotprod: bool = True
-    """Lever 1b: store-only hooks + one grouped post-backward dot-product pass. Requires subtract_val."""
+    decoupled_fn: bool = True
+    """Default fast path: graph-clean decoupled-Function manager (native backward + grouped
+    post-backward dot-product) that lets torch.compile regional-compile the model. Requires
+    subtract_val; supersedes the eager lever 1b (batched_dotprod) when on. Needs compile.enable
+    for the speedup."""
+
+    compile_toplevel: bool = True
+    """Also regional-compile the top-level output Linear so its in-graph dot folds into a compiled
+    region (+~2% tps, memory-free). Output-only by default; emb/norm via GHOST_COMPILE_EMB/_NORM.
+    Only effective on the decoupled_fn path with compile.enable."""
+
+    batched_dotprod: bool = False
+    """Eager lever 1b: store-only hooks + one grouped post-backward dot-product pass. The no-compile
+    fallback; superseded by decoupled_fn in the default. Requires subtract_val."""
 
     batched_dotprod_compile: bool = True
     """Lever 1b: torch.compile the grouped dot-product core (once per group). Needs batched_dotprod."""

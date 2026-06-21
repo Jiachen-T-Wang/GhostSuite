@@ -257,6 +257,52 @@ def apply_compile(model: nn.Module, compile_config: CompileConfig):
     logger.info("Compiling each TransformerBlock with torch.compile")
 
 
+def apply_compile_top_level(
+    model: nn.Module,
+    compile_config: CompileConfig,
+    compile_emb: bool = True,
+    compile_norm: bool = True,
+    compile_output: bool = True,
+):
+    """Regional-compile the top-level layers outside ``model.layers``.
+
+    ``apply_compile`` only compiles each ``TransformerBlock`` in ``model.layers``; the top-level
+    ``tok_embeddings`` (Embedding), ``norm`` (RMSNorm), and ``output`` (Linear) stay eager. On the
+    ghost decoupled in-graph path those layers run their dot-product eagerly. This compiles each as
+    its own regional graph so the in-graph dot folds into a compiled region.
+
+    ``model.output`` is immediately followed by the eager loss; we compile only the module, so the
+    loss stays eager (the +0.0*marker store and dot math live inside the module's backward).
+    Each layer type is independently gated for the generality study.
+
+    Implementation note: we compile each layer's bound ``forward`` in place rather than replacing
+    the module with an ``OptimizedModule``. The model's forward guards these layers with
+    ``if self.tok_embeddings`` / ``if self.norm`` / ``if self.output``; an ``OptimizedModule``
+    raises ``TypeError`` on that truthiness check (it defines ``__len__`` that raises). Compiling
+    the (already ghost-monkeypatched) bound forward keeps the original module object — truthy and
+    detachable — while folding its in-graph dot into a compiled region.
+    """
+    compiled = []
+    targets = []
+    if compile_emb:
+        targets.append(("tok_embeddings", getattr(model, "tok_embeddings", None)))
+    if compile_norm:
+        targets.append(("norm", getattr(model, "norm", None)))
+    if compile_output:
+        targets.append(("output", getattr(model, "output", None)))
+
+    for name, layer in targets:
+        if layer is None:
+            continue
+        layer.forward = torch.compile(
+            layer.forward, backend=compile_config.backend, fullgraph=True
+        )
+        compiled.append(name)
+
+    if compiled:
+        logger.info("Compiling top-level layers with torch.compile: %s", ", ".join(compiled))
+
+
 def apply_fsdp(
     model: nn.Module,
     dp_mesh: DeviceMesh,
