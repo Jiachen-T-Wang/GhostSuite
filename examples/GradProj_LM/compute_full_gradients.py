@@ -113,8 +113,8 @@ def main():
     ctx = torch.amp.autocast(device_type='cuda', dtype=train_dtype, enabled=(device.type == 'cuda' and train_dtype != torch.float32))
 
     # Prepare output dir
-    base_out = Path(config.proj_dir).parent  # use parent of Results/proj_layers_* if provided
-    # Put full grads under Results/fullgrads_* sibling
+    base_out = Path(config.proj_dir).parent  # use parent of results/proj_layers_* if provided
+    # Put full grads under results/fullgrads_* sibling
     full_dir_name = f"fullgrads_seed_{config.seed}_arch_{config.architecture}_dtype_{config.train_dtype}"
     full_dir = base_out / full_dir_name
     full_dir.mkdir(parents=True, exist_ok=True)

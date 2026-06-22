@@ -61,7 +61,7 @@ cd examples/GradProj_LM/
   - Default: `1`
 
 ### Output Parameters
-- `--output_dir`: Directory to save projections
+- `--output_dir`: Directory to save projections (default: this example's `results/`, i.e. `examples/GradProj_LM/results/`)
 
 
 
@@ -145,7 +145,7 @@ The `plot_error_with_dim.py` script analyzes how well lower-dimensional projecti
 
 #### CLI
 
-- `--results_dir`: Root directory containing result subfolders (e.g., `examples/GradProj_LM/Results`).
+- `--results_dir`: Root directory containing result subfolders (e.g., `examples/GradProj_LM/results`).
 - `--results_pattern`: Pattern to match subfolder names that only differ by `rank_total_K`.
 - `--pattern_type`: Interpretation of `--results_pattern` (`regex`|`glob`, default: `regex`).
 - `--num_ref`: Number of reference samples to average (default: 50).
@@ -163,7 +163,7 @@ The script validates that all matched subfolders are identical except for the `r
 - Compare ranks against 1024-D reference (mlp-only, seed 9, row_on False):
 ```bash
 python plot_error_with_dim.py \
-  --results_dir Results \
+  --results_dir results \
   --results_pattern '^proj_layers_mlp_rank_total_\\d+_rank_min_4_seed_9_dtype_bfloat16_row_on_False_emb_False$' \
   --num_ref 50 --max_iters 100 --reference rank=1024
 ```
@@ -171,7 +171,7 @@ python plot_error_with_dim.py \
 - Compare against exact full gradients (requires full grads to be precomputed):
 ```bash
 python plot_error_with_dim.py \
-  --results_dir Results \
+  --results_dir results \
   --results_pattern '*min_4_seed_42_dtype_bfloat16_row_on_False_emb_False' \
   --pattern_type glob \
   --num_ref 1 --max_iters 10 --reference full
@@ -194,13 +194,13 @@ python compute_full_gradients.py \
   --device cuda \
   --model_dtype bfloat16 \
   --train_dtype bfloat16 \
-  --output_dir ./Results
+  --output_dir results
 ```
 
 Outputs
 - One file per sample: `fullgrad_iter_XXXXXX.pt` with `{'grad': float32 vector, 'iter': int, 'batch_size': 1}`.
 - Metadata: `fullgrad_meta.json` with `total_param_dim` and `param_slices` per parameter.
-- Directory: `Results/fullgrads_seed_{seed}_arch_{architecture}_dtype_{train_dtype}`.
+- Directory: `results/fullgrads_seed_{seed}_arch_{architecture}_dtype_{train_dtype}`.
 
 Notes
 - When using `plot_error_with_dim.py` with `--reference full` or `full_layers`, ensure full grads are generated in the same `--results_dir`. The script will auto-discover a `fullgrads*` folder.

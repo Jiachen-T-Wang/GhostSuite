@@ -8,6 +8,10 @@ import sys
 parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, parent_dir)
 
+# Anchored to this file's directory so each git worktree writes to its own
+# results/ tree instead of a CWD-relative path. Mirrors GradDotProd_LM.
+RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'results')
+
 
 def parse_arguments():
     """Parse command line arguments for gradient projection."""
@@ -48,8 +52,8 @@ def parse_arguments():
                        help='Random seed for data sampling')
     
     # Output parameters
-    parser.add_argument('--output_dir', type=str, default='./Results',
-                       help='Directory to save projections')
+    parser.add_argument('--output_dir', type=str, default=RESULTS_DIR,
+                       help="Directory to save projections (default: this example's results/)")
     
     # Precision parameters
     parser.add_argument('--model_dtype', type=str, default='bfloat16',

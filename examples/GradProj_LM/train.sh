@@ -16,6 +16,10 @@
 #SBATCH --partition=pli-lc
 #SBATCH --account=ai2_data
 
+# Resolve this script's directory so output is anchored to the example dir
+# (not the caller's CWD), mirroring the Python default in config_file.py.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Default values
 ARCHITECTURE="GPT2-Small"
 BATCH_SIZE=2
@@ -29,7 +33,7 @@ MODEL_DTYPE="bfloat16"
 TRAIN_DTYPE="bfloat16"
 BLOCK_SIZE=1024
 SEED=42
-OUTPUT_DIR="./Results"
+OUTPUT_DIR="$SCRIPT_DIR/results"
 DEVICE="cuda"
 PROJ_SAVE_INTERVAL=1
 VERBOSE=false
