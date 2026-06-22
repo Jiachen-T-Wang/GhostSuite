@@ -167,6 +167,16 @@ class GhostDotProdHelper:
 
     def aggregate_and_maybe_save(self, iter_num: int, skip_aggregation: bool = False) -> None:
         if self.use_fn_path:
+            # Debug-only: dump the per-step aggregated dot-product so AC modes can be compared
+            # against the no-AC compiled path (Phase 0 correctness guard for the AC-frontier
+            # study). Gated by GHOST_DUMP_DOTPROD=<dir>; off by default.
+            _dump = os.getenv("GHOST_DUMP_DOTPROD")
+            if _dump and self.dot_products:
+                os.makedirs(_dump, exist_ok=True)
+                torch.save(
+                    self.dot_products[-1].float().cpu(),
+                    os.path.join(_dump, f"dot_iter_{iter_num}.pt"),
+                )
             # Keep the dot-product log bounded; persistence is out of scope for the compile
             # benchmark path (correctness is validated by the equivalence test).
             if len(self.dot_products) > 8:
