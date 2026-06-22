@@ -31,6 +31,7 @@ class GradDotProdEngine:
         use_dummy_bias: bool = False,
         dot_prod_save_path: Optional[str] = None,
         log_grad_norms: bool = False,
+        score_exclude_params: Optional[list] = None,
     ):
         """
         Initializes the GradDotProdEngine.
@@ -50,6 +51,11 @@ class GradDotProdEngine:
         self.loss_reduction = loss_reduction
         self.dot_prod_save_path = dot_prod_save_path
         self.log_grad_norms = log_grad_norms
+        # Parameter-name substrings to EXCLUDE from the logged score (dot product
+        # and grad norms) only -- training/grad recovery still uses all params.
+        # Used to drop large layers (e.g. tied wte/lm_head) that can dominate the
+        # raw score distribution.
+        self.score_exclude_params = list(score_exclude_params or [])
         self._saved_tensor_mgr = None
 
         if use_dummy_bias:
@@ -283,14 +289,35 @@ class GradDotProdEngine:
         total_train_norm_sq = None
         total_val_norm_sq = 0.0
 
+        def _excluded(pname: str) -> bool:
+            return any(pat in pname for pat in self.score_exclude_params)
+
         # Tied weights (e.g. wte/lm_head): combine the stashed per-use train
         # factors into the exact per-sample dot product / grad norms before the
-        # aggregation loop reads grad_dot_prod / grad_train_norm below.
+        # aggregation loop reads grad_dot_prod / grad_train_norm below. Skip the
+        # (expensive) materialization for params excluded from the score.
+        excluded_param_ids = {
+            id(param) for name, param in self.module.named_parameters() if _excluded(name)
+        }
         for param in self.module.parameters():
             if hasattr(param, "_ghost_tied_stash"):
-                finalize_tied_param(param)
+                if id(param) in excluded_param_ids:
+                    for attr in ("_ghost_tied_stash", "_ghost_tied_train_bs",
+                                 "_ghost_tied_log_norms", "_ghost_tied_gval"):
+                        if hasattr(param, attr):
+                            delattr(param, attr)
+                else:
+                    finalize_tied_param(param)
 
         for name, param in self.module.named_parameters():
+
+            if _excluded(name):
+                # Drop this layer from the logged score; clean up any per-param
+                # state the samplers stamped so it does not leak to the next step.
+                for attr in ('grad_dot_prod', 'grad_train_norm', 'grad_val_norm_sq'):
+                    if hasattr(param, attr):
+                        delattr(param, attr)
+                continue
 
             if hasattr(param, 'grad_dot_prod') and param.initially_requires_grad:
 
