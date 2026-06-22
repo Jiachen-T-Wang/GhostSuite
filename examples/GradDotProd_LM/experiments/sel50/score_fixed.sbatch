@@ -12,11 +12,13 @@
 
 # GradDotProd scoring run on the CORRECTED engine (tied wte/lm_head + Linear
 # grad-norms fixed). Args:  $1 = wandb run name,  $2 = exclude patterns
-# (comma-separated, e.g. "wte,lm_head"; empty for the full score).
+# (comma-separated, e.g. "wte,lm_head"; empty for the full score),
+# $3 = max_steps (default 10000).
 set -euo pipefail
 REPO=/scratch/gpfs/PMITTAL/tianhao/GhostSuite
 RUN_NAME="$1"
 EXCLUDE="${2:-}"
+MAX_STEPS="${3:-10000}"
 
 module load proxy/default
 cd "$REPO"
@@ -25,12 +27,12 @@ cd "$REPO/examples/GradDotProd_LM"
 
 EXCL_ARG=()
 [ -n "$EXCLUDE" ] && EXCL_ARG=(--score_exclude_params "$EXCLUDE")
-echo "[score_fixed] RUN_NAME=$RUN_NAME EXCLUDE='${EXCLUDE:-<none>}'"
+echo "[score_fixed] RUN_NAME=$RUN_NAME EXCLUDE='${EXCLUDE:-<none>}' MAX_STEPS=$MAX_STEPS"
 
 python main.py \
   --method GradDotProd --architecture GPT2-Small \
   --batch_size 16 --val_batch_size 16 \
-  --learning_rate 0.0006 --max_steps 10000 --warmup_step 2000 \
+  --learning_rate 0.0006 --max_steps "$MAX_STEPS" --warmup_step 2000 \
   --optimizer adamw --seed 42 \
   --model_dtype float32 --train_dtype bfloat16 \
   --dynamic_val_batch --log_grad_norms \
