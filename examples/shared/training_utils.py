@@ -85,6 +85,7 @@ def setup_data_functions(dataset, config, device, ddp_info=None):
             run_dir=config.replay_run_dir,
             filter_metric=config.replay_filter_metric,
             threshold=config.replay_filter_threshold,
+            invert=getattr(config, "replay_filter_invert", False),
             rebatch_size=config.replay_rebatch_size,
             drop_last=config.replay_drop_last,
             shuffle=getattr(config, "replay_shuffle", False),

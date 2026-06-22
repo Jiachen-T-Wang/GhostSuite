@@ -25,6 +25,7 @@ class ReplayDataLoader:
         run_dir: str,
         filter_metric: str = "dot_product",
         threshold: float = 0.0,
+        invert: bool = False,
         rebatch_size: Optional[int] = None,
         drop_last: bool = False,
         shuffle: bool = False,
@@ -36,6 +37,10 @@ class ReplayDataLoader:
         self.run_dir = os.path.abspath(run_dir)
         self.filter_metric = filter_metric
         self.threshold = threshold
+        # When False (default) keep samples with metric >= threshold (top side).
+        # When True keep samples with metric < threshold (bottom side); used for
+        # the "rejected" / bottom-fraction arm of a selection experiment.
+        self.invert = invert
         self.rebatch_size = rebatch_size
         self.drop_last = drop_last
         self.shuffle = shuffle
@@ -79,7 +84,7 @@ class ReplayDataLoader:
                 batch_idx = entry.get("batch_idx")
                 iter_num = entry.get("iter_num")
                 for i in range(metric.shape[0]):
-                    if metric[i].item() < self.threshold:
+                    if not self._keep(metric[i].item()):
                         continue
                     samples.append(
                         {
@@ -105,6 +110,10 @@ class ReplayDataLoader:
         self._entry_idx = 0
         if not samples:
             self._exhausted = True
+
+    def _keep(self, value: float) -> bool:
+        """Whether a sample with this metric value passes the filter."""
+        return value < self.threshold if self.invert else value >= self.threshold
 
     def _resolve_grad_dir(self) -> str:
         """Locate the grad_dotprods directory given a run dir."""
@@ -210,7 +219,7 @@ class ReplayDataLoader:
 
             # Preserve per-sample order inside the batch
             for i in range(metric.shape[0]):
-                if metric[i].item() < self.threshold:
+                if not self._keep(metric[i].item()):
                     continue
                 if (self._global_kept % self.world_size) != self.rank:
                     self._global_kept += 1

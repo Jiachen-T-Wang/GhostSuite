@@ -77,6 +77,9 @@ def parse_arguments():
                         help='Metric used to filter replay samples')
     parser.add_argument('--replay_filter_threshold', type=float, default=0.0,
                         help='Drop samples with metric below this threshold (default drops negatives)')
+    parser.add_argument('--replay_filter_invert', action='store_true',
+                        help='Keep samples with metric BELOW the threshold instead of at/above it '
+                             '(the bottom-fraction / rejected arm of a selection experiment)')
     parser.add_argument('--replay_rebatch_size', type=int, default=None,
                         help='Optional rebatch size for replayed samples; defaults to current batch_size')
     parser.add_argument('--replay_drop_last', action='store_true',
@@ -167,6 +170,7 @@ class TrainingConfig:
         self.replay_run_dir = args.replay_run_dir
         self.replay_filter_metric = args.replay_filter_metric
         self.replay_filter_threshold = args.replay_filter_threshold
+        self.replay_filter_invert = args.replay_filter_invert
         self.replay_rebatch_size = args.replay_rebatch_size or self.batch_size
         self.replay_drop_last = args.replay_drop_last
         self.replay_shuffle = args.replay_shuffle
