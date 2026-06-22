@@ -70,6 +70,9 @@ def parse_arguments():
                         help='Refresh validation batch every training step for GradDotProd')
     parser.add_argument('--log_grad_norms', action='store_true',
                         help='Record per-sample training gradient norms and aggregated validation gradient norm')
+    parser.add_argument('--score_exclude_params', type=str, default=None,
+                        help='Comma-separated parameter-name substrings to EXCLUDE from the logged '
+                             'dot-product/cosine score (e.g. "wte,lm_head"); training is unaffected')
     parser.add_argument('--replay_run_dir', type=str, default=None,
                         help='Path to a previous GradDotProd run directory for filtered replay training')
     parser.add_argument('--replay_filter_metric', type=str, default='dot_product',
@@ -167,6 +170,10 @@ class TrainingConfig:
         self.wandb_mode = args.wandb_mode
         self.dynamic_val_batch = args.dynamic_val_batch
         self.log_grad_norms = args.log_grad_norms
+        self.score_exclude_params = (
+            [s.strip() for s in args.score_exclude_params.split(',') if s.strip()]
+            if args.score_exclude_params else []
+        )
         self.replay_run_dir = args.replay_run_dir
         self.replay_filter_metric = args.replay_filter_metric
         self.replay_filter_threshold = args.replay_filter_threshold

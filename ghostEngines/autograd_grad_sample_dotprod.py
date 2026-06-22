@@ -10,7 +10,8 @@ import torch.nn as nn
 
 from .supported_layers_grad_samplers_dotprod import (
     _supported_layers_dotprod,
-    _create_or_accumulate_train_grad
+    _create_or_accumulate_train_grad,
+    stash_tied_contribution,
 )
 from . import batched_dotprod
 
@@ -417,6 +418,20 @@ def add_hooks(
     manager._loss_reduction = loss_reduction
     model._ghost_saved_tensor_mgr = manager
 
+    # Flag weights shared by >=2 supported modules (e.g. tied wte/lm_head) so the
+    # backward dispatch routes them to the tied-weight path instead of letting the
+    # per-module samplers clobber each other on the shared tensor.
+    _weight_users: Dict[int, int] = {}
+    for _, layer in model.named_modules():
+        if type(layer) in _supported_layers_dotprod and requires_grad(layer):
+            w = getattr(layer, "weight", None)
+            if w is not None and w.requires_grad:
+                _weight_users[id(w)] = _weight_users.get(id(w), 0) + 1
+    for _, layer in model.named_modules():
+        w = getattr(layer, "weight", None)
+        if w is not None and _weight_users.get(id(w), 0) >= 2:
+            w._ghost_tied = True
+
     for name, layer in model.named_modules():
         if type(layer) in _supported_layers_dotprod and requires_grad(layer):
 
@@ -669,6 +684,17 @@ def _compute_dotprod_from_backprops(
 
         activation = _reshape_activation_if_needed(layer, activation)
         layer.activations = activation
+
+    # Tied weight (shared across >=2 modules): accumulate this use's val aggregate
+    # and stash its train factors; the combined per-sample gradient (with the
+    # cross-terms) is materialized later in finalize_tied_param.
+    weight = getattr(layer, "weight", None)
+    if weight is not None and getattr(weight, "_ghost_tied", False):
+        stash_tied_contribution(
+            layer, layer.activations, backprops, val_batch_size,
+            log_grad_norms=log_grad_norms,
+        )
+        return
 
     compute_layer_dotprod, _ = _supported_layers_dotprod.get(type(layer))
     compute_dtype = _select_compute_dtype(layer, layer.activations, backprops)
