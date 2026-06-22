@@ -29,11 +29,15 @@ python ghost_gradproj_lm.py --proj_layers "attn.c_attn,mlp.c_fc"
 ### 2. GradDotProd Language Model (`GradDotProd_LM/`)
 Full demonstration of pair-wise gradient dot product computation during language model training on the Pile dataset. Useful for research projects such as online data selection that requires computing gradient similarities during the model training. 
 
+A built-in synthetic data mode (`--train_set synthetic`, random tokens, no corpus needed) runs the example end-to-end as a quick smoke test on a tiny model.
+
 See `examples/GradDotProd_LM/README.md` for detailed instructions. 
 
 
 ### 3. Gradient Projection Language Model (`GradProj_LM/`)
-Full demonstration of per-sample gradient projection computation and storage for a languagem model checkpoint. Useful for research projects such as offline data selection that requires computing gradient similarities for a *fixed* model checkpoint. 
+Full demonstration of per-sample gradient projection computation and storage for a language model checkpoint. Useful for research projects such as offline data selection that requires computing gradient similarities for a *fixed* model checkpoint. 
+
+A built-in synthetic data mode (`--data_source synthetic`, random tokens, no corpus needed) runs the example end-to-end as a quick smoke test on a tiny model.
 
 See `examples/GradProj_LM/README.md` for detailed instructions. 
 
@@ -44,7 +48,7 @@ See `examples/GradProj_LM/README.md` for detailed instructions.
 1. **Batch Concatenation**: Training and validation batches are concatenated for a single forward pass
 2. **Gradient Computation**: During backpropagation, the engine computes:
    - Per-parameter gradient dot products between validation and training samples. 
-   - Aggregated training gradients are recovered seperately and stored in `.grad` before optimizer step. 
+   - Aggregated training gradients are recovered separately and stored in `.grad` before optimizer step. 
 
 ### GradProj Engine
 - Uses LoRA-style low-rank projection matrices

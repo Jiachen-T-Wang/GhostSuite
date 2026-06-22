@@ -145,7 +145,7 @@ The `plot_error_with_dim.py` script analyzes how well lower-dimensional projecti
 
 #### CLI
 
-- `--results_dir`: Root directory containing result subfolders (e.g., `examples/GradProj_GPT2/Results`).
+- `--results_dir`: Root directory containing result subfolders (e.g., `examples/GradProj_LM/Results`).
 - `--results_pattern`: Pattern to match subfolder names that only differ by `rank_total_K`.
 - `--pattern_type`: Interpretation of `--results_pattern` (`regex`|`glob`, default: `regex`).
 - `--num_ref`: Number of reference samples to average (default: 50).

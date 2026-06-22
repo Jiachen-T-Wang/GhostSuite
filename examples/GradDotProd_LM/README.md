@@ -12,7 +12,7 @@ The GradDotProd engine enables computation of gradient similarities between vali
 1. **Batch Concatenation**: Training and validation batches are concatenated for a single forward pass
 2. **Gradient Computation**: During backpropagation, the engine computes:
    - Per-parameter gradient dot products between validation and training samples. 
-   - Aggregated training gradients are recovered seperately and stored in `.grad` before optimizer step. 
+   - Aggregated training gradients are recovered separately and stored in `.grad` before optimizer step. 
 
 
 ## Quick Start
