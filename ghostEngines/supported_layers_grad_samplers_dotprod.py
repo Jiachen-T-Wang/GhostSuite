@@ -23,6 +23,101 @@ def _maybe_store_grad_val(param, grad_val) -> None:
         param._ghost_grad_val = grad_val.detach().to(torch.float32)
 
 
+# --------------------------------------------------------------------------- #
+# Tied-weight handling
+#
+# When one weight tensor is shared by >=2 supported modules (e.g. GPT-2 ties the
+# token embedding `wte` to the output Linear `lm_head`), the per-module samplers
+# would each write `weight.grad_dot_prod` / `weight._ghost_grad_val` and clobber
+# one another -- and even if summed, the per-use dot products miss the
+# cross-terms <g_use_a, g_use_b> of the (shared) parameter's true gradient.
+#
+# Correct handling: each use accumulates its validation-gradient aggregate into
+# `weight._ghost_grad_val` (so the post-backward train-grad recovery sees the
+# full val grad), and stashes its TRAIN factors. `finalize_tied_param` then
+# materializes the combined per-sample gradient G_i = sum_uses g_use_i for the
+# shared weight and computes the exact dot product <G_i, g_val_total>, the
+# per-sample train-grad norm ||G_i||, and the val-grad norm -- all including the
+# cross-terms. This is the only parameter materialized per-sample, so the memory
+# cost is one [out, in] tensor at a time.
+# --------------------------------------------------------------------------- #
+def stash_tied_contribution(layer, A, B, val_batch_size, log_grad_norms=False,
+                            accum_dtype: torch.dtype = torch.float32) -> None:
+    weight = layer.weight
+    A = A.detach()
+    B = B.detach()
+    train_bs = A.size(0) - val_batch_size
+    if train_bs <= 0:
+        raise ValueError("stash_tied_contribution: non-positive train batch size.")
+    vocab, embed = weight.shape
+
+    if isinstance(layer, nn.Embedding):
+        kind = "embedding"
+        A_long = A.long()
+        A_tr, A_val = A_long[:train_bs], A_long[train_bs:]
+        Bc = B.to(accum_dtype)
+        B_tr, B_val = Bc[:train_bs], Bc[train_bs:]
+        gval = torch.zeros((vocab, embed), dtype=accum_dtype, device=B.device)
+        gval.index_add_(0, A_val.reshape(-1), B_val.reshape(-1, embed))
+        train_factors = (kind, A_tr, B_tr)
+    elif isinstance(layer, nn.Linear):
+        kind = "linear"
+        d_in, d_out = A.size(-1), B.size(-1)
+        Af = A.to(accum_dtype).reshape(-1, d_in)
+        Bf = B.to(accum_dtype).reshape(-1, d_out)
+        seq = Af.size(0) // A.size(0)
+        split = train_bs * seq
+        gval = torch.matmul(Bf[split:].T, Af[split:])           # [d_out, d_in] = [vocab, embed]
+        train_factors = (kind, Af[:split].view(train_bs, seq, d_in),
+                         Bf[:split].view(train_bs, seq, d_out))
+    else:
+        raise TypeError(f"Tied weight on unsupported module type {type(layer).__name__}.")
+
+    prev = getattr(weight, "_ghost_grad_val", None)
+    weight._ghost_grad_val = gval if prev is None else (prev + gval)
+    # Keep a reference for finalize_tied_param: the subtract-val train-grad
+    # recovery (prepare_gradients) deletes _ghost_grad_val before aggregate_and_log
+    # runs, but the tensor survives through this alias.
+    weight._ghost_tied_gval = weight._ghost_grad_val
+    if not hasattr(weight, "_ghost_tied_stash"):
+        weight._ghost_tied_stash = []
+        weight._ghost_tied_train_bs = train_bs
+        weight._ghost_tied_log_norms = bool(log_grad_norms)
+    weight._ghost_tied_stash.append(train_factors)
+
+
+def finalize_tied_param(weight, accum_dtype: torch.dtype = torch.float32) -> None:
+    stash = weight._ghost_tied_stash
+    train_bs = weight._ghost_tied_train_bs
+    log_norms = weight._ghost_tied_log_norms
+    gval = weight._ghost_tied_gval.to(accum_dtype)              # [vocab, embed] total val aggregate
+    vocab, embed = weight.shape
+    device = gval.device
+
+    dot = torch.empty(train_bs, dtype=accum_dtype, device=device)
+    tnorm = torch.empty(train_bs, dtype=accum_dtype, device=device) if log_norms else None
+    for i in range(train_bs):
+        Gi = torch.zeros((vocab, embed), dtype=accum_dtype, device=device)
+        for factors in stash:
+            kind = factors[0]
+            if kind == "embedding":
+                _, A_tr, B_tr = factors
+                Gi.index_add_(0, A_tr[i].reshape(-1), B_tr[i].reshape(-1, embed))
+            else:  # linear: G_i = sum_t b_t a_t^T = B_i^T A_i
+                _, A_tr, B_tr = factors
+                Gi += torch.matmul(B_tr[i].transpose(0, 1), A_tr[i])
+        dot[i] = (Gi * gval).sum()
+        if log_norms:
+            tnorm[i] = (Gi * Gi).sum()
+
+    weight.grad_dot_prod = dot
+    if log_norms:
+        weight.grad_train_norm = tnorm
+        weight.grad_val_norm_sq = (gval * gval).sum()
+    del (weight._ghost_tied_stash, weight._ghost_tied_train_bs,
+         weight._ghost_tied_log_norms, weight._ghost_tied_gval)
+
+
 def _should_use_ghost_computation(
     layer: nn.Module,
     A: Float[torch.Tensor, "batch ..."],
@@ -150,6 +245,16 @@ def _compute_linear_dot_product(
         layer.weight.grad_dot_prod = token_scores.view(train_bs, seq_len).sum(dim=1)
         _maybe_store_grad_val(layer.weight, grad_val)
 
+        if log_grad_norms:
+            # Per-sample ||G_train_i||^2 via the Gram trick (no materialization):
+            # ||sum_t b_t a_t^T||^2 = sum_{t,t'} <a_t,a_t'> <b_t,b_t'>.
+            A_tr3 = A_train.view(train_bs, seq_len, d_in)
+            B_tr3 = B_train.view(train_bs, seq_len, d_out)
+            AA = torch.bmm(A_tr3, A_tr3.transpose(1, 2))
+            BB = torch.bmm(B_tr3, B_tr3.transpose(1, 2))
+            layer.weight.grad_train_norm = (AA * BB).to(accum_dtype).sum(dim=[1, 2])
+            layer.weight.grad_val_norm_sq = (grad_val.to(accum_dtype) ** 2).sum()
+
     else:
 
         # --- materialize gradients ---
@@ -167,7 +272,11 @@ def _compute_linear_dot_product(
 
         layer.weight.grad_dot_prod = torch.matmul(grad_train.view(train_bs, -1), grad_val.view(-1))
         _maybe_store_grad_val(layer.weight, grad_val)
-        
+
+        if log_grad_norms:
+            layer.weight.grad_train_norm = (grad_train.to(accum_dtype) ** 2).sum(dim=[1, 2])
+            layer.weight.grad_val_norm_sq = (grad_val.to(accum_dtype) ** 2).sum()
+
 
 def _compute_linear_train_grad(
     layer: nn.Linear,

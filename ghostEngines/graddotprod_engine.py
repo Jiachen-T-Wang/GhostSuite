@@ -11,7 +11,10 @@ from torch import nn
 
 from . import autograd_grad_sample_dotprod
 from . import transformers_support
-from .supported_layers_grad_samplers_dotprod import _supported_layers_dotprod
+from .supported_layers_grad_samplers_dotprod import (
+    _supported_layers_dotprod,
+    finalize_tied_param,
+)
 
 
 
@@ -279,6 +282,13 @@ class GradDotProdEngine:
         total_dot_product_iter = None
         total_train_norm_sq = None
         total_val_norm_sq = 0.0
+
+        # Tied weights (e.g. wte/lm_head): combine the stashed per-use train
+        # factors into the exact per-sample dot product / grad norms before the
+        # aggregation loop reads grad_dot_prod / grad_train_norm below.
+        for param in self.module.parameters():
+            if hasattr(param, "_ghost_tied_stash"):
+                finalize_tied_param(param)
 
         for name, param in self.module.named_parameters():
 
