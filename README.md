@@ -65,36 +65,47 @@ The language-model examples under `examples/GradDotProd_LM/` and `examples/GradP
 
 The TorchTitan GradDotProd integration computes the train↔val gradient dot-products by running a
 single forward/backward on a **combined `train + val` batch**. Its runtime levers are exposed as
-`--ghost.*` flags (defaults live in `llama3_130m_ghost.toml`); the default is the fastest
-combination measured on an H200:
+`--ghost.*` flags (defaults live in `llama3_130m_ghost.toml`):
 
 | `--ghost.*` lever | default | effect |
 |---|---|---|
 | `subtract_val` | on | recover train grads after backward instead of masking activations |
 | `decoupled_fn` | on | graph-clean decoupled-Function path so `torch.compile` can compile the model |
 | `compile_toplevel` | on | also compile the output Linear's dot (memory-free; the rest of the gain) |
+| `opsac_mm_every` | 1 | op-SAC mm save-fraction: recompute every N-th matmul (1 = all → min memory; ↑N = more memory, faster). Active when `selective_ac_option="op"` |
 | `batched_dotprod` | off | eager grouped dot-product — the no-compile fallback (superseded by `decoupled_fn`) |
 | `regional_compile` | off | regional compile of RoPE/SwiGLU (helps A100, regresses H200) |
 
-The default also sets `[compile] enable = true`. Together these run a compiled fast path that is
-**~25% faster** than the eager engine **at the same loss** (bit-identical), but at a **higher peak
-memory** because `torch.compile` saves more activations. The cost buys back via activation
-checkpointing, giving a single speed↔memory dial (numbers: Llama-3 130M, seq 4096, train bs2 + val
-bs2, single H200; throughput is tokens/s, loss-identical in every row):
+The default also sets `[compile] enable = true` and `[activation_checkpoint] mode = "selective",
+selective_ac_option = "op"`. Together these run a compiled fast path with **op-level selective
+activation checkpointing** that is faster than the eager engine **at the same loss** (bit-identical
+*and* dot-product-identical). Activation checkpointing then gives a single speed↔memory dial. The
+default is **op-SAC `mme1`** — the runtime-memory frontier point that runs *below* the eager
+engine's peak memory while still ~15% faster. Numbers: Llama-3 130M, seq 4096, train bs2 + val bs2,
+single H200, one session; throughput is tokens/s, loss-identical in every row
+(`docs/analysis/ac_frontier_2026-06-21.md`):
 
-| config | extra flags | throughput vs eager | peak memory |
+| config | flags | throughput vs eager | peak memory |
 |---|---|---:|---:|
-| **max speed** (default) | *(none)* | **+25%** | +38% |
-| balanced | `--activation_checkpoint.mode=selective --activation_checkpoint.selective_ac_option=2` | +15% | +14% |
-| min memory | `--activation_checkpoint.mode=full` | +8% | **−10%** (below eager) |
+| **default** (op-SAC `mme1`) | *(none)* | **+15%** | **−9%** (below eager) |
+| op-SAC, more memory | `--ghost.opsac_mm_every=4` | +18% | +14% |
+| op-SAC, more memory | `--ghost.opsac_mm_every=8` | +19% | +16% |
+| max speed (no AC) | `--activation_checkpoint.mode=none` | **+24%** | +38% |
+| absolute min memory | `--activation_checkpoint.mode=full` | +8% | −10% |
 
-Caveats: the combined `train + val` batch and the compiled path both raise peak memory, so a ghost
-run hits the memory ceiling **earlier** than a same-train-batch baseline (the fp32 logits tensor,
-`batch · seq · vocab · 4` bytes, dominates for large-vocab models) — expect OOM roughly one batch
-step before baseline at the max-speed setting. The numbers above are H200/Llama-3-130M; on an
-80 GB A100 the max-speed memory headroom is tighter, so prefer the *balanced* or *min memory*
-dial. To fall back to the pure eager engine, run with
-`--ghost.no-decoupled_fn --ghost.no-batched_dotprod` (compile is auto-disabled on the eager path).
+op-SAC strictly dominates the older layer-frequency dial: it sits on the pareto frontier at every
+memory level, whereas `--activation_checkpoint.selective_ac_option=2` and the `torch.compile`
+`memory_budget` partitioner are both off-frontier here (the latter gives no peak-memory reduction —
+the fp32 logits tensor floors it). See the analysis doc for the full frontier and the negative
+results.
+
+Caveats: the combined `train + val` batch and the compiled path both raise peak memory, so at the
+*max speed* (no-AC) setting a ghost run hits the memory ceiling **earlier** than a same-train-batch
+baseline (the fp32 logits tensor, `batch · seq · vocab · 4` bytes, dominates for large-vocab
+models). The default op-SAC `mme1` keeps peak memory *below* the eager engine, so it has the most
+headroom — prefer it (or `mode=full`) on an 80 GB A100. To fall back to the pure eager engine, run
+with `--ghost.no-decoupled_fn --ghost.no-batched_dotprod` (compile is auto-disabled on the eager
+path).
 
 
 ## How the Ghost Engines Work

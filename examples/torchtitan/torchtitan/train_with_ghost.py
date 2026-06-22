@@ -178,6 +178,12 @@ class GhostTrainer(Trainer):
                 os.environ[name] = "1" if cfg_val else "0"
                 resolved[name] = bool(cfg_val)
 
+        # op-SAC mm save-fraction (int, not bool). Read at apply_ac during super().__init__, so it
+        # must be bridged here before model build. Env var still wins for ad-hoc overrides.
+        if "GHOST_OPSAC_MM_EVERY" not in os.environ:
+            os.environ["GHOST_OPSAC_MM_EVERY"] = str(ghost_cfg.opsac_mm_every)
+        resolved["GHOST_OPSAC_MM_EVERY"] = os.environ["GHOST_OPSAC_MM_EVERY"]
+
         # Both grouped dot-product paths recover train grads via subtract-val after backward.
         for lever in ("GHOST_BATCHED_DOTPROD", "GHOST_DECOUPLED_FN"):
             if resolved[lever] and not resolved["GHOST_SUBTRACT_VAL"]:
@@ -197,10 +203,11 @@ class GhostTrainer(Trainer):
 
         logger.info(
             "Ghost levers: subtract_val=%s batched_dotprod=%s batched_dotprod_compile=%s "
-            "decoupled_fn=%s compile_toplevel=%s regional_compile=%s",
+            "decoupled_fn=%s compile_toplevel=%s regional_compile=%s opsac_mm_every=%s",
             resolved["GHOST_SUBTRACT_VAL"], resolved["GHOST_BATCHED_DOTPROD"],
             resolved["GHOST_BATCHED_DOTPROD_COMPILE"], resolved["GHOST_DECOUPLED_FN"],
             resolved["GHOST_COMPILE_TOPLEVEL"], resolved["GHOST_REGIONAL_COMPILE"],
+            resolved["GHOST_OPSAC_MM_EVERY"],
         )
 
     def forward_backward_step(

@@ -1023,6 +1023,13 @@ class Ghost:
     regional_compile: bool = False
     """Lever 1c: regional torch.compile of RoPE/SwiGLU. GPU-dependent (+A100 / -H200); default off."""
 
+    opsac_mm_every: int = 1
+    """op-SAC mm save-fraction (bridged to GHOST_OPSAC_MM_EVERY): recompute every N-th matmul.
+    Only effective when activation_checkpoint.selective_ac_option='op'. N=1 (default) recomputes
+    ALL matmuls = the 'mme1' min-memory frontier point (43 GiB / +14.8% tps on H200/130M); N=2 is
+    upstream torchtitan's 'every other mm'; larger N saves more mms (more memory, faster). See
+    docs/analysis/ac_frontier_2026-06-21.md."""
+
 @dataclass
 class Debug:
     seed: int | None = None
