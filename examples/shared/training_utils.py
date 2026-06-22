@@ -50,6 +50,9 @@ def load_dataset_main(train_set, val_set):
         )
     elif train_set == 'pile':
         dataset = load_all_data()
+    elif train_set == 'synthetic':
+        from .dataloader import make_synthetic_dataset
+        dataset = make_synthetic_dataset()
     else:
         raise ValueError(f"Unsupported training set: {train_set}")
     
@@ -91,7 +94,7 @@ def setup_data_functions(dataset, config, device, ddp_info=None):
             device=device,
         )
 
-    if config.args.train_set == 'pile':
+    if config.args.train_set in ('pile', 'synthetic'):
         def get_batch(split, batch_size, return_idx=False):
             if split == 'train' and replay_loader is not None:
                 X, Y, idx = replay_loader.next_batch(batch_size=batch_size, return_idx=return_idx)
@@ -100,7 +103,9 @@ def setup_data_functions(dataset, config, device, ddp_info=None):
             split_for_dataset = 'train' if split == 'train_eval' else split
             gen = generators.get(split_for_dataset, train_gen)
             return get_batch_from_dataset(
-                split_for_dataset, batch_size, dataset, return_idx=return_idx, generator=gen
+                split_for_dataset, batch_size, dataset,
+                block_size=getattr(config, 'block_size', 1024),
+                return_idx=return_idx, generator=gen
             )
 
         def get_val_batch(batch_size, return_idx=False):

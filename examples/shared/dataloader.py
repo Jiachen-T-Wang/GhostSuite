@@ -59,6 +59,22 @@ def _allocate_train_tokens(domain_paths, token_budget):
     return allocations
 
 
+def make_synthetic_dataset(vocab_size: int = 50304, n_train: int = 200_000,
+                           n_val: int = 20_000, n_test: int = 20_000, seed: int = 0):
+    """Build an in-memory dataset of random tokens.
+
+    Returns the same {'train','val','test'} dict shape as `load_all_data`, so the
+    rest of the data pipeline (get_batch_from_dataset / setup_data_functions) works
+    unchanged. Lets the LM examples run end-to-end with no tokenized corpus on disk.
+    """
+    rng = np.random.default_rng(seed)
+    return {
+        'train': rng.integers(0, vocab_size, size=n_train, dtype=np.uint16),
+        'val': rng.integers(0, vocab_size, size=n_val, dtype=np.uint16),
+        'test': rng.integers(0, vocab_size, size=n_test, dtype=np.uint16),
+    }
+
+
 def load_all_data(token_budget: int=1_000_000_000):
 
     mixed_train_data = []

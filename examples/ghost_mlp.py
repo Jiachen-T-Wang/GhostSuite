@@ -21,9 +21,12 @@ class TwoLayerMLP(nn.Module):
 
     def __init__(self, in_dim: int = 10, hidden_dim: int = 16, out_dim: int = 4):
         super().__init__()
-        self.fc1 = nn.Linear(in_dim, hidden_dim)
+        # Bias-free Linear layers: the GradDotProd engine computes per-sample
+        # dot products for the supported layer weights (nn.Linear / nn.Embedding);
+        # bias terms are not part of that supported set.
+        self.fc1 = nn.Linear(in_dim, hidden_dim, bias=False)
         self.act = nn.ReLU()
-        self.fc2 = nn.Linear(hidden_dim, out_dim)
+        self.fc2 = nn.Linear(hidden_dim, out_dim, bias=False)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.fc1(x)

@@ -26,7 +26,7 @@ def parse_arguments():
     
     # Architecture parameters
     parser.add_argument('--architecture', type=str, default='GPT2-Small',
-                       choices=['GPT2-Small', 'GPT2-Medium', 'GPT2-Large', 'LLaVA-7B', 'LLaVA-13B'])
+                       choices=['GPT2-Tiny', 'GPT2-Small', 'GPT2-Medium', 'GPT2-Large', 'LLaVA-7B', 'LLaVA-13B'])
     
     # Training parameters
     parser.add_argument('--batch_size', type=int, default=16, help='Training batch size')
@@ -100,6 +100,14 @@ class TrainingConfig:
 
         # Defer the model config to a separate function
         self.architecture = args.architecture
+
+        # Sequence length (block size). For GPT architectures it is fixed by the
+        # model config table; sampled windows must match it (e.g. GPT2-Tiny=64).
+        try:
+            from shared.GPT2_configs import get_model_config
+            self.block_size = get_model_config(self.architecture)['block_size']
+        except (ImportError, ValueError, KeyError):
+            self.block_size = 1024
         
         # Training hyperparameters
         self.batch_size = args.batch_size

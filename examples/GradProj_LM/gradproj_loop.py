@@ -59,7 +59,7 @@ def compute_projections(model, engine, dataset, config, device, ctx, num_iterati
         # Forward pass with autocast
         with ctx:
             with torch.enable_grad():  # Ensure gradients are enabled
-                outputs = model(input_ids=X, labels=Y)
+                outputs = model(X, Y)  # custom GPT: forward(idx, targets)
                 loss = outputs.loss
         
         # Backward pass to compute gradients

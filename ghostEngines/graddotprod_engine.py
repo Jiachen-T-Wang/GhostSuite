@@ -142,6 +142,24 @@ class GradDotProdEngine:
                 del param.backprops
 
 
+    def _infer_total_bs(self) -> int:
+        """Infer the combined (train + val) batch size of the last ghost forward.
+
+        Read from the per-layer state stamped during the forward pass so the
+        train-grad recovery does not depend on attach_train_batch having been
+        called (e.g. throughput loops that skip dot-product logging).
+        """
+        for mod in self.module.modules():
+            total_bs = getattr(mod, "_ghost_total_bs", None)
+            if total_bs is not None:
+                return int(total_bs)
+        if getattr(self, "X_train", None) is not None:
+            return int(self.X_train.shape[0]) + self.val_batch_size
+        raise ValueError(
+            "subtract-val: cannot infer total batch size; no supported layer recorded a "
+            "ghost forward this step (and no train batch was attached)."
+        )
+
     def _prepare_and_apply_train_grad(self):
         """
         Moves the accumulated training gradients from `param.train_grad` to
@@ -151,12 +169,19 @@ class GradDotProdEngine:
             # This is a safeguard, though the new step logic doesn't require it as strictly.
             return
 
-        # subtract-val: standard autograd produced the full combined-batch grad; recover the
-        # train-only mean grad as (total/train)*(grad - grad_val), reusing grad_val from the
-        # dot-product. Avoids the unpack masking clone and the fp32 norm grad_input fix.
-        if os.getenv("GHOST_SUBTRACT_VAL", "0") == "1":
-            train_bs = int(self.X_train.shape[0])
-            total_bs = train_bs + self.val_batch_size
+        # subtract-val (default): standard autograd produces the full combined-batch grad; recover
+        # the train-only mean grad as (total/train)*(grad - grad_val), reusing grad_val from the
+        # dot-product. This is the correct path for all networks: unlike the legacy masking path
+        # (GHOST_SUBTRACT_VAL=0) it never mutates saved activations, so it does not corrupt the
+        # gradients of layers before the last in residual-free models (e.g. plain MLPs).
+        if os.getenv("GHOST_SUBTRACT_VAL", "1") == "1":
+            total_bs = self._infer_total_bs()
+            train_bs = total_bs - self.val_batch_size
+            if train_bs <= 0:
+                raise ValueError(
+                    f"subtract-val: inferred train_bs={train_bs} (total_bs={total_bs}, "
+                    f"val_batch_size={self.val_batch_size}) is non-positive."
+                )
             scale = float(total_bs) / float(train_bs)
             for name, param in self.module.named_parameters():
                 if not param.initially_requires_grad or "dummy_bias" in name:

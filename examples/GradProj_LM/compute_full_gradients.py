@@ -165,7 +165,7 @@ def main():
         model.zero_grad(set_to_none=True)
         with ctx:
             with torch.enable_grad():
-                outputs = model(input_ids=X, labels=Y)
+                outputs = model(X, Y)  # custom GPT: forward(idx, targets)
                 loss = outputs.loss
         loss.backward()
 

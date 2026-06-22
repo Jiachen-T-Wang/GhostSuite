@@ -139,55 +139,27 @@ def setup_model_GPT(config):
 
 
 def create_GPT_model(config):
-    """Create and initialize the GPT model."""
+    """Create and initialize the GPT model (shared custom nanoGPT-style GPT).
 
-    config_GPT = {
-        'GPT2-Small': {
-            'n_layer': 12,
-            'n_head': 12,
-            'n_embd': 768,
-            'block_size': 1024,
-            'vocab_size': 50304,
-        },
-        'GPT2-Medium': {
-            'n_layer': 24,
-            'n_head': 12,
-            'n_embd': 1024,
-            'block_size': 1024,
-            'vocab_size': 50304,
-        },
-        'GPT2-Large': {
-            'n_layer': 36,
-            'n_head': 20,
-            'n_embd': 1280,
-            'block_size': 1024,
-            'vocab_size': 50304,
-        }
-    }
+    Used by the GradProj_LM example. Builds the same `GPT` used elsewhere via
+    the shared `GPT2_configs` table so the ghost layers (nn.Linear / nn.Embedding)
+    are recognized by the projection engine.
+    """
+    from .GPT2_configs import get_model_config
 
-    if config.architecture not in config_GPT:
-        raise ValueError(f"Unknown GPT architecture: {config.architecture}")
+    model_config = get_model_config(config.architecture)
 
-    model_config = config_GPT[config.architecture]
-
-    model_args = dict(
+    gptconf = GPTConfig(
         n_layer=model_config['n_layer'],
         n_head=model_config['n_head'],
         n_embd=model_config['n_embd'],
-        n_positions=model_config['block_size'],
-        bos_token_id=model_config['vocab_size'],
-        eos_token_id=model_config['vocab_size'],
-        vocab_size=model_config['vocab_size'],
-        resid_pdrop=0,
-        embd_pdrop=0,
-        attn_pdrop=0,
-        summary_first_dropout=0,
-        use_cache=False,
+        block_size=model_config['block_size'],
+        bias=False,
+        vocab_size=50304,
+        dropout=0.0,
     )
-    
-    gptconf = GPT2Config(**model_args)
     model = GPT(gptconf)
-    
+
     return model
 
 

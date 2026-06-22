@@ -17,7 +17,21 @@ The GradDotProd engine enables computation of gradient similarities between vali
 
 ## Quick Start
 
-### Get Tokenized Dataset
+### Smoke test (synthetic data, no corpus needed)
+The fastest way to check the example runs end-to-end is the built-in synthetic
+data mode (random tokens) on the tiny model. Requires a GPU but no dataset:
+
+```bash
+python examples/GradDotProd_LM/main.py --method GradDotProd \
+    --train_set synthetic --architecture GPT2-Tiny \
+    --batch_size 8 --val_batch_size 4 --max_steps 12 \
+    --model_dtype float32 --train_dtype float32
+```
+
+A pass prints finite, non-diverging losses and writes a per-sample
+`dot_product` tensor under `results/<run>/grad_dotprods/`.
+
+### Get Tokenized Dataset (for real training)
 Process the Pile dataset by domain:
 ```bash
 python examples/shared/data_processing/tokenize_pile_by_domain.py

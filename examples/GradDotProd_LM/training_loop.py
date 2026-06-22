@@ -145,21 +145,26 @@ class Trainer:
                     micro_step == self.config.gradient_accumulation_steps - 1
                 )
             
-            with self.ctx:
-                # Prepare input based on the ghost engine method
-                X_forward, Y_forward = self.ghost_engine.prepare_forward_input(X, Y)
-                
-                # Forward pass with method-appropriate input
-                outputs = self.model(X_forward, Y_forward)
-                logits, loss = outputs.logits, outputs.loss
-                
-                # Scale loss for gradient accumulation
+            # GradDotProd captures per-sample activations via saved-tensor hooks
+            # that are only installed inside saved_tensors_context(); the forward
+            # AND backward must both run inside it (no-op for other methods).
+            with self.ghost_engine.saved_tensors_context():
+                with self.ctx:
+                    # Prepare input based on the ghost engine method
+                    X_forward, Y_forward = self.ghost_engine.prepare_forward_input(X, Y)
+
+                    # Forward pass with method-appropriate input
+                    outputs = self.model(X_forward, Y_forward)
+                    logits, loss = outputs.logits, outputs.loss
+
+                    # Scale loss for gradient accumulation
+                    if loss is not None:
+                        loss = loss / self.config.gradient_accumulation_steps
+
+                # Backward pass (inside the saved-tensors context so the ghost
+                # hooks see the saved activations during backprop)
                 if loss is not None:
-                    loss = loss / self.config.gradient_accumulation_steps
-            
-            # Backward pass
-            if loss is not None:
-                self.scaler.scale(loss).backward()
+                    self.scaler.scale(loss).backward()
         
         # Prepare gradients using ghost engine
         self.ghost_engine.prepare_gradients()

@@ -15,7 +15,7 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 from config_file import parse_arguments, ProjectionConfig
 
 # Import from shared modules
-from shared.dataloader import load_all_data
+from shared.dataloader import load_all_data, make_synthetic_dataset
 from shared.model_setup import create_GPT_model
 from ghostEngines.gradProjection.gradproj_engine import GradProjLoraEngine
 
@@ -95,8 +95,12 @@ def main():
 
     # Load dataset
     print("\n" + "=" * 40)
-    print("Loading Pile dataset...")
-    dataset = load_all_data()
+    if config.data_source == 'synthetic':
+        print("Building synthetic dataset (random tokens)...")
+        dataset = make_synthetic_dataset()
+    else:
+        print("Loading Pile dataset...")
+        dataset = load_all_data()
     train_data = dataset['train']
     print(f"Loaded dataset with {len(train_data)} tokens")
     
