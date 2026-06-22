@@ -7,6 +7,8 @@
 # This file applies the PT-D parallelisms (except pipeline parallelism) and various
 # training techniques (e.g. activation checkpointing and compile) to the Llama model.
 
+import os
+
 import torch
 import torch.nn as nn
 from torch.distributed._composable.replicate import replicate
@@ -31,13 +33,17 @@ from torchtitan.tools.logging import logger
 
 
 # for selective op activation checkpointing
-_op_sac_save_list = {
-    torch.ops.aten.mm.default,
+_SDPA_OPS = {
     torch.ops.aten._scaled_dot_product_efficient_attention.default,
     torch.ops.aten._scaled_dot_product_flash_attention.default,
     torch.ops.aten._scaled_dot_product_cudnn_attention.default,
     torch.ops.aten._scaled_dot_product_attention_math.default,
     torch.ops.aten._scaled_dot_product_fused_attention_overrideable.default,
+}
+
+_op_sac_save_list = {
+    torch.ops.aten.mm.default,
+    *_SDPA_OPS,
     torch.ops._c10d_functional.reduce_scatter_tensor.default,
     # for low precision training, it's useful to always save
     # the result of max, since the absolute maximum is
@@ -47,6 +53,24 @@ _op_sac_save_list = {
     torch.ops.torch_attn._varlen_attn.default,
     torch._higher_order_ops.inductor_compiled_code,
 }
+
+
+def _build_op_sac_save_list() -> set:
+    """AC-frontier study: build the op-SAC save-list with env-driven membership tweaks so the
+    policy can be retuned without code edits. Defaults reproduce ``_op_sac_save_list`` exactly.
+      GHOST_OPSAC_DROP_SDPA=1  -> recompute attention (drop the SDPA ops; less mem, slower)
+      GHOST_OPSAC_DROP_MM=1     -> recompute all matmuls (drop mm; less mem, slower)
+      GHOST_OPSAC_ADD_SWIGLU=1  -> also save the SwiGLU pointwise intermediates (silu, mul;
+                                   more mem, faster — these are the big [B,seq,hidden] tensors)
+    """
+    save = set(_op_sac_save_list)
+    if os.getenv("GHOST_OPSAC_DROP_SDPA") == "1":
+        save -= _SDPA_OPS
+    if os.getenv("GHOST_OPSAC_DROP_MM") == "1":
+        save.discard(torch.ops.aten.mm.default)
+    if os.getenv("GHOST_OPSAC_ADD_SWIGLU") == "1":
+        save |= {torch.ops.aten.silu.default, torch.ops.aten.mul.Tensor}
+    return save
 
 
 def parallelize_llama(
@@ -102,7 +126,7 @@ def parallelize_llama(
             job_config.activation_checkpoint,
             model_compile_enabled=model_compile_enabled,
             # pyrefly: ignore [bad-argument-type]
-            op_sac_save_list=_op_sac_save_list,
+            op_sac_save_list=_build_op_sac_save_list(),
             base_folder=job_config.job.dump_folder,
         )
 

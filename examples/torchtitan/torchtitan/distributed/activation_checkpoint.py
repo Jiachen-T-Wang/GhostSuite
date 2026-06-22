@@ -95,6 +95,12 @@ def _apply_op_sac(
             f"Selective op AC force recomputing mms with rhs shapes {mm_recompute_shapes}"
         )
 
+    # AC-frontier study lever: the default op-SAC recomputes every 2nd mm. GHOST_OPSAC_MM_EVERY=N
+    # recomputes every N-th mm instead (save fraction = 1 - 1/N): N=1 recomputes ALL mms (min mem),
+    # N=2 is the default (save half), larger N saves more mms (more mem, faster). N>=10**6 ~ save
+    # all mms. Lets op-SAC trace a finer memory<->speed frontier than the discrete layer-freq knob.
+    _mm_every = max(1, int(os.getenv("GHOST_OPSAC_MM_EVERY", "2")))
+
     def _get_custom_policy(meta):
         def _custom_policy(ctx, func, *args, **kwargs):
             if (
@@ -111,9 +117,9 @@ def _apply_op_sac(
                 if args[1].shape in mm_recompute_shapes:
                     return CheckpointPolicy.PREFER_RECOMPUTE
                 meta[mm_count_key] += 1
-            # Saves output of all compute ops, except every second mm
+            # Saves output of all compute ops, except every N-th mm (N = _mm_every)
             to_save = func in op_sac_save_list and not (
-                func == torch.ops.aten.mm.default and meta[mm_count_key] % 2 == 0
+                func == torch.ops.aten.mm.default and meta[mm_count_key] % _mm_every == 0
             )
             return (
                 CheckpointPolicy.MUST_SAVE
