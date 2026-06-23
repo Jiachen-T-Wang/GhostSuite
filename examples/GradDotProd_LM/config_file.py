@@ -46,6 +46,9 @@ def parse_arguments():
     parser.add_argument('--eval_interval', type=int, default=10)
     parser.add_argument('--eval_iter', type=int, default=20)
     parser.add_argument('--eval_bs', type=int, default=16)
+    parser.add_argument('--eval_seed', type=int, default=1234,
+                        help='Fixed RNG seed for the evaluation window set; identical across '
+                             'training seeds so val/test loss noise is seed-independent')
 
     # In-Run Shapley parameters
     parser.add_argument('--dot_prod_save_interval', type=int, default=10)
@@ -151,6 +154,7 @@ class TrainingConfig:
         self.eval_iters = args.eval_iter
         self.eval_interval = args.eval_interval
         self.eval_bs = args.eval_bs
+        self.eval_seed = args.eval_seed
         self.dot_prod_save_interval = args.dot_prod_save_interval
 
         if self.dot_prod_save_interval is None:

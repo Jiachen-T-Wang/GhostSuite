@@ -96,13 +96,15 @@ def setup_data_functions(dataset, config, device, ddp_info=None):
         )
 
     if config.args.train_set in ('pile', 'synthetic'):
-        def get_batch(split, batch_size, return_idx=False):
+        def get_batch(split, batch_size, return_idx=False, gen=None):
             if split == 'train' and replay_loader is not None:
                 X, Y, idx = replay_loader.next_batch(batch_size=batch_size, return_idx=return_idx)
                 return (X, Y, idx) if return_idx else (X, Y)
 
             split_for_dataset = 'train' if split == 'train_eval' else split
-            gen = generators.get(split_for_dataset, train_gen)
+            # `gen` overrides the split RNG (used by estimate_loss for a fixed,
+            # seed-independent evaluation set); otherwise use the split generator.
+            gen = gen if gen is not None else generators.get(split_for_dataset, train_gen)
             return get_batch_from_dataset(
                 split_for_dataset, batch_size, dataset,
                 block_size=getattr(config, 'block_size', 1024),
@@ -125,15 +127,15 @@ def setup_data_functions(dataset, config, device, ddp_info=None):
         sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
         from llava_dataloader import get_llava_batch
 
-        def get_batch(split, batch_size, return_idx=False):
+        def get_batch(split, batch_size, return_idx=False, gen=None):
 
             if split == 'train' and replay_loader is not None:
                 X, Y, idx = replay_loader.next_batch(batch_size=batch_size, return_idx=return_idx)
                 return (X, Y, idx) if return_idx else (X, Y)
 
             split_for_dataset = 'train' if split == 'train_eval' else split
-            gen = generators.get(split_for_dataset, train_gen)
-            
+            gen = gen if gen is not None else generators.get(split_for_dataset, train_gen)
+
             # Get the batch from llava dataloader
             batch_data = get_llava_batch(
                 split_for_dataset, batch_size, dataset, device=device, generator=gen
@@ -271,15 +273,29 @@ def update_learning_rate(optimizer, lr):
 
 @torch.no_grad()
 def estimate_loss(model, get_batch_fn, config, ctx):
-    """Estimate loss on train/val/test splits."""
+    """Estimate loss on train/val/test splits.
+
+    Eval uses a dedicated generator re-seeded to a fixed constant (config.eval_seed,
+    default 1234) at the start of each call, so every evaluation -- at every step
+    and for every run/training seed -- draws the SAME set of windows. This removes
+    the per-eval sampling bounce and the seed-dependent eval noise (the training
+    seed no longer changes which windows are scored), isolating true model variance.
+    It is independent of the val RNG that draws the dynamic scoring batch, so scores
+    are unaffected. Raise config.eval_iters for a larger (more representative) set.
+    """
     model.eval()
-    
+
+    eval_seed = int(getattr(config, 'eval_seed', 1234))
+
     out = {}
     for split in ['train', 'val', 'test']:
         split_name = 'train_eval' if split == 'train' and getattr(config, 'replay_run_dir', None) else split
+        # Fresh fixed-seed generator per split so the eval window set is identical
+        # across steps, runs, and training seeds.
+        eval_gen = torch.Generator().manual_seed(eval_seed)
         losses = torch.zeros(config.eval_iters)
         for k in range(config.eval_iters):
-            X, Y = get_batch_fn(split_name, batch_size=config.eval_bs)
+            X, Y = get_batch_fn(split_name, batch_size=config.eval_bs, gen=eval_gen)
             
             # with ctx:
             #     outputs = model(input_ids=X, labels=Y)
