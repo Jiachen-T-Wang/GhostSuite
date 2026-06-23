@@ -76,6 +76,22 @@ def setup_data_functions(dataset, config, device, ddp_info=None):
 
     generators = {'train': train_gen, 'val': val_gen, 'test': test_gen}
 
+    # Optionally restrict the (dynamic) scoring val batch to the SAME window pool
+    # that estimate_loss averages the eval loss over, so the dot-product scores
+    # are computed against exactly the eval population. The pool replicates the
+    # eval draw (manual_seed(eval_seed) then eval_iters x randint(n, (eval_bs,))),
+    # which is identical to estimate_loss's window offsets (guarded by a test).
+    eval_val_pool = None
+    if getattr(config, 'score_val_from_eval_pool', False) and \
+            config.args.train_set in ('pile', 'synthetic'):
+        block_size = getattr(config, 'block_size', 1024)
+        n = len(dataset['val']) - block_size
+        pool_gen = torch.Generator().manual_seed(int(getattr(config, 'eval_seed', 1234)))
+        eval_val_pool = torch.cat([
+            torch.randint(n, (config.eval_bs,), generator=pool_gen)
+            for _ in range(config.eval_iters)
+        ])
+
     replay_loader = None
     if getattr(config, "replay_run_dir", None):
         from .replay_loader import ReplayDataLoader
@@ -118,6 +134,14 @@ def setup_data_functions(dataset, config, device, ddp_info=None):
                     # No deterministic mapping to original dataset indices
                     return X_val, Y_val, torch.full((batch_size,), -1, device=device)
                 return X_val, Y_val
+            if eval_val_pool is not None:
+                # Dynamic per-step scoring batch sampled from the fixed eval window
+                # pool (val_gen advances each step -> a fresh 16 from the pool).
+                return get_batch_from_dataset(
+                    'val', batch_size, dataset,
+                    block_size=getattr(config, 'block_size', 1024),
+                    return_idx=return_idx, generator=val_gen, index_pool=eval_val_pool
+                )
             return get_batch('val', batch_size, return_idx=return_idx)
         
     elif config.args.train_set in LLAVA_LIST:

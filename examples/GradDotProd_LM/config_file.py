@@ -73,6 +73,10 @@ def parse_arguments():
                         help='Refresh validation batch every training step for GradDotProd')
     parser.add_argument('--log_grad_norms', action='store_true',
                         help='Record per-sample training gradient norms and aggregated validation gradient norm')
+    parser.add_argument('--score_val_from_eval_pool', action='store_true',
+                        help='Draw the (dynamic) scoring validation batch from the SAME fixed '
+                             'window pool used to compute eval loss (eval_seed/eval_iter/eval_bs), '
+                             'so dot-product scores target exactly the eval population')
     parser.add_argument('--score_exclude_params', type=str, default=None,
                         help='Comma-separated parameter-name substrings to EXCLUDE from the logged '
                              'dot-product/cosine score (e.g. "wte,lm_head"); training is unaffected')
@@ -174,6 +178,7 @@ class TrainingConfig:
         self.wandb_mode = args.wandb_mode
         self.dynamic_val_batch = args.dynamic_val_batch
         self.log_grad_norms = args.log_grad_norms
+        self.score_val_from_eval_pool = args.score_val_from_eval_pool
         self.score_exclude_params = (
             [s.strip() for s in args.score_exclude_params.split(',') if s.strip()]
             if args.score_exclude_params else []

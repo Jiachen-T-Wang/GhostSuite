@@ -125,16 +125,21 @@ def load_all_data(token_budget: int=1_000_000_000):
 def get_batch_from_dataset(split, batch_size, dataset,
               block_size=1024, device='cuda', device_type='cuda',
               i_iter=-1, order_lst=None, return_idx=False, return_first=False,
-              generator=None):
+              generator=None, index_pool=None):
 
     data = dataset[split]
-    
+
     if len(data) - block_size == 0:
         ix = [0]
     elif return_first:
         ix = [0]
     elif order_lst is not None:
         ix = order_lst[i_iter*batch_size:(i_iter+1)*batch_size]
+    elif index_pool is not None:
+        # Sample window offsets from a fixed pool (e.g. the eval window set) so
+        # the draw is restricted to that population while staying random.
+        sel = torch.randint(len(index_pool), (batch_size,), generator=generator)
+        ix = [int(index_pool[int(s)]) for s in sel]
     else:
         if generator is None:
             ix = torch.randint(len(data) - block_size, (batch_size,))
