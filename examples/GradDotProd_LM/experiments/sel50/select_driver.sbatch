@@ -17,7 +17,7 @@
 #   $3 = max_steps for the selection runs (e.g. 10000)
 set -euo pipefail
 REPO=/scratch/gpfs/PMITTAL/tianhao/GhostSuite
-SCORE_NAME="$1"; PREFIX="$2"; MAX_STEPS="$3"
+SCORE_NAME="$1"; PREFIX="$2"; MAX_STEPS="$3"; SEED="${4:-42}"
 RUN_DIR="$REPO/examples/GradDotProd_LM/results/$SCORE_NAME"
 
 module load proxy/default
@@ -36,7 +36,7 @@ run_arm () {
     --method Regular --architecture GPT2-Small \
     --batch_size 16 --val_batch_size 16 \
     --learning_rate 0.0006 --max_steps "$MAX_STEPS" --warmup_step 2000 \
-    --optimizer adamw --seed 42 \
+    --optimizer adamw --seed "$SEED" \
     --model_dtype float32 --train_dtype bfloat16 \
     --eval_interval 200 --eval_iter 20 --eval_bs 16 \
     --replay_run_dir "$RUN_DIR" \
