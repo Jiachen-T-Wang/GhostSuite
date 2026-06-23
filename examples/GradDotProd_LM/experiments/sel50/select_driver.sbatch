@@ -38,7 +38,7 @@ run_arm () {
     --learning_rate 0.0006 --max_steps "$MAX_STEPS" --warmup_step 2000 \
     --optimizer adamw --seed "$SEED" \
     --model_dtype float32 --train_dtype bfloat16 \
-    --eval_interval 200 --eval_iter 128 --eval_bs 16 \
+    --eval_interval 200 --eval_iter "${EVAL_ITER:-128}" --eval_bs 16 \
     --replay_run_dir "$RUN_DIR" \
     --replay_filter_metric dot_product --replay_filter_threshold "$threshold" \
     --wandb_run_name "$name"
