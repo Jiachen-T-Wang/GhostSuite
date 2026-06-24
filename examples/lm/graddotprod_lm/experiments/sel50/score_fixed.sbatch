@@ -25,7 +25,7 @@ SEED="${4:-42}"
 
 module load proxy/default
 cd "$REPO"
-source init.sh
+uv sync && source .venv/bin/activate
 cd "$REPO/examples/lm/graddotprod_lm"
 
 EXCL_ARG=()

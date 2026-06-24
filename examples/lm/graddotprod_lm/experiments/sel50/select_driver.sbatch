@@ -23,7 +23,7 @@ SCORE_NAME="$1"; PREFIX="$2"; MAX_STEPS="$3"; SEED="${4:-42}"
 RUN_DIR="$REPO/examples/lm/graddotprod_lm/results/$SCORE_NAME"
 
 module load proxy/default
-cd "$REPO"; source init.sh
+cd "$REPO"; uv sync && source .venv/bin/activate
 cd "$REPO/examples/lm/graddotprod_lm"
 
 python experiments/sel50/compute_medians.py --run_dir "$RUN_DIR"
