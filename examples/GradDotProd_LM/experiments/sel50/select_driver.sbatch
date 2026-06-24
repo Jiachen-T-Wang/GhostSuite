@@ -38,12 +38,18 @@ run_arm () {
     --learning_rate 0.0006 --max_steps "$MAX_STEPS" --warmup_step 2000 \
     --optimizer adamw --seed "$SEED" \
     --model_dtype float32 --train_dtype bfloat16 \
-    --eval_interval 200 --eval_iter "${EVAL_ITER:-128}" --eval_bs 16 \
+    --eval_interval "${EVAL_INTERVAL:-200}" --eval_iter "${EVAL_ITER:-128}" --eval_bs 16 \
     --replay_run_dir "$RUN_DIR" \
     --replay_filter_metric dot_product --replay_filter_threshold "$threshold" \
     --wandb_run_name "$name"
 }
 
-run_arm "${PREFIX}_top50"    "$DOT_MEDIAN"   # top-50% by dot-product
-run_arm "${PREFIX}_positive" 0.0            # all positively-scored (dot >= 0)
+# ARMS selects which arms to run (default both). e.g. ARMS="positive".
+for arm in ${ARMS:-top50 positive}; do
+  case "$arm" in
+    top50)    run_arm "${PREFIX}_top50"    "$DOT_MEDIAN" ;;  # top-50% by dot-product
+    positive) run_arm "${PREFIX}_positive" 0.0 ;;            # all positively-scored (dot >= 0)
+    *) echo "[select:$PREFIX] unknown arm '$arm'" ;;
+  esac
+done
 echo "[select:$PREFIX] ALL ARMS DONE"
