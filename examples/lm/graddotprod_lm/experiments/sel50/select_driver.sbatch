@@ -20,11 +20,11 @@ set -euo pipefail
 REPO="${GHOST_REPO:-$(git -C "${SLURM_SUBMIT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null || true)}"
 : "${REPO:?set GHOST_REPO to the GhostSuite repo root, or submit from inside the repo}"
 SCORE_NAME="$1"; PREFIX="$2"; MAX_STEPS="$3"; SEED="${4:-42}"
-RUN_DIR="$REPO/examples/GradDotProd_LM/results/$SCORE_NAME"
+RUN_DIR="$REPO/examples/lm/graddotprod_lm/results/$SCORE_NAME"
 
 module load proxy/default
 cd "$REPO"; source init.sh
-cd "$REPO/examples/GradDotProd_LM"
+cd "$REPO/examples/lm/graddotprod_lm"
 
 python experiments/sel50/compute_medians.py --run_dir "$RUN_DIR"
 # shellcheck disable=SC1090

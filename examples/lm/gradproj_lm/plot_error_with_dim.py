@@ -31,7 +31,7 @@ import fnmatch
 # Local imports for rebuilding projections when needed
 # Ensure project root is on path for local imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 from ghostEngines.gradProjection.projection_utils import get_projection_initializer
 
 

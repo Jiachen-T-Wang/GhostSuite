@@ -141,7 +141,7 @@ def setup_model_GPT(config):
 def create_GPT_model(config):
     """Create and initialize the GPT model (shared custom nanoGPT-style GPT).
 
-    Used by the GradProj_LM example. Builds the same `GPT` used elsewhere via
+    Used by the gradproj_lm example. Builds the same `GPT` used elsewhere via
     the shared `GPT2_configs` table so the ghost layers (nn.Linear / nn.Embedding)
     are recognized by the projection engine.
     """

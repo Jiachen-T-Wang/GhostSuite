@@ -22,7 +22,7 @@ The fastest way to check the example runs end-to-end is the built-in synthetic
 data mode (random tokens) on the tiny model. Requires a GPU but no dataset:
 
 ```bash
-python examples/GradDotProd_LM/main.py --method GradDotProd \
+python examples/lm/graddotprod_lm/main.py --method GradDotProd \
     --train_set synthetic --architecture GPT2-Tiny \
     --batch_size 8 --val_batch_size 4 --max_steps 12 \
     --model_dtype float32 --train_dtype float32
@@ -34,14 +34,14 @@ A pass prints finite, non-diverging losses and writes a per-sample
 ### Get Tokenized Dataset (for real training)
 Process the Pile dataset by domain:
 ```bash
-python examples/shared/tokenize_pile_by_domain.py
+python examples/lm/shared/tokenize_pile_by_domain.py
 ```
-*Note: This process can take ~24 hours depending on your system. For a minimal example, see `examples/ghost_mlp.py`.* 
+*Note: This process can take ~24 hours depending on your system. For a minimal example, see `examples/minimal/ghost_mlp.py`.* 
 
 ### Usage
 
 ```bash
-cd examples/GradDotProd_LM
+cd examples/lm/graddotprod_lm
 
 # Run with gradient dot product computation (default)
 ./train.sh --batch_size 16

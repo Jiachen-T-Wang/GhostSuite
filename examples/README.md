@@ -6,40 +6,40 @@ This directory contains several examples demonstrating the use of the Ghost Engi
 ## Available Examples
 
 
-### 1. Minimal Examples (No data preparation required)
+### 1. Minimal Examples (`minimal/`, no data preparation required)
 Simplified implementations demonstrating core concepts:
 
-- **`ghost_mlp.py`**: Basic GradDotProd usage for MLP models
+- **`minimal/ghost_mlp.py`**: Basic GradDotProd usage for MLP models
   - Trains for 10 steps on synthetic data
   - Prints per-parameter gradient dot-products
 
-- **`ghost_gradproj_mlp.py`**: Per-sample gradient projection computation and storage for MLP
+- **`minimal/ghost_gradproj_mlp.py`**: Per-sample gradient projection computation and storage for MLP
 
-- **`ghost_gradproj_lm.py`**: Per-sample gradient projection computation and storage for language models
+- **`minimal/ghost_gradproj_lm.py`**: Per-sample gradient projection computation and storage for language models
   - Projects gradients for transformer layers
   - Demonstrates similarity computation from saved projections
 
 **Run minimal examples:**
 ```bash
-python ghost_mlp.py
-python ghost_gradproj_mlp.py --mode project --proj_rank_total 64
-python ghost_gradproj_lm.py --proj_layers "attn.c_attn,mlp.c_fc"
+python examples/minimal/ghost_mlp.py
+python examples/minimal/ghost_gradproj_mlp.py --mode project --proj_rank_total 64
+python examples/minimal/ghost_gradproj_lm.py --proj_layers "attn.c_attn,mlp.c_fc"
 ```
 
-### 2. GradDotProd Language Model (`GradDotProd_LM/`)
+### 2. GradDotProd Language Model (`lm/graddotprod_lm/`)
 Full demonstration of pair-wise gradient dot product computation during language model training on the Pile dataset. Useful for research projects such as online data selection that requires computing gradient similarities during the model training. 
 
 A built-in synthetic data mode (`--train_set synthetic`, random tokens, no corpus needed) runs the example end-to-end as a quick smoke test on a tiny model.
 
-See `examples/GradDotProd_LM/README.md` for detailed instructions. 
+See `examples/lm/graddotprod_lm/README.md` for detailed instructions. 
 
 
-### 3. Gradient Projection Language Model (`GradProj_LM/`)
+### 3. Gradient Projection Language Model (`lm/gradproj_lm/`)
 Full demonstration of per-sample gradient projection computation and storage for a language model checkpoint. Useful for research projects such as offline data selection that requires computing gradient similarities for a *fixed* model checkpoint. 
 
 A built-in synthetic data mode (`--data_source synthetic`, random tokens, no corpus needed) runs the example end-to-end as a quick smoke test on a tiny model.
 
-See `examples/GradProj_LM/README.md` for detailed instructions. 
+See `examples/lm/gradproj_lm/README.md` for detailed instructions. 
 
 
 ## How the Ghost Engines Work

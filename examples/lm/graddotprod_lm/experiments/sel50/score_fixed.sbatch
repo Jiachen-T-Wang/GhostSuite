@@ -26,7 +26,7 @@ SEED="${4:-42}"
 module load proxy/default
 cd "$REPO"
 source init.sh
-cd "$REPO/examples/GradDotProd_LM"
+cd "$REPO/examples/lm/graddotprod_lm"
 
 EXCL_ARG=()
 [ -n "$EXCLUDE" ] && EXCL_ARG=(--score_exclude_params "$EXCLUDE")
@@ -44,4 +44,4 @@ python main.py \
   "${EXCL_ARG[@]}" \
   --wandb_run_name "$RUN_NAME"
 
-echo "[score_fixed] DONE run_dir=$REPO/examples/GradDotProd_LM/results/$RUN_NAME"
+echo "[score_fixed] DONE run_dir=$REPO/examples/lm/graddotprod_lm/results/$RUN_NAME"

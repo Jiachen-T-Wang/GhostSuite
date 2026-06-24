@@ -25,7 +25,7 @@ The fastest way to check the example runs end-to-end is the built-in synthetic
 data mode (random tokens) on the tiny model. Runs on GPU or CPU, no dataset:
 
 ```bash
-python examples/GradProj_LM/main.py --data_source synthetic \
+python examples/lm/gradproj_lm/main.py --data_source synthetic \
     --architecture GPT2-Tiny --device cuda --batch_size 4 --max_samples 8 \
     --proj_dtype float32 --model_dtype float32 --train_dtype float32 \
     --output_dir ./outputs_smoke
@@ -37,12 +37,12 @@ run directory inside `--output_dir`. (Pass `--device cpu` to run without a GPU.)
 ### Get Tokenized Dataset (for real runs)
 Process the Pile dataset by domain:
 ```bash
-python examples/shared/tokenize_pile_by_domain.py
+python examples/lm/shared/tokenize_pile_by_domain.py
 ```
-*Note: This process can take ~24 hours depending on your system. For a minimal example, see `examples/ghost_gradproj_mlp.py` and `examples/ghost_gradproj_lm.py`.* 
+*Note: This process can take ~24 hours depending on your system. For a minimal example, see `examples/minimal/ghost_gradproj_mlp.py` and `examples/minimal/ghost_gradproj_lm.py`.* 
 
 ```bash
-cd examples/GradProj_LM/
+cd examples/lm/gradproj_lm/
 
 ./train.sh --batch_size 16 --max_samples 1000
 ```
@@ -61,7 +61,7 @@ cd examples/GradProj_LM/
   - Default: `1`
 
 ### Output Parameters
-- `--output_dir`: Directory to save projections (default: this example's `results/`, i.e. `examples/GradProj_LM/results/`)
+- `--output_dir`: Directory to save projections (default: this example's `results/`, i.e. `examples/lm/gradproj_lm/results/`)
 
 
 
@@ -145,7 +145,7 @@ The `plot_error_with_dim.py` script analyzes how well lower-dimensional projecti
 
 #### CLI
 
-- `--results_dir`: Root directory containing result subfolders (e.g., `examples/GradProj_LM/results`).
+- `--results_dir`: Root directory containing result subfolders (e.g., `examples/lm/gradproj_lm/results`).
 - `--results_pattern`: Pattern to match subfolder names that only differ by `rank_total_K`.
 - `--pattern_type`: Interpretation of `--results_pattern` (`regex`|`glob`, default: `regex`).
 - `--num_ref`: Number of reference samples to average (default: 50).

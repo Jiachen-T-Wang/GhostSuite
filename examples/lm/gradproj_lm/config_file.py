@@ -5,11 +5,11 @@ import os
 import sys
 
 # Add parent directories to path to import from main codebase
-parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 sys.path.insert(0, parent_dir)
 
 # Anchored to this file's directory so each git worktree writes to its own
-# results/ tree instead of a CWD-relative path. Mirrors GradDotProd_LM.
+# results/ tree instead of a CWD-relative path. Mirrors graddotprod_lm.
 RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'results')
 
 

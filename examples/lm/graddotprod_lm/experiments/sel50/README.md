@@ -9,7 +9,7 @@ seed 42 with a 4096-window validation pool.
 ## Launch
 
 ```bash
-cd examples/GradDotProd_LM
+cd examples/lm/graddotprod_lm
 
 # 1. Scoring runs (GradDotProd, 20k steps; 4096-window eval/scoring pool = EVAL_ITER*16)
 full=$(sbatch --parsable --export=ALL,EVAL_ITER=256 \

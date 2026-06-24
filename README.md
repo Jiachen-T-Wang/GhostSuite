@@ -38,7 +38,7 @@ source init.sh   # runs 'uv sync' and activates this checkout's .venv
 
 ## Quick Start
 
-In `examples/`, we provide three minimal examples for demonstrating core usage of GhostEngines:
+In `examples/minimal/`, we provide three minimal examples for demonstrating core usage of GhostEngines:
 
 - **`ghost_mlp.py`**: Basic GradDotProd usage for MLP models
   - Trains for 10 steps on synthetic data
@@ -107,21 +107,21 @@ path).
 
 ### Standalone language-model examples
 
-Two standalone LM examples live under `examples/GradDotProd_LM/` (online gradient
-dot-products during training) and `examples/GradProj_LM/` (offline per-sample
+Two standalone LM examples live under `examples/lm/graddotprod_lm/` (online gradient
+dot-products during training) and `examples/lm/gradproj_lm/` (offline per-sample
 gradient projection to disk). Both ship with a built-in **synthetic data mode**
 (random tokens, no tokenized corpus required), which makes them a quick smoke
 test on a tiny model:
 
 ```bash
 # GradDotProd: online dot-products (tiny model, random tokens) — needs a GPU
-python examples/GradDotProd_LM/main.py --method GradDotProd \
+python examples/lm/graddotprod_lm/main.py --method GradDotProd \
     --train_set synthetic --architecture GPT2-Tiny \
     --batch_size 8 --val_batch_size 4 --max_steps 12 \
     --model_dtype float32 --train_dtype float32
 
 # GradProj: offline projections (tiny model, random tokens) — runs on CPU too
-python examples/GradProj_LM/main.py --data_source synthetic \
+python examples/lm/gradproj_lm/main.py --data_source synthetic \
     --architecture GPT2-Tiny --device cuda --batch_size 4 --max_samples 8 \
     --proj_dtype float32 --model_dtype float32 --train_dtype float32 \
     --output_dir ./outputs_smoke

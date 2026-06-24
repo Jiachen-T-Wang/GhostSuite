@@ -21,7 +21,7 @@ import numpy as np
 
 # Make project paths available
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
 
 from shared.dataloader import load_all_data, get_batch_from_dataset
 from shared.model_setup import create_GPT_model
