@@ -14,7 +14,7 @@
 #SBATCH --cpus-per-task=4            # CPU cores per task
 #SBATCH --mem=16G                    # Memory per node
 #SBATCH --gres=gpu:1                 # Request 1 GPU
-#SBATCH --constraint="gpu80"
+#SBATCH --partition=ailab
 
 # Load proxy only when running on compute nodes (i.e., inside a Slurm job)
 if [[ -n "${SLURM_JOB_ID:-}" ]]; then

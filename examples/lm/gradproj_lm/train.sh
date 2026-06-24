@@ -14,8 +14,7 @@
 #SBATCH --cpus-per-task=4            # CPU cores per task
 #SBATCH --mem-per-cpu=16G            
 #SBATCH --gres=gpu:1                 # Request 1 GPU
-#SBATCH --partition=pli-lc
-#SBATCH --account=ai2_data
+#SBATCH --partition=ailab
 
 # Resolve this script's directory so output is anchored to the example dir
 # (not the caller's CWD), mirroring the Python default in config_file.py.
