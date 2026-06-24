@@ -40,6 +40,67 @@ The Guiding Principles when building `torchtitan`
 
 `torchtitan` has been showcasing PyTorch's latest distributed training features, via support for pretraining Llama 3.1 LLMs of various sizes.
 
+## GhostSuite training launcher (`run_train.sh`)
+
+This fork adds a convenience wrapper, `run_train.sh`, to start training and set
+common runtime options. To run with the ghost engine enabled, use
+`run_train_with_ghost.sh` instead (same interface).
+
+### Basic usage
+
+```bash
+./run_train.sh
+# pass any training arguments through to the Python module:
+./run_train.sh --training.steps=1000 --optimizer.lr=1e-4
+```
+
+### Choosing a dataset (including DCLM curated recipes)
+
+Use `--training.dataset` to pick a dataset by name and optionally
+`--training.dataset_path` to override its location:
+
+```bash
+# Train on curated recipe 18 (default path is inferred)
+./run_train.sh --training.dataset=recipe_18
+
+# Train on a custom location (e.g., Recipe_07 shards)
+./run_train.sh --training.dataset=recipe_7 \
+  --training.dataset_path=/path/to/DCLM-Pool/curated/Recipe_7/processed_data_curated/processed_data
+```
+
+Available curated recipe names: `recipe_1`–`recipe_37` (zero-padded variants like
+`recipe_07` also work). Each points to `shard_*_processed.jsonl` under
+`processed_data_curated/processed_data`.
+
+### Weights & Biases defaults and overrides
+
+By default, `run_train.sh` sets `WANDB_PROJECT=torchtitan-debug` and
+`WANDB_RUN_NAME=<timestamp>` (`YYYYMMDD_HHMMSS`). Override via environment
+variables or CLI flags:
+
+```bash
+WANDB_PROJECT=my_project WANDB_RUN_NAME=my_run ./run_train.sh
+./run_train.sh --wandb-project my_project --wandb-run-name my_run
+```
+
+### Other common overrides
+
+```bash
+NGPU=4 LOG_RANK=0,1 ./run_train.sh
+CONFIG_FILE=./torchtitan/models/pythia/pythia_70m.toml ./run_train.sh
+
+# Sweep with a specific dataset
+./run_train_sweep.sh --dataset recipe_18 --dataset-path /path/to/DCLM-Pool/curated/Recipe_18/processed_data_curated/processed_data
+
+# Flexible sweep grid
+./run_train_sweep_full.sh \
+  --grid optimizer.lr=3e-4,1e-3 \
+  --grid training.local_batch_size=4,8 \
+  --dataset recipe_18 \
+  --dataset-path /path/to/DCLM-Pool/curated/Recipe_18/processed_data_curated/processed_data \
+  --wandb-project myproj --wandb-group ablation
+```
+
 ## Contributing
 
 We look forward to your contributions!

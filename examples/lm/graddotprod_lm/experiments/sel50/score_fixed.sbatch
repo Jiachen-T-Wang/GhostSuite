@@ -39,7 +39,7 @@ python main.py \
   --optimizer adamw --seed "$SEED" \
   --model_dtype float32 --train_dtype bfloat16 \
   --dynamic_val_batch --log_grad_norms --score_val_from_eval_pool \
-  --eval_interval "${EVAL_INTERVAL:-200}" --eval_iter "${EVAL_ITER:-128}" --eval_bs 16 \
+  --eval_interval "${EVAL_INTERVAL:-200}" --eval_iter "${EVAL_ITER:-256}" --eval_bs 16 \
   --dot_prod_save_interval 10 \
   "${EXCL_ARG[@]}" \
   --wandb_run_name "$RUN_NAME"
