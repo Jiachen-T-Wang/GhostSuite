@@ -37,7 +37,7 @@ run directory inside `--output_dir`. (Pass `--device cpu` to run without a GPU.)
 ### Get Tokenized Dataset (for real runs)
 Process the Pile dataset by domain:
 ```bash
-python examples/shared/data_processing/tokenize_pile_by_domain.py
+python examples/shared/tokenize_pile_by_domain.py
 ```
 *Note: This process can take ~24 hours depending on your system. For a minimal example, see `examples/ghost_gradproj_mlp.py` and `examples/ghost_gradproj_lm.py`.* 
 

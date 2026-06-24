@@ -34,7 +34,7 @@ A pass prints finite, non-diverging losses and writes a per-sample
 ### Get Tokenized Dataset (for real training)
 Process the Pile dataset by domain:
 ```bash
-python examples/shared/data_processing/tokenize_pile_by_domain.py
+python examples/shared/tokenize_pile_by_domain.py
 ```
 *Note: This process can take ~24 hours depending on your system. For a minimal example, see `examples/ghost_mlp.py`.* 
 
