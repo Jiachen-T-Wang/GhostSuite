@@ -7,8 +7,8 @@
 #SBATCH --mem-per-cpu=16G
 #SBATCH --gres=gpu:1
 #SBATCH --time=1:59:59
-#SBATCH --output=/scratch/gpfs/PMITTAL/tianhao/slurm_output/slurm-%j.out
-#SBATCH --error=/scratch/gpfs/PMITTAL/tianhao/slurm_output/slurm-%j.err
+#SBATCH --output=slurm-%j.out
+#SBATCH --error=slurm-%j.err
 
 # Selection driver: trains two Regular arms on a scoring run's dot-product
 # scores -- top-50% (>= global median) and positive (>= 0). Args:
@@ -16,7 +16,9 @@
 #   $2 = arm prefix (e.g. sel20full / sel20excl)
 #   $3 = max_steps for the selection runs (e.g. 10000)
 set -euo pipefail
-REPO=/scratch/gpfs/PMITTAL/tianhao/GhostSuite
+# Repo root: override with GHOST_REPO, else derive from the submit dir (sbatch from inside the repo).
+REPO="${GHOST_REPO:-$(git -C "${SLURM_SUBMIT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null || true)}"
+: "${REPO:?set GHOST_REPO to the GhostSuite repo root, or submit from inside the repo}"
 SCORE_NAME="$1"; PREFIX="$2"; MAX_STEPS="$3"; SEED="${4:-42}"
 RUN_DIR="$REPO/examples/GradDotProd_LM/results/$SCORE_NAME"
 

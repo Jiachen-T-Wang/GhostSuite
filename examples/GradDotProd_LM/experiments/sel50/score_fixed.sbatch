@@ -7,15 +7,17 @@
 #SBATCH --mem-per-cpu=16G
 #SBATCH --gres=gpu:1
 #SBATCH --time=1:59:59
-#SBATCH --output=/scratch/gpfs/PMITTAL/tianhao/slurm_output/slurm-%j.out
-#SBATCH --error=/scratch/gpfs/PMITTAL/tianhao/slurm_output/slurm-%j.err
+#SBATCH --output=slurm-%j.out
+#SBATCH --error=slurm-%j.err
 
 # GradDotProd scoring run on the CORRECTED engine (tied wte/lm_head + Linear
 # grad-norms fixed). Args:  $1 = wandb run name,  $2 = exclude patterns
 # (comma-separated, e.g. "wte,lm_head"; empty for the full score),
 # $3 = max_steps (default 10000).
 set -euo pipefail
-REPO=/scratch/gpfs/PMITTAL/tianhao/GhostSuite
+# Repo root: override with GHOST_REPO, else derive from the submit dir (sbatch from inside the repo).
+REPO="${GHOST_REPO:-$(git -C "${SLURM_SUBMIT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null || true)}"
+: "${REPO:?set GHOST_REPO to the GhostSuite repo root, or submit from inside the repo}"
 RUN_NAME="$1"
 EXCLUDE="${2:-}"
 MAX_STEPS="${3:-10000}"
