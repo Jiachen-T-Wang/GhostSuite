@@ -145,7 +145,10 @@ class ReplayDataLoader:
             if match:
                 it = int(match.group(1))
                 files.append((it, os.path.join(self.grad_dir, fname)))
-        files.sort(key=lambda x: x[0])
+        # Cleanup files are saved as dot_prod_log_iter_-1.pt after the training
+        # loop exits. They contain the final unsaved scoring steps, so replay
+        # should consume them after non-negative iteration chunks.
+        files.sort(key=lambda x: (x[0] < 0, x[0]))
         return [p for _, p in files]
 
     def get_validation_batch(self, batch_size: Optional[int] = None):
