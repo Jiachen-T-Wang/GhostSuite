@@ -74,7 +74,7 @@ class DomainFileManager:
 
 def main():
     parser = argparse.ArgumentParser(description='Tokenize Pile dataset by domain with streaming')
-    parser.add_argument('--output_dir', type=str, default='/scratch/gpfs/tw8948/pile_tokenized', 
+    parser.add_argument('--output_dir', type=str, default='./pile_tokenized',
                        help='Directory to save tokenized files')
     parser.add_argument('--num_proc', type=int, default=8, 
                        help='Number of processes for dataset loading')

@@ -25,7 +25,7 @@ Use `--training.dataset` to pick a dataset by name and optionally `--training.da
 
 # Train on a custom location (e.g., Recipe_07 shards)
 ./run_train.sh --training.dataset=recipe_7 \
-  --training.dataset_path=/scratch/gpfs/PMITTAL/tianhao/DCLM-Pool/data/from-2t/curated/Recipe_7/processed_data_curated/processed_data
+  --training.dataset_path=/path/to/DCLM-Pool/curated/Recipe_7/processed_data_curated/processed_data
 ```
 
 Available curated recipe names: `recipe_1`–`recipe_37` (zero-padded variants like `recipe_07` also work). Each points to `shard_*_processed.jsonl` under `processed_data_curated/processed_data`.
@@ -54,13 +54,13 @@ NGPU=4 LOG_RANK=0,1 ./run_train.sh
 CONFIG_FILE=./torchtitan/models/pythia/pythia_70m.toml ./run_train.sh
 
 # Sweep with a specific dataset
-./run_train_sweep.sh --dataset recipe_18 --dataset-path /scratch/gpfs/PMITTAL/tianhao/DCLM-Pool/data/from-2t/curated/Recipe_18/processed_data_curated/processed_data
+./run_train_sweep.sh --dataset recipe_18 --dataset-path /path/to/DCLM-Pool/curated/Recipe_18/processed_data_curated/processed_data
 
 # Flexible sweep grid
 ./run_train_sweep_full.sh \
   --grid optimizer.lr=3e-4,1e-3 \
   --grid training.local_batch_size=4,8 \
   --dataset recipe_18 \
-  --dataset-path /scratch/gpfs/PMITTAL/tianhao/DCLM-Pool/data/from-2t/curated/Recipe_18/processed_data_curated/processed_data \
+  --dataset-path /path/to/DCLM-Pool/curated/Recipe_18/processed_data_curated/processed_data \
   --wandb-project myproj --wandb-group ablation
 ```

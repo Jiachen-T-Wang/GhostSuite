@@ -25,13 +25,13 @@ if __name__ == '__main__':
     parser.add_argument('--domain_name', type=str, required=True, help='The topic to filter by')
     args = parser.parse_args()
 
-    finetune_traindata_dir = '/scratch/gpfs/tw8948/LESS/pile-6m/train-{}.bin'.format(args.domain_name)
-    finetune_valdata_dir = '/scratch/gpfs/tw8948/LESS/pile-6m/validation-{}.bin'.format(args.domain_name)
-    finetune_testdata_dir = '/scratch/gpfs/tw8948/LESS/pile-6m/test-{}.bin'.format(args.domain_name)
+    finetune_traindata_dir = '/path/to/data/LESS/pile-6m/train-{}.bin'.format(args.domain_name)
+    finetune_valdata_dir = '/path/to/data/LESS/pile-6m/validation-{}.bin'.format(args.domain_name)
+    finetune_testdata_dir = '/path/to/data/LESS/pile-6m/test-{}.bin'.format(args.domain_name)
 
-    finetune_traindata_REST_dir = '/scratch/gpfs/tw8948/LESS/pile-6m/train-{}-REST.bin'.format(args.domain_name)
-    finetune_valdata_REST_dir = '/scratch/gpfs/tw8948/LESS/pile-6m/validation-{}-REST.bin'.format(args.domain_name)
-    finetune_testdata_REST_dir = '/scratch/gpfs/tw8948/LESS/pile-6m/test-{}-REST.bin'.format(args.domain_name)
+    finetune_traindata_REST_dir = '/path/to/data/LESS/pile-6m/train-{}-REST.bin'.format(args.domain_name)
+    finetune_valdata_REST_dir = '/path/to/data/LESS/pile-6m/validation-{}-REST.bin'.format(args.domain_name)
+    finetune_testdata_REST_dir = '/path/to/data/LESS/pile-6m/test-{}-REST.bin'.format(args.domain_name)
 
     data = np.memmap(finetune_traindata_dir, dtype=np.uint16, mode='r')
     print(len(data))

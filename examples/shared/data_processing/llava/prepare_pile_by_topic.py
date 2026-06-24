@@ -35,7 +35,7 @@ if __name__ == '__main__':
     topic_to_filter = args.topic
     data_dir = args.data_dir
     metainfo = args.metainfo
-    # data_dir = "/scratch/gpfs/tw8948/LESS/pile-full"
+    # data_dir = "/path/to/data/LESS/pile-full"
     
     tokenized = load_from_disk(data_dir)
 

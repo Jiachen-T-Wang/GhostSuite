@@ -7,7 +7,7 @@ from datasets import load_dataset # huggingface datasets
 num_proc = 32
 num_proc_load_dataset = num_proc
 
-# tiktoken_cache_dir = "/scratch/gpfs/tw8948/gpt2encoder"
+# tiktoken_cache_dir = "/path/to/data/gpt2encoder"
 # os.environ["TIKTOKEN_CACHE_DIR"] = tiktoken_cache_dir
 enc = tiktoken.get_encoding("gpt2")
 print('encoder loaded!')
@@ -36,7 +36,7 @@ if __name__ == '__main__':
         num_proc=num_proc,
     )
 
-    tokenized.save_to_disk("/scratch/gpfs/tw8948/LESS/pile-full")
+    tokenized.save_to_disk("/path/to/data/LESS/pile-full")
     print('saved tokenized data!')
 
     # concatenate all the ids in each dataset into one large file we can use for training
@@ -46,7 +46,7 @@ if __name__ == '__main__':
         print(dset)
 
         arr_len = np.sum(dset['len'], dtype=np.uint64)
-        filename = os.path.join('/scratch/gpfs/tw8948/LESS/pile-full', f'{split}.bin')
+        filename = os.path.join('/path/to/data/LESS/pile-full', f'{split}.bin')
 
         dtype = np.uint16 # (can do since enc.max_token_value == 50256 is < 2**16)
         arr = np.memmap(filename, dtype=dtype, mode='w+', shape=(arr_len,))

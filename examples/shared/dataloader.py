@@ -5,9 +5,11 @@ import torch
 # Local imports
 from .domain_list import PILE_DOMAIN_LIST
 
-PILE_DATA_DIR_TRAIN = '/scratch/gpfs/PMITTAL/tianhao/PretrainData/pile/pile-train'
-PILE_DATA_DIR_VAL = '/scratch/gpfs/PMITTAL/tianhao/PretrainData/pile/pile-val-gpt2'
-PILE_DATA_DIR_TEST = '/scratch/gpfs/PMITTAL/tianhao/PretrainData/pile/pile-test-gpt2'
+# Tokenized-Pile locations. Override via env vars to point at your own data;
+# defaults are placeholders, not real paths.
+PILE_DATA_DIR_TRAIN = os.environ.get('PILE_DATA_DIR_TRAIN', '/path/to/pile/pile-train')
+PILE_DATA_DIR_VAL = os.environ.get('PILE_DATA_DIR_VAL', '/path/to/pile/pile-val-gpt2')
+PILE_DATA_DIR_TEST = os.environ.get('PILE_DATA_DIR_TEST', '/path/to/pile/pile-test-gpt2')
 
 
 def _get_domain_paths(domain_list):

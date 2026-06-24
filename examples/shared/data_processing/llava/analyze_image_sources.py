@@ -4,7 +4,7 @@ from collections import Counter
 import re
 
 def analyze_image_sources():
-    dataset_dir = '/scratch/gpfs/tw8948/llava_dataset/'
+    dataset_dir = '/path/to/data/llava_dataset/'
     json_files = [
         'complex_reasoning_77k.json', 
         'detail_23k.json', 

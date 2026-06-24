@@ -4,9 +4,10 @@
 #SBATCH --mail-type=begin
 #SBATCH --mail-type=end
 #SBATCH --mail-type=fail
-#SBATCH --mail-user=tw8948@princeton.edu
-#SBATCH --output=/scratch/gpfs/PMITTAL/tianhao/slurm_output/slurm-%j.out
-#SBATCH --error=/scratch/gpfs/PMITTAL/tianhao/slurm_output/slurm-%j.err
+# #SBATCH --mail-user=you@example.com     # uncomment + set to receive job emails
+# Slurm writes slurm-%j.out/.err to the submit dir by default; override if desired:
+# #SBATCH --output=slurm-%j.out
+# #SBATCH --error=slurm-%j.err
 #SBATCH --time=13:59:59             
 #SBATCH --nodes=1                    # Number of nodes
 #SBATCH --ntasks=1                   # Number of tasks
@@ -18,7 +19,8 @@
 
 set -euo pipefail
 
-BASE_DIR="/scratch/gpfs/PMITTAL/tianhao/GhostSuite/examples/torchtitan"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BASE_DIR="${BASE_DIR:-$SCRIPT_DIR}"
 RUN_SCRIPT="${BASE_DIR}/run_train.sh"
 DUMP_ROOT="${BASE_DIR}/results"
 TRAIN_DATASET="${TRAIN_DATASET:-}"

@@ -4,9 +4,10 @@
 #SBATCH --mail-type=begin
 #SBATCH --mail-type=end
 #SBATCH --mail-type=fail
-#SBATCH --mail-user=tw8948@princeton.edu
-#SBATCH --output=/scratch/gpfs/PMITTAL/tianhao/slurm_output/slurm-%j.out
-#SBATCH --error=/scratch/gpfs/PMITTAL/tianhao/slurm_output/slurm-%j.err
+# #SBATCH --mail-user=you@example.com     # uncomment + set to receive job emails
+# Slurm writes slurm-%j.out/.err to the submit dir by default; override if desired:
+# #SBATCH --output=slurm-%j.out
+# #SBATCH --error=slurm-%j.err
 #SBATCH --time=5:59:59             
 #SBATCH --nodes=1                    # Number of nodes
 #SBATCH --ntasks=1                   # Number of tasks

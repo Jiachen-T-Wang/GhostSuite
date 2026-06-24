@@ -54,7 +54,7 @@ def _process_c4_text(sample: dict[str, Any]) -> str:
 
 def _build_dclm_recipe_datasets() -> dict[str, DatasetConfig]:
     """Build configs for curated DCLM recipes (Recipe_1 - Recipe_37)."""
-    base_dir = "/scratch/gpfs/PMITTAL/tianhao/DCLM-Pool/data/from-2t/curated"
+    base_dir = os.environ.get("DCLM_BASE_DIR", "/path/to/DCLM-Pool/curated")
     configs: dict[str, DatasetConfig] = {}
 
     for idx in range(1, 38):
@@ -91,12 +91,12 @@ DATASETS = {
         sample_processor=_process_c4_text,
     ),
     "c4_500gb": DatasetConfig(
-        path="/scratch/gpfs/PMITTAL/tianhao/PretrainData/c4",
+        path=os.environ.get("C4_LOCAL_DIR", "/path/to/PretrainData/c4"),
         loader=partial(_load_c4_500gb_dataset),
         sample_processor=_process_c4_text,
     ),
     "pile_test": DatasetConfig(
-        path="/scratch/gpfs/PMITTAL/tianhao/PretrainData/pile/pile-test",
+        path=os.environ.get("PILE_TEST_DIR", "/path/to/PretrainData/pile/pile-test"),
         loader=_load_pile_dataset,
         sample_processor=_process_c4_text,
     ),

@@ -44,13 +44,13 @@ if __name__ == '__main__':
         num_proc=num_proc,
     )
 
-    tokenized.save_to_disk("/scratch/gpfs/tw8948/LESS/pile-full")
+    tokenized.save_to_disk("/path/to/data/LESS/pile-full")
 
     # concatenate all the ids in each dataset into one large file we can use for training
     for split, dset in tokenized.items():
 
         arr_len = np.sum(dset['len'], dtype=np.uint64)
-        filename = os.path.join('/scratch/gpfs/tw8948/LESS/pile-full', f'{split}.bin')
+        filename = os.path.join('/path/to/data/LESS/pile-full', f'{split}.bin')
 
         dtype = np.uint16 # (can do since enc.max_token_value == 50256 is < 2**16)
         arr = np.memmap(filename, dtype=dtype, mode='w+', shape=(arr_len,))
