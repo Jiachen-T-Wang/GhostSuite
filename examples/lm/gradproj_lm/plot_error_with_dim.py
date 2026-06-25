@@ -365,11 +365,8 @@ def main():
     print(f"\n{'='*60}")
     print(f"Computing errors from reference ({ref_label})")
     print(f"Using {reference_dots.shape[0]} reference samples")
-    print(f"{'='*60}")
-
-
     print(f"reference_dots shape: {reference_dots.shape}")
-    print(f"dot_products_by_rank[1024] shape: {dot_products_by_rank[1024].shape}")
+    print(f"{'='*60}")
 
     for rank in plot_ranks:
         dots = dot_products_by_rank[rank]
