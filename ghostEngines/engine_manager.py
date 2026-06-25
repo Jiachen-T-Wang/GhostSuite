@@ -295,11 +295,19 @@ class GhostEngineManager:
     
     def aggregate_and_log(self):
         """Aggregate and log metrics after optimizer step (if applicable)."""
+        if self.is_fn_path:
+            # Intentional no-op: the fn-path already aggregated the dot and appended the log
+            # entry in prepare_gradients(); nothing to do post-step.
+            return
         if self.engine and hasattr(self.engine, 'aggregate_and_log'):
             self.engine.aggregate_and_log()
-    
+
     def clear_gradients(self):
         """Clear gradients after optimizer step (if applicable)."""
+        if self.is_fn_path:
+            # Intentional no-op: the in-graph buffers are overwritten by the next backward, and
+            # recover_train_grads() already deleted the per-param _ghost_grad_val/grad_dot_prod.
+            return
         if self.engine and hasattr(self.engine, 'clear_gradients'):
             self.engine.clear_gradients()
     
@@ -358,14 +366,23 @@ class GhostEngineManager:
     
     def detach_for_evaluation(self):
         """Detach engines during evaluation to avoid interference."""
+        if self.is_fn_path:
+            # Intentionally stay attached. evaluation runs under torch.no_grad() (estimate_loss is
+            # @torch.no_grad()), so the in-graph/capture Functions are forward-only identities — no
+            # backward, hence no dot computation and no buffer writes — regardless of the eval batch
+            # size. Detaching here would not help anyway: the regional-compiled blocks capture the
+            # ghost-wrapped leaves at compile time and cannot be un-ghosted without recompiling.
+            return
         if self.engine:
             if hasattr(self.engine, 'detach'):
                 self.engine.detach()
             elif hasattr(self.engine, 'disable_hooks'):
                 self.engine.disable_hooks()
-    
+
     def reattach_after_evaluation(self):
         """Reattach engines after evaluation."""
+        if self.is_fn_path:
+            return  # fn-path never detached for eval (see detach_for_evaluation).
         if self.engine:
             if hasattr(self.engine, 'attach'):
                 self.engine.attach(self.optimizer)

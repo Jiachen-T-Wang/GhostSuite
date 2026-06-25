@@ -94,26 +94,44 @@ def finalize_tied_param(weight, accum_dtype: torch.dtype = torch.float32) -> Non
     vocab, embed = weight.shape
     device = gval.device
 
+    if not log_norms:
+        # Vectorized (default): dot[i] = <G_i, gval> = sum_uses <G_i^use, gval>, each per-use term
+        # in ghost (associativity) form so no [vocab, embed] per-sample materialization and no
+        # Python loop over train_bs. gval already holds the summed val aggregate, so the cross-terms
+        # between uses (e.g. <g_emb, g_lin>) are included.
+        dot = torch.zeros(train_bs, dtype=accum_dtype, device=device)
+        for kind, A_tr, B_tr in stash:
+            if kind == "embedding":
+                # A_tr [train, seq] indices; B_tr [train, seq, embed]. Gather gval rows at the
+                # token ids and dot with B: <G_emb, gval> = sum_t B[t] . gval[idx_t].
+                contrib = (B_tr * gval[A_tr]).sum(dim=(1, 2))
+            else:  # linear: A_tr [train, seq, embed], B_tr [train, seq, vocab]
+                # <B^T A, gval> = sum_t B[t] . (gval^T B[t] folded) = sum_t (B[t] @ gval) . A[t].
+                proj = torch.matmul(B_tr, gval)                # [train, seq, embed] (contract vocab)
+                contrib = (A_tr * proj).sum(dim=(1, 2))
+            dot = dot + contrib
+        weight.grad_dot_prod = dot
+        del (weight._ghost_tied_stash, weight._ghost_tied_train_bs,
+             weight._ghost_tied_log_norms, weight._ghost_tied_gval)
+        return
+
+    # log_grad_norms path: the exact per-sample train-grad norm ||G_i|| has an O(seq^2) cross-term,
+    # so fall back to materializing G_i one sample at a time (rare; log_grad_norms defaults False).
     dot = torch.empty(train_bs, dtype=accum_dtype, device=device)
-    tnorm = torch.empty(train_bs, dtype=accum_dtype, device=device) if log_norms else None
+    tnorm = torch.empty(train_bs, dtype=accum_dtype, device=device)
     for i in range(train_bs):
         Gi = torch.zeros((vocab, embed), dtype=accum_dtype, device=device)
-        for factors in stash:
-            kind = factors[0]
+        for kind, A_tr, B_tr in stash:
             if kind == "embedding":
-                _, A_tr, B_tr = factors
                 Gi.index_add_(0, A_tr[i].reshape(-1), B_tr[i].reshape(-1, embed))
             else:  # linear: G_i = sum_t b_t a_t^T = B_i^T A_i
-                _, A_tr, B_tr = factors
                 Gi += torch.matmul(B_tr[i].transpose(0, 1), A_tr[i])
         dot[i] = (Gi * gval).sum()
-        if log_norms:
-            tnorm[i] = (Gi * Gi).sum()
+        tnorm[i] = (Gi * Gi).sum()
 
     weight.grad_dot_prod = dot
-    if log_norms:
-        weight.grad_train_norm = tnorm
-        weight.grad_val_norm_sq = (gval * gval).sum()
+    weight.grad_train_norm = tnorm
+    weight.grad_val_norm_sq = (gval * gval).sum()
     del (weight._ghost_tied_stash, weight._ghost_tied_train_bs,
          weight._ghost_tied_log_norms, weight._ghost_tied_gval)
 

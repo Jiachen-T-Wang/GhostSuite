@@ -21,6 +21,13 @@ Two designs were measured on H200 (llama3-130M, seq 4096, train bs2 + val bs2):
 Both keep the eager-hook engine untouched and let ``torch.compile`` regional-compile each block
 (no hooks / lock / setattr in the traced region). Train grads are recovered via subtract-val.
 
+Supported leaves (in-graph mode): ``nn.Linear`` (no bias), ``nn.Embedding``, ``nn.RMSNorm``, and
+``nn.LayerNorm`` (weight + optional bias; ``_IGLayerNormFn``). **Tied weights** — a weight shared by
+two supported modules (e.g. GPT-2 ``wte`` ↔ ``lm_head``) — take a separate route: those (top-level,
+not in compiled regions) capture their ``(A, B)`` and are combined post-backward by
+``stash_tied_contribution`` / ``finalize_tied_param`` (the eager tied finalizer), so the shared
+parameter's dot includes the cross-terms. Non-tied leaves use the fast in-graph dot.
+
 Gated behind ``GHOST_DECOUPLED_FN=1`` (requires ``GHOST_SUBTRACT_VAL=1``). FAIL-LOUD on any
 unsupported parameterized leaf.
 """
@@ -41,6 +48,7 @@ _MODE = os.getenv("GHOST_DECOUPLED_MODE", "ingraph")  # "ingraph" (default) | "c
 
 _SUPPORTED = (nn.Linear, nn.Embedding, nn.RMSNorm, nn.LayerNorm)
 ACCUM_DTYPE = torch.float32
+_MISSING = object()  # sentinel: layer had no ``name`` attr before attach (restore by deleting)
 
 
 # Opaque buffer write (mutates_args -> kept by functionalization; a bare copy_ becomes an
@@ -273,6 +281,9 @@ class GhostDecoupledManager:
         # these layers capture (A, B) and are combined post-backward via stash/finalize_tied_param.
         self._tied_layers: List[Tuple[str, nn.Module]] = []
         self._cells: Dict[int, list] = {}  # id(layer) -> mode-specific buffer cell
+        # Track attach-time mutations so detach() restores the model cleanly (no leaked attrs):
+        self._flagged_weights: List[torch.Tensor] = []   # weights WE set ``_ghost_tied`` on
+        self._name_restore: Dict[int, object] = {}       # id(layer) -> prior ``name`` (or _MISSING)
 
     # -- forward wrappers (ingraph mode) --------------------------------------------------
 
@@ -405,8 +416,9 @@ class GhostDecoupledManager:
                     users[id(w)] = users.get(id(w), 0) + 1
         for _, layer in self.model.named_modules():
             w = getattr(layer, "weight", None)
-            if w is not None and users.get(id(w), 0) >= 2:
+            if w is not None and users.get(id(w), 0) >= 2 and not getattr(w, "_ghost_tied", False):
                 w._ghost_tied = True
+                self._flagged_weights.append(w)  # record so detach() clears only what WE set
 
     def attach(self) -> None:
         self._flag_tied_weights()
@@ -418,6 +430,8 @@ class GhostDecoupledManager:
                         raise RuntimeError(
                             f"GHOST_DECOUPLED_FN: Linear '{name}' has a bias; not supported."
                         )
+                    if id(layer) not in self._name_restore:
+                        self._name_restore[id(layer)] = getattr(layer, "name", _MISSING)
                     setattr(layer, "name", name)
                     self._orig_forward[id(layer)] = layer.forward
                     if self.mode == "capture":
@@ -480,10 +494,23 @@ class GhostDecoupledManager:
             orig = self._orig_forward.get(id(layer))
             if orig is not None:
                 layer.forward = orig
+            # Restore the ``name`` attribute to its pre-attach state (delete if we added it).
+            prior = self._name_restore.get(id(layer), _MISSING)
+            if prior is _MISSING:
+                if hasattr(layer, "name"):
+                    del layer.name
+            else:
+                layer.name = prior
+        # Clear only the tied flags WE set, so a model reused across cycles doesn't leak them.
+        for w in self._flagged_weights:
+            if hasattr(w, "_ghost_tied"):
+                del w._ghost_tied
         self._layers.clear()
         self._tied_layers.clear()
         self._orig_forward.clear()
         self._cells.clear()
+        self._flagged_weights.clear()
+        self._name_restore.clear()
 
     # -- post-backward --------------------------------------------------------------------
 
