@@ -42,15 +42,18 @@ def compute_projections(model, engine, dataset, config, device, ctx, num_iterati
     for iter_num in pbar:
         start_time = time.time()
         
-        # Get batch data
-        X, Y = get_batch_from_dataset(
+        # Get batch data. Request the actual sampled window offsets so the saved
+        # projections are tagged with real sample identities (windows are drawn
+        # randomly via the generator, not sequentially).
+        X, Y, sample_ix = get_batch_from_dataset(
             split='train',
             batch_size=config.batch_size,
             dataset=dataset,
             block_size=config.block_size,
             device=device,
             device_type=device.type,
-            generator=generator
+            generator=generator,
+            return_idx=True,
         )
         
         # Zero gradients
@@ -65,13 +68,9 @@ def compute_projections(model, engine, dataset, config, device, ctx, num_iterati
         # Backward pass to compute gradients
         loss.backward()
         
-        # Collect projected gradients
-        # Calculate actual batch indices for this iteration
-        batch_start = iter_num * config.batch_size
-        batch_end = min(batch_start + config.batch_size, 
-                       config.max_samples if config.max_samples else float('inf'))
-        batch_indices = list(range(batch_start, batch_end))
-        
+        # Collect projected gradients, tagged with the real sampled window offsets.
+        batch_indices = [int(i) for i in sample_ix]
+
         # Collect projections (this also saves them based on proj_save_interval)
         try:
             projections = engine.collect_batch(batch_indices)
