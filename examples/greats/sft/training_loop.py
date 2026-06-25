@@ -21,6 +21,7 @@ import torch
 
 from data_utils import collate
 from mmlu_accuracy import compute_mmlu_accuracy
+from gram_scorer import GramScorer, greedy_selection
 from ghostEngines import GradDotProdEngine
 
 
@@ -54,8 +55,14 @@ class GreatsSFTTrainer:
         self.val_bs = min(config.val_batchsize, len(self.val_samples))
         self._val_gen = torch.Generator().manual_seed(config.seed + 1)
 
+        self.second_order = (config.selection == "second_order")
         self.engine = None
-        if self.is_greats:
+        self.gram_scorer = None
+        if self.is_greats and self.second_order:
+            # True GREATS: Gram-based greedy selection over the LoRA params.
+            self.gram_scorer = GramScorer(self.model)
+        elif self.is_greats:
+            # First-order: top-k by <g_i, g_val> via the GradDotProd engine.
             save_path = os.path.join(config.result_dir, "grad_dotprods")
             os.makedirs(save_path, exist_ok=True)
             self.engine = GradDotProdEngine(
@@ -119,17 +126,34 @@ class GreatsSFTTrainer:
     # ------------------------------------------------------------------ #
     def _greats_step(self):
         candidates = self._next_samples(self.config.candidate_batch_size)
-        scores = self._score_candidates(candidates)        # [N] cpu float
-
         k = self.config.batch_size
+
+        if self.second_order:
+            selected = self._select_second_order(candidates, k)
+            # GramScorer capture is gated by a flag, so the update pass is already clean.
+            return self._plain_update(selected)
+
+        # First-order: top-k by <g_i, g_val> via the engine.
+        scores = self._score_candidates(candidates)        # [N] cpu float
         topk = torch.topk(scores, k).indices.tolist()
         selected = [candidates[i] for i in topk]
-
-        # Detach the engine for a clean plain update, then reattach.
-        self.engine.detach()
+        self.engine.detach()                               # clean plain update, then reattach
         loss = self._plain_update(selected)
         self.engine.attach(self.optimizer)
         return loss
+
+    def _select_second_order(self, candidates, k):
+        """True GREATS: Gram-based greedy selection weighted by (lr, lr^2)."""
+        n = len(candidates)
+        val_batch = self._sample_val()
+        batch = collate(candidates + val_batch, self.pad_id, self.device)
+        tracin, similarity = self.gram_scorer.score(
+            batch["input_ids"], batch["attention_mask"], batch["labels"],
+            n_train=n, n_val=len(val_batch),
+        )
+        lr = self.scheduler.get_last_lr()[0]
+        selected_ind = greedy_selection(tracin * lr, similarity * (lr ** 2), k)
+        return [candidates[i] for i in selected_ind]
 
     def _regular_step(self):
         batch_samples = self._next_samples(self.config.batch_size)

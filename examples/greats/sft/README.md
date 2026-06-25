@@ -49,12 +49,22 @@ cd examples/greats/sft
 max_seq 512 — matching upstream `base_training_args.sh`.
 
 ## Key flags
-`--method {GREATS,Regular}`, `--select_metric {dot,cosine}`, `--batch_size` (k),
+`--method {GREATS,Regular}`, `--selection {first_order,second_order}`, `--batch_size` (k),
 `--fracinv` (candidate pool `N = fracinv*k`), `--n_val` / `--subject` (MMLU target),
 `--percentage` (fraction of the corpus), `--lora_*`, `--learning_rate`, `--max_seq_length`,
 `--num_train_epochs` / `--max_steps`, `--model_path`, `--data_dir`.
 
-## Scope (v1)
-First-order selection only (top-k by `<g_i,g_val>`); the pairwise Gram + greedy
-second-order term (true GREATS) is a planned follow-up. Single-GPU; MMLU val-loss logging
-(not the full LESS eval harness).
+## Selection modes
+- `--selection second_order` (**default, true GREATS**): in one forward/backward over
+  `[candidate ++ val]`, `gram_scorer.py` builds both the first-order TracIN scores
+  `<g_i, g_val>` **and** the candidate-candidate Gram `<g_i, g_j>` over the LoRA params,
+  then runs the redundancy-aware greedy selection weighted by `(lr, lr^2)` (port of
+  upstream `greedy_selection`). The per-sample LoRA gradient is materialized directly
+  (LoRA factors are small), and the Gram math is verified against per-sample autograd to
+  ~1e-7.
+- `--selection first_order`: top-k by `<g_i, g_val>` via the `GradDotProd` engine (the
+  weaker ablation; what the `greats-example` branch shipped).
+
+## Scope
+Single-GPU; MMLU few-shot test accuracy as the headline metric (not the full LESS eval
+harness).
