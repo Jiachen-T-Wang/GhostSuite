@@ -297,6 +297,25 @@ def main():
         reference_dots = dot_products_by_rank[reference_rank]
 
     else:
+        # The full-gradient references are computed at batch_size=1 (one random
+        # window per generator draw). A projection run with batch_size>1 draws a
+        # different RNG stream, so its windows would not line up sample-for-sample
+        # with the full grads and the comparison would be meaningless. Require the
+        # discovered projection runs to have been produced at batch_size=1.
+        for rank, rdir in rank_dirs.items():
+            rc_path = rdir / 'run_config.json'
+            if not rc_path.exists():
+                continue
+            with open(rc_path, 'r') as f:
+                bs = json.load(f).get('batch_size')
+            if bs is not None and int(bs) != 1:
+                raise ValueError(
+                    f"Reference mode '{ref_mode}' compares against batch_size=1 full "
+                    f"gradients, but rank dir '{rdir.name}' was produced with "
+                    f"batch_size={bs}. Re-run the projections with --batch_size 1 "
+                    f"(so the sampled windows align), or use a 'rank=NNN' reference."
+                )
+
         # Need full gradients and metadata from one of the rank dirs (to get layer list)
         # Infer fullgrad directory name convention: sibling folder starting with 'fullgrads'
         fullgrad_cands = [p for p in base_dir.iterdir() if p.is_dir() and p.name.startswith('fullgrads')]

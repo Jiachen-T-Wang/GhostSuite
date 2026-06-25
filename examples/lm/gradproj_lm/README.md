@@ -204,3 +204,8 @@ Outputs
 
 Notes
 - When using `plot_error_with_dim.py` with `--reference full` or `full_layers`, ensure full grads are generated in the same `--results_dir`. The script will auto-discover a `fullgrads*` folder.
+- The `full`, `full_layers`, and `naive_proj_layers` references are built from
+  `batch_size=1` full gradients. The projection runs being compared must also be
+  produced with `--batch_size 1`, otherwise the random window draws diverge and
+  the samples no longer line up. The script enforces this by reading each rank
+  dir's `run_config.json`; use a `rank=NNN` reference for batched runs.
