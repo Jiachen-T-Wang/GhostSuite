@@ -209,6 +209,11 @@ class GradProjHooks:
         # Accumulate the per-sample outer products over tokens -> [B, k_o, k_i]
         gradG = torch.einsum('bto,bti->boi', B_proj, A_proj)
 
+        # Match the dense path: grad_output from CrossEntropyLoss(mean) carries a
+        # 1/B factor; multiply by batch_size so the embedding block is on the same
+        # scale as the Linear/Conv1D blocks in the concatenated projection.
+        gradG = gradG * batch_size
+
         module._ghost_grad_proj = gradG.to(torch.float32)
         
     def attach(self, module: nn.Module) -> None:
