@@ -194,23 +194,31 @@ def rebuild_naive_projection_from_full(grads_layer_restricted: torch.Tensor,
         n_i = int(layer['n_i'])
         k_i = int(layer['k_i'])
         k_o = int(layer['k_o'])
+        ltype = layer.get('type', 'Linear')
         numel = n_o * n_i
         g_slice = grads_layer_restricted[:, offset:offset + numel]
         offset += numel
-        # Reshape to [B, n_o, n_i]
         B = g_slice.shape[0]
-        gW = g_slice.reshape(B, n_o, n_i)
 
-        # Rebuild P matrices with same seeding scheme as engine
-        layer_seed = proj_seed + li
-        P_i = init_fn(k_i, n_i, dtype=torch.float32, device=device, seed=layer_seed)
-        P_o = init_fn(k_o, n_o, dtype=torch.float32, device=device, seed=layer_seed + 1000)
+        # Bring the stored weight gradient into the "linear" convention
+        # gW = [B, n_o, n_i] so that proj = P_o @ gW @ P_i^T. nn.Linear stores
+        # weight as [n_o, n_i]; transformers Conv1D and nn.Embedding store it
+        # transposed as [n_i, n_o], so transpose those before projecting.
+        if ltype in ('Conv1D', 'Embedding'):
+            gW = g_slice.reshape(B, n_i, n_o).transpose(1, 2)
+        else:  # nn.Linear
+            gW = g_slice.reshape(B, n_o, n_i)
 
-        # Apply naive projection per-sample: [B, k_o, k_i]
-        # (P_o @ gW @ P_i^T)
-        # Compute via einsum: first left multiply, then right multiply
-        left = torch.einsum('oi,bjk->boj', P_o, gW)        # [B, k_o, n_i]
-        proj = torch.einsum('boj,ij->boi', left, P_i)      # [B, k_o, k_i]
+        # Rebuild P matrices using the exact per-layer seeds recorded in metadata
+        # (falls back to the legacy proj_seed + sorted-index scheme).
+        seed_i = int(layer.get('seed_i', proj_seed + li))
+        seed_o = int(layer.get('seed_o', proj_seed + li + 1000))
+        P_i = init_fn(k_i, n_i, dtype=torch.float32, device=device, seed=seed_i)
+        P_o = init_fn(k_o, n_o, dtype=torch.float32, device=device, seed=seed_o)
+
+        # Apply naive projection per-sample: P_o @ gW @ P_i^T -> [B, k_o, k_i]
+        left = torch.einsum('om,bmn->bon', P_o, gW)        # [B, k_o, n_i]
+        proj = torch.einsum('bon,kn->bok', left, P_i)      # [B, k_o, k_i]
         outputs.append(proj.reshape(B, k_o * k_i))
 
     return torch.cat(outputs, dim=1)

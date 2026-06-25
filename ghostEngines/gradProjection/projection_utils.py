@@ -221,19 +221,20 @@ def compute_projection_metadata(layer_name: str, layer: nn.Module,
         'k_total': k_i * k_o,
     }
     
-    # Add original dimensions based on layer type
-    if hasattr(layer, 'weight'):
+    # Add original dimensions based on layer type. Dispatch on the concrete type
+    # (not hasattr('weight'), which is also true for Embedding and would shadow
+    # the Embedding branch, leaving it without n_i/n_o).
+    if isinstance(layer, nn.Linear):
+        metadata['n_o'], metadata['n_i'] = layer.weight.shape
+    elif isinstance(layer, nn.Conv1d):
         weight_shape = layer.weight.shape
-        if isinstance(layer, nn.Linear):
-            metadata['n_o'], metadata['n_i'] = weight_shape
-        elif isinstance(layer, nn.Conv1d):
-            metadata['n_o'] = weight_shape[0]
-            metadata['n_i'] = weight_shape[1] * weight_shape[2]
-        elif layer.__class__.__name__ == 'Conv1D':  # transformers Conv1D: weight [in, out]
-            metadata['n_i'], metadata['n_o'] = weight_shape
+        metadata['n_o'] = weight_shape[0]
+        metadata['n_i'] = weight_shape[1] * weight_shape[2]
+    elif layer.__class__.__name__ == 'Conv1D':  # transformers Conv1D: weight [in, out]
+        metadata['n_i'], metadata['n_o'] = layer.weight.shape
     elif isinstance(layer, nn.Embedding):
         metadata['vocab_size'] = layer.num_embeddings
         metadata['n_i'] = layer.num_embeddings
         metadata['n_o'] = layer.embedding_dim
-        
+
     return metadata
