@@ -52,7 +52,9 @@ class GreatsSFTTrainer:
             os.makedirs(save_path, exist_ok=True)
             self.engine = GradDotProdEngine(
                 module=self.model,
-                val_batch_size=config.n_val,
+                # Track the actually-built val target, not the requested n_val, so the
+                # [candidate ++ val] split stays aligned even if fewer rows were loaded.
+                val_batch_size=len(self.val_samples),
                 loss_reduction="mean",
                 use_dummy_bias=False,
                 dot_prod_save_path=save_path,

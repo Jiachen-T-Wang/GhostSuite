@@ -124,7 +124,16 @@ def build_mmlu_val(
     if not os.path.exists(dev_path):
         raise FileNotFoundError(f"MMLU dev file not found: {dev_path}")
     df = pd.read_csv(dev_path, header=None)
-    df = df[: min(n_val, len(df))]
+    if len(df) < n_val:
+        # Fail explicitly: silently truncating would leave val_samples shorter than the
+        # engine's val_batch_size, misaligning the [candidate ++ val] split and corrupting
+        # the per-candidate scores with no error.
+        raise ValueError(
+            f"MMLU subject '{subject}' dev set has only {len(df)} rows but n_val={n_val} "
+            f"was requested ({dev_path}). Lower --n_val (<= {len(df)}) or choose a subject "
+            f"with a larger dev set."
+        )
+    df = df[:n_val]
 
     samples: List[Dict[str, torch.Tensor]] = []
     for i in range(len(df)):
