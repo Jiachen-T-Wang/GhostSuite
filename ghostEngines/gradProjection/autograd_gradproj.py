@@ -121,16 +121,14 @@ class GradProjHooks:
                            B_out: torch.Tensor) -> None:
         """
         Compute projected gradients for dense layers (Linear, Conv1D).
-        
-        The gradient for weight W is: dL/dW = sum_t B_t @ A_t^T
-        We project this as: P_o @ dL/dW @ P_i^T = sum_t (P_o @ B_t) @ (P_i @ A_t)^T
-        
-        Special handling for Conv1D: The transformers Conv1D layer has transposed weight,
-        so we need to swap the projections accordingly.
+
+        The per-sample gradient is dL/dW = sum_t B_t @ A_t^T, where A_t is the
+        layer input and B_t the output grad. We project it as
+        P_o @ dL/dW @ P_i^T = sum_t (P_o @ B_t) @ (P_i @ A_t)^T. This is defined
+        purely in terms of (input activations, output grads), so the same path is
+        correct for nn.Linear and transformers Conv1D alike once get_layer_dimensions
+        reports the true (n_i = in_features, n_o = out_features) for each.
         """
-        # Check if this is a Conv1D layer from transformers
-        is_conv1d = (module.__class__.__name__ == 'Conv1D')
-        
         # Flatten to [B, T, D] format
         A = _flatten_tokens(A_raw)  # [B, T, n_i]
         B = _flatten_tokens(B_out)  # [B, T, n_o]
@@ -143,27 +141,16 @@ class GradProjHooks:
         B = B.to(self.P_o.dtype)
 
         batch_size = A.shape[0]
-        
-        # For Conv1D, the weight is transposed, so we need to swap projections
-        if is_conv1d:
-            # Conv1D: weight is [n_out, n_in], gradient is B^T @ A (transposed)
-            # So we need to swap A and B for projection
-            A_proj = torch.matmul(B, self.P_i.t())  # Use B with P_i
-            B_proj = torch.matmul(A, self.P_o.t())  # Use A with P_o
-            # Compute gradG with swapped order
-            gradG = torch.einsum('bti,btj->bji', B_proj, A_proj)  # Note: bji instead of bij
-        else:
-            # Regular Linear layer
-            # A_proj: [B, T, n_i] @ [n_i, k_i] -> [B, T, k_i]
-            A_proj = torch.matmul(A, self.P_i.t())
-            
-            # B_proj: [B, T, n_o] @ [n_o, k_o] -> [B, T, k_o]  
-            B_proj = torch.matmul(B, self.P_o.t())
-            
-            # Compute per-sample projected gradients
-            # Align with naive reference: [B, k_o, k_i]
-            gradG = torch.einsum('bti,btj->bij', B_proj, A_proj)
-        
+
+        # A_proj: [B, T, n_i] @ [n_i, k_i] -> [B, T, k_i]
+        A_proj = torch.matmul(A, self.P_i.t())
+
+        # B_proj: [B, T, n_o] @ [n_o, k_o] -> [B, T, k_o]
+        B_proj = torch.matmul(B, self.P_o.t())
+
+        # Per-sample projected gradients, aligned with naive reference: [B, k_o, k_i]
+        gradG = torch.einsum('bti,btj->bij', B_proj, A_proj)
+
         # Note: grad_output from CrossEntropyLoss(mean) carries a 1/B factor;
         # multiply by batch_size to match reduction='sum' naive computation.
         gradG = gradG * batch_size

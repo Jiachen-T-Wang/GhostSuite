@@ -229,8 +229,8 @@ def compute_projection_metadata(layer_name: str, layer: nn.Module,
         elif isinstance(layer, nn.Conv1d):
             metadata['n_o'] = weight_shape[0]
             metadata['n_i'] = weight_shape[1] * weight_shape[2]
-        elif layer.__class__.__name__ == 'Conv1D':  # transformers Conv1D
-            metadata['n_o'], metadata['n_i'] = weight_shape
+        elif layer.__class__.__name__ == 'Conv1D':  # transformers Conv1D: weight [in, out]
+            metadata['n_i'], metadata['n_o'] = weight_shape
     elif isinstance(layer, nn.Embedding):
         metadata['vocab_size'] = layer.num_embeddings
         metadata['n_i'] = layer.num_embeddings

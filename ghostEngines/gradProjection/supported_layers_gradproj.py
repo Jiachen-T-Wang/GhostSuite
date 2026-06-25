@@ -77,9 +77,9 @@ def get_layer_dimensions(module: nn.Module) -> Tuple[int, int]:
         return module.in_features, module.out_features
         
     elif is_transformers_conv1d(module):
-        # Transformers Conv1D: weight is [out_features, in_features]  
+        # Transformers Conv1D: weight is [in_features, out_features]
         weight_shape = module.weight.shape
-        return weight_shape[1], weight_shape[0]
+        return weight_shape[0], weight_shape[1]
         
     elif isinstance(module, nn.Conv1d):
         # Conv1d: weight is [out_channels, in_channels, kernel_size]
