@@ -94,6 +94,7 @@ class GradProjLoraEngine:
         self.matched_layers = OrderedDict()
         self.projection_matrices = {}
         self.projection_dims = {}
+        self.projection_seeds = {}
         self.hooks = {}
         self.slice_ranges = {}
         self.total_proj_dim = 0
@@ -125,26 +126,30 @@ class GradProjLoraEngine:
         
         # Create projection matrices for each layer
         init_fn = get_projection_initializer(self.proj_method)
-        
-        # Use deterministic seed for each layer
-        torch.manual_seed(self.proj_seed)
-        
-        for layer_idx, (layer_name, layer) in enumerate(self.matched_layers.items()):
+
+        # Seed each layer by its position in sorted-name order. Every other
+        # structure (slice ranges, concatenation, metadata) is built in sorted
+        # order, so seeding by sorted index keeps the saved metadata sufficient
+        # to reconstruct P (named_modules() order is not sorted, e.g. h.10 < h.2).
+        for layer_idx, layer_name in enumerate(sorted(self.matched_layers.keys())):
+            layer = self.matched_layers[layer_name]
             # Get layer dimensions
             n_i, n_o = get_layer_dimensions(layer)
-            
+
             # Choose optimal projection dimensions
             k_i, k_o = choose_ki_ko(n_i, n_o, self.proj_rank_total, self.proj_rank_min)
             self.projection_dims[layer_name] = (k_i, k_o)
-            
+
             # Create projection matrices with layer-specific seed
-            layer_seed = self.proj_seed + layer_idx
-            
-            P_i = init_fn(k_i, n_i, dtype=torch.float32, device=device, seed=layer_seed)
-            P_o = init_fn(k_o, n_o, dtype=torch.float32, device=device, seed=layer_seed + 1000)
-            
+            seed_i = self.proj_seed + layer_idx
+            seed_o = seed_i + 1000
+            self.projection_seeds[layer_name] = (seed_i, seed_o)
+
+            P_i = init_fn(k_i, n_i, dtype=torch.float32, device=device, seed=seed_i)
+            P_o = init_fn(k_o, n_o, dtype=torch.float32, device=device, seed=seed_o)
+
             self.projection_matrices[layer_name] = (P_i, P_o)
-            
+
             print(f"  Projection dims: k_i={k_i}, k_o={k_o} (k_total={k_i*k_o})")
             
         # Compute slice ranges for concatenation
@@ -178,7 +183,12 @@ class GradProjLoraEngine:
             layer_meta = compute_projection_metadata(layer_name, layer, k_i, k_o)
             layer_meta['slice_start'] = start
             layer_meta['slice_end'] = end
-            
+            # Persist the exact per-layer seeds so P can be reconstructed
+            # independently of the seeding scheme.
+            seed_i, seed_o = self.projection_seeds[layer_name]
+            layer_meta['seed_i'] = seed_i
+            layer_meta['seed_o'] = seed_o
+
             self.metadata['layers'].append(layer_meta)
             
     def attach(self):
