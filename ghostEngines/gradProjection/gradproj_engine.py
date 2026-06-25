@@ -310,19 +310,6 @@ class GradProjLoraEngine:
         
         print(f"Saved projection [{projection.shape}] to {save_path}")
         
-    def aggregate_and_log(self, result_dict: Optional[dict] = None):
-        """
-        Compatibility method for integration with training loop.
-        Can be called after collect_batch() for any additional logging.
-        
-        Args:
-            result_dict: Optional dictionary to add metrics to
-        """
-        if result_dict is not None:
-            result_dict['proj_iteration'] = self.iteration
-            result_dict['proj_batch_count'] = self.batch_count
-            result_dict['proj_total_dim'] = self.total_proj_dim
-            
     def get_projection_metadata(self) -> dict:
         """Get metadata about the projection configuration."""
         return self.metadata.copy()
@@ -396,30 +383,17 @@ class GradProjLoraEngine:
         
         Re-attaches projection hooks after evaluation.
         """
-        if not self.is_attached:
-            # Re-attach hooks
-            for layer_name, layer in self.matched_layers.items():
-                P_i, P_o = self.projection_matrices[layer_name]
-                
-                # Create and attach hooks
-                from .autograd_gradproj import create_projection_hooks
-                hooks = create_projection_hooks(layer, layer_name, P_i, P_o)
-                hooks.attach(layer)
-                self.hooks[layer_name] = hooks
-                
-            self.is_attached = True
-            
+        # attach() is idempotent (no-ops if already attached) and rebuilds the
+        # hooks from the same projection matrices.
+        self.attach()
+
     def cleanup(self):
         """
-        Cleanup and save any remaining data (compatibility method).
-        
-        Ensures all projections are saved and cleans up resources.
+        Cleanup and free resources (compatibility method).
+
+        Projections are saved in collect_batch(); this just detaches hooks and
+        releases the projection matrices.
         """
-        # Save any pending projections
-        if hasattr(self, '_pending_projections'):
-            # Implementation depends on whether we buffer projections
-            pass
-            
         # Detach all hooks
         self.detach()
         

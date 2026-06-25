@@ -78,7 +78,11 @@ class GradProjHooks:
             inputs: Input tuple (typically contains single tensor)
             output: Output from the layer (unused)
         """
-        # Store detached input for later use in backward
+        # Store detached input for later use in backward.
+        # Limitation: a single cache slot per module, so a projected module
+        # invoked more than once per forward pass (e.g. a shared/tied module) only
+        # retains the last call's activations. The engine targets distinct
+        # Linear/Embedding/Conv1D layers, which are each called once per step.
         module._ghost_A_raw = inputs[0].detach()
         
     def backward_hook_compute_proj(self, module: nn.Module, grad_input: Tuple[Optional[torch.Tensor], ...],
