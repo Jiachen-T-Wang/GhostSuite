@@ -38,80 +38,23 @@ source .venv/bin/activate
 
 ## Quick Start
 
-In `examples/minimal/`, we provide three minimal examples for demonstrating core usage of GhostEngines:
+The `examples/` directory holds three groups of runnable demos, one per subfolder.
+Each is summarized below; see [`examples/README.md`](examples/README.md) for the full
+walkthrough, all options, and the TorchTitan speed↔memory tuning guide.
 
-- **`ghost_mlp.py`**: Basic GradDotProd usage for MLP models
-  - Trains for 10 steps on synthetic data
-  - Prints per-parameter gradient dot-products
-
-- **`ghost_gradproj_mlp.py`**: Per-sample gradient projection computation and storage for MLP
-
-- **`ghost_gradproj_lm.py`**: Per-sample gradient projection computation and storage for language models
-  - Projects gradients for transformer layers
-  - Demonstrates similarity computation from saved projections
-
-### LLM pretraining with TorchTitan
-TorchTitan (https://github.com/pytorch/torchtitan) is a PyTorch-native training stack for large-scale model development and experimentation.
-
-Run the TorchTitan GradDotProd integration with the Llama 3 130M ghost config:
+### Minimal examples (`examples/minimal/`)
+Smallest end-to-end demos on synthetic data — no data prep, runs on CPU.
 
 ```bash
-CONFIG_FILE="./examples/torchtitan/torchtitan/models/llama3/train_configs/llama3_130m_ghost.toml" ./examples/torchtitan/run_train_with_ghost.sh
+python examples/minimal/ghost_mlp.py                                       # GradDotProd on an MLP
+python examples/minimal/ghost_gradproj_mlp.py --mode project --proj_rank_total 64
+python examples/minimal/ghost_gradproj_lm.py --proj_layers "attn.c_attn,mlp.c_fc"
 ```
 
-#### Dot-product levers and the speed ↔ memory tradeoff
-
-The TorchTitan GradDotProd integration computes the train↔val gradient dot-products by running a
-single forward/backward on a **combined `train + val` batch**. Its runtime levers are exposed as
-`--ghost.*` flags (defaults live in `llama3_130m_ghost.toml`):
-
-| `--ghost.*` lever | default | effect |
-|---|---|---|
-| `subtract_val` | on | recover train grads after backward instead of masking activations |
-| `decoupled_fn` | on | graph-clean decoupled-Function path so `torch.compile` can compile the model |
-| `compile_toplevel` | on | also compile the output Linear's dot (memory-free; the rest of the gain) |
-| `opsac_mm_every` | 1 | op-SAC mm save-fraction: recompute every N-th matmul (1 = all → min memory; ↑N = more memory, faster). Active when `selective_ac_option="op"` |
-| `batched_dotprod` | off | eager grouped dot-product — the no-compile fallback (superseded by `decoupled_fn`) |
-| `regional_compile` | off | regional compile of RoPE/SwiGLU (helps A100, regresses H200) |
-
-The default also sets `[compile] enable = true` and `[activation_checkpoint] mode = "selective",
-selective_ac_option = "op"`. Together these run a compiled fast path with **op-level selective
-activation checkpointing** that is faster than the eager engine **at the same loss** (bit-identical
-*and* dot-product-identical). Activation checkpointing then gives a single speed↔memory dial. The
-default is **op-SAC `mme1`** — the runtime-memory frontier point that runs *below* the eager
-engine's peak memory while still ~15% faster. Numbers: Llama-3 130M, seq 4096, train bs2 + val bs2,
-single H200, one session; throughput is tokens/s, loss-identical in every row
-(`docs/analysis/ac_frontier_2026-06-21.md`):
-
-| config | flags | throughput vs eager | peak memory |
-|---|---|---:|---:|
-| **default** (op-SAC `mme1`) | *(none)* | **+15%** | **−9%** (below eager) |
-| op-SAC, more memory | `--ghost.opsac_mm_every=4` | +18% | +14% |
-| op-SAC, more memory | `--ghost.opsac_mm_every=8` | +19% | +16% |
-| max speed (no AC) | `--activation_checkpoint.mode=none` | **+24%** | +38% |
-| absolute min memory | `--activation_checkpoint.mode=full` | +8% | −10% |
-
-op-SAC strictly dominates the older layer-frequency dial: it sits on the pareto frontier at every
-memory level, whereas `--activation_checkpoint.selective_ac_option=2` and the `torch.compile`
-`memory_budget` partitioner are both off-frontier here (the latter gives no peak-memory reduction —
-the fp32 logits tensor floors it). See the analysis doc for the full frontier and the negative
-results.
-
-Caveats: the combined `train + val` batch and the compiled path both raise peak memory, so at the
-*max speed* (no-AC) setting a ghost run hits the memory ceiling **earlier** than a same-train-batch
-baseline (the fp32 logits tensor, `batch · seq · vocab · 4` bytes, dominates for large-vocab
-models). The default op-SAC `mme1` keeps peak memory *below* the eager engine, so it has the most
-headroom — prefer it (or `mode=full`) on an 80 GB A100. To fall back to the pure eager engine, run
-with `--ghost.no-decoupled_fn --ghost.no-batched_dotprod` (compile is auto-disabled on the eager
-path).
-
-### Standalone language-model examples
-
-Two standalone LM examples live under `examples/lm/graddotprod_lm/` (online gradient
-dot-products during training) and `examples/lm/gradproj_lm/` (offline per-sample
-gradient projection to disk). Both ship with a built-in **synthetic data mode**
-(random tokens, no tokenized corpus required), which makes them a quick smoke
-test on a tiny model:
+### Standalone LM examples (`examples/lm/`)
+Language-model training with the ghost engines: `graddotprod_lm/` (online train↔val
+dot-products during training) and `gradproj_lm/` (offline per-sample projections to
+disk). Both ship a synthetic data mode (random tokens, no corpus) for a quick smoke test:
 
 ```bash
 # GradDotProd: online dot-products (tiny model, random tokens) — needs a GPU
@@ -127,9 +70,21 @@ python examples/lm/gradproj_lm/main.py --data_source synthetic \
     --output_dir ./outputs_smoke
 ```
 
-To train on real data, tokenize the Pile (see each example's `README.md`) and
-pass `--train_set pile` / `--data_source pile`. The example READMEs document the
-full set of options.
+To train on real data, tokenize the Pile and pass `--train_set pile` / `--data_source pile`
+(see each example's `README.md`).
+
+### LLM pretraining with TorchTitan (`examples/torchtitan/`)
+End-to-end GradDotProd integration in [TorchTitan](https://github.com/pytorch/torchtitan),
+PyTorch's native large-scale training stack. Run the Llama 3 130M ghost config:
+
+```bash
+CONFIG_FILE="./examples/torchtitan/torchtitan/models/llama3/train_configs/llama3_130m_ghost.toml" \
+    ./examples/torchtitan/run_train_with_ghost.sh
+```
+
+The `--ghost.*` flags expose a speed↔memory tradeoff (a compiled fast path plus op-level
+selective activation checkpointing). See [`examples/README.md`](examples/README.md#3-llm-pretraining-with-torchtitan-torchtitan)
+for the levers, benchmarks, and tuning guidance.
 
 
 ## How the Ghost Engines Work
