@@ -20,7 +20,7 @@ import time
 import torch
 
 from data_utils import collate
-from mmlu_accuracy import compute_mmlu_accuracy
+from mmlu_accuracy import compute_mmlu_accuracy, compute_mmlu_perplexity
 from gram_scorer import GramScorer, greedy_selection
 from ghostEngines import GradDotProdEngine
 
@@ -209,14 +209,22 @@ class GreatsSFTTrainer:
 
     @torch.no_grad()
     def _evaluate(self):
-        """Report the headline metric: MMLU few-shot test accuracy (n_test questions)."""
+        """Headline metric: MMLU eval/test answer perplexity (as in upstream trialrun.png);
+        also reports few-shot test accuracy."""
+        eval_ppl, test_ppl = compute_mmlu_perplexity(
+            self.model, self.tokenizer, self.config.data_dir, self.config.subject,
+            n_val=self.config.n_val, n_test=self.config.n_test, device=self.device,
+            max_seq_length=self.config.max_seq_length,
+        )
         acc, n = compute_mmlu_accuracy(
             self.model, self.tokenizer, self.config.data_dir, self.config.subject,
             n_val=self.config.n_val, n_test=self.config.n_test, device=self.device,
         )
-        print(f"  [eval] step {self.global_step} | MMLU '{self.config.subject}' "
-              f"test acc {acc:.4f} (n={n})", flush=True)
-        self._results.append({"step": self.global_step, "test_acc": acc, "n_test": n})
+        print(f"  [eval] step {self.global_step} | '{self.config.subject}' "
+              f"eval_ppl {eval_ppl:.4f} | test_ppl {test_ppl:.4f} | test_acc {acc:.4f} "
+              f"(n={n})", flush=True)
+        self._results.append({"step": self.global_step, "eval_ppl": eval_ppl,
+                              "test_ppl": test_ppl, "test_acc": acc, "n_test": n})
         with open(self._results_path, "w") as f:
             json.dump(self._results, f, indent=2)
-        return acc
+        return test_ppl

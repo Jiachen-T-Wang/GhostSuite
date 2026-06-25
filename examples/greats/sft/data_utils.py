@@ -135,32 +135,32 @@ def _format_mmlu_prompt(df: pd.DataFrame, idx: int) -> str:
     return prompt
 
 
-def build_mmlu_val(
+def build_mmlu_examples(
     data_dir: str,
     tokenizer,
     subject: str,
-    n_val: int,
+    k: int,
     max_seq_length: int,
+    split: str = "dev",
+    strict: bool = False,
 ) -> List[Dict[str, torch.Tensor]]:
-    """Build the MMLU dev validation target (LESS `get_mmlu_dataset`, tulu format).
-
-    Query ends in "The answer is:"; completion is the answer letter; the prompt is
-    masked (label_only) so the val gradient targets predicting the answer.
-    """
-    dev_path = os.path.join(data_dir, "eval", "mmlu", "dev", subject + "_dev.csv")
-    if not os.path.exists(dev_path):
-        raise FileNotFoundError(f"MMLU dev file not found: {dev_path}")
-    df = pd.read_csv(dev_path, header=None)
-    if len(df) < n_val:
-        # Fail explicitly: silently truncating would leave val_samples shorter than the
-        # engine's val_batch_size, misaligning the [candidate ++ val] split and corrupting
-        # the per-candidate scores with no error.
+    """Build MMLU examples (LESS `get_mmlu_dataset`/`tokenize` format) from the dev or
+    test CSV. Query ends in "The answer is:"; completion is the answer letter; the prompt
+    is masked, so the loss/gradient is on the answer token only. `strict` (dev/scoring)
+    fails if the split has fewer than `k` rows."""
+    path = os.path.join(data_dir, "eval", "mmlu", split, f"{subject}_{split}.csv")
+    if not os.path.exists(path):
+        raise FileNotFoundError(f"MMLU {split} file not found: {path}")
+    df = pd.read_csv(path, header=None)
+    if strict and len(df) < k:
+        # Silently truncating the scoring val would leave val_samples shorter than the
+        # engine's val_batch_size, misaligning the [candidate ++ val] split.
         raise ValueError(
-            f"MMLU subject '{subject}' dev set has only {len(df)} rows but n_val={n_val} "
-            f"was requested ({dev_path}). Lower --n_val (<= {len(df)}) or choose a subject "
-            f"with a larger dev set."
+            f"MMLU subject '{subject}' {split} set has only {len(df)} rows but k={k} "
+            f"was requested ({path}). Lower the request (<= {len(df)}) or pick a subject "
+            f"with a larger {split} set."
         )
-    df = df[:n_val]
+    df = df[: min(k, len(df))]
 
     samples: List[Dict[str, torch.Tensor]] = []
     for i in range(len(df)):
@@ -173,12 +173,19 @@ def build_mmlu_val(
         full_ids = tokenizer.encode(full_text, max_length=max_seq_length, truncation=True)
         input_ids = torch.tensor(full_ids)
         labels = input_ids.clone()
-        labels[: len(prompt_ids)] = -100  # label_only: mask the prompt
+        labels[: len(prompt_ids)] = -100  # mask the prompt; loss on the answer token
         samples.append({
             "input_ids": input_ids,
             "labels": labels,
             "attention_mask": torch.ones_like(input_ids),
         })
+    return samples
+
+
+def build_mmlu_val(data_dir, tokenizer, subject, n_val, max_seq_length):
+    """The dev/scoring validation pool (strict: fail if dev set < n_val)."""
+    samples = build_mmlu_examples(data_dir, tokenizer, subject, n_val, max_seq_length,
+                                  split="dev", strict=True)
     print(f"[INFO] Built {len(samples)} MMLU '{subject}' validation examples.")
     return samples
 
