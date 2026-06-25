@@ -28,14 +28,14 @@ def parse_arguments():
     parser.add_argument('--architecture', type=str, default='GPT2-Small',
                        choices=['GPT2-Tiny', 'GPT2-Small', 'GPT2-Medium', 'GPT2-Large', 'LLaVA-7B', 'LLaVA-13B'])
     parser.add_argument('--no_tie_weights', dest='tie_weights', action='store_false',
-                        help='Untie the token-embedding and LM-head weight. Required for the ghost '
-                             'batched/decoupled dot-product paths, which do not yet handle a weight '
-                             'shared across two layers. Default: tied (standard GPT-2).')
+                        help='Untie the token-embedding and LM-head weight. Default: tied (standard '
+                             'GPT-2). Tied weights are handled by all ghost paths (eager, batched, '
+                             'decoupled) via the cross-term tied-weight finalizer.')
     parser.set_defaults(tie_weights=True)
     parser.add_argument('--decoupled_fn', action='store_true',
                         help='Use the decoupled in-graph ghost dot-product path (compile-clean: '
                              'native layer backward preserved). Single-GPU, grad-accum 1, bf16/fp32 '
-                             '(no GradScaler). Forces --no_tie_weights.')
+                             '(no GradScaler).')
     parser.add_argument('--decoupled_compile', action='store_true',
                         help='With --decoupled_fn, regional-compile the transformer blocks via '
                              'torch.compile (the speedup lever). No effect without --decoupled_fn.')
@@ -128,13 +128,11 @@ class TrainingConfig:
         # Weight-tying of the token embedding / LM head (see --no_tie_weights).
         self.tie_weights = getattr(args, 'tie_weights', True)
 
-        # Decoupled in-graph + regional-compile ghost path (fn-path).
+        # Decoupled in-graph + regional-compile ghost path (fn-path). Tied weights (wte/lm_head)
+        # are supported on both the batched and decoupled paths (cross-terms via
+        # finalize_tied_param), so no untie is forced; --no_tie_weights remains available.
         self.decoupled_fn = getattr(args, 'decoupled_fn', False)
         self.decoupled_compile = getattr(args, 'decoupled_compile', False)
-        if self.decoupled_fn and self.tie_weights:
-            # The decoupled path cannot yet handle a weight shared across two layers; untie.
-            print("[WARN] --decoupled_fn forces --no_tie_weights (untied embedding/LM head).")
-            self.tie_weights = False
 
         # Sequence length (block size). For GPT architectures it is fixed by the
         # model config table; sampled windows must match it (e.g. GPT2-Tiny=64).

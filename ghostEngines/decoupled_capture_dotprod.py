@@ -268,6 +268,10 @@ class GhostDecoupledManager:
         self.mode = _MODE
         self._orig_forward: Dict[int, object] = {}
         self._layers: List[Tuple[str, nn.Module]] = []
+        # Tied weights (shared by >=2 supported modules, e.g. wte/lm_head) are handled separately:
+        # the per-use in-graph dot would miss the cross-terms of the shared parameter's gradient, so
+        # these layers capture (A, B) and are combined post-backward via stash/finalize_tied_param.
+        self._tied_layers: List[Tuple[str, nn.Module]] = []
         self._cells: Dict[int, list] = {}  # id(layer) -> mode-specific buffer cell
 
     # -- forward wrappers (ingraph mode) --------------------------------------------------
@@ -389,16 +393,32 @@ class GhostDecoupledManager:
 
     # -- attach / detach ------------------------------------------------------------------
 
+    def _flag_tied_weights(self) -> None:
+        """Flag weights shared by >=2 supported requires-grad modules (e.g. tied wte/lm_head)."""
+        users: Dict[int, int] = {}
+        for _, layer in self.model.named_modules():
+            if isinstance(layer, _SUPPORTED) and any(
+                p.requires_grad for p in layer.parameters(recurse=False)
+            ):
+                w = getattr(layer, "weight", None)
+                if w is not None and w.requires_grad:
+                    users[id(w)] = users.get(id(w), 0) + 1
+        for _, layer in self.model.named_modules():
+            w = getattr(layer, "weight", None)
+            if w is not None and users.get(id(w), 0) >= 2:
+                w._ghost_tied = True
+
     def attach(self) -> None:
+        self._flag_tied_weights()
         for name, layer in self.model.named_modules():
             if isinstance(layer, _SUPPORTED):
                 if any(p.requires_grad for p in layer.parameters(recurse=False)):
+                    tied = getattr(layer.weight, "_ghost_tied", False)
                     if isinstance(layer, nn.Linear) and layer.bias is not None:
                         raise RuntimeError(
                             f"GHOST_DECOUPLED_FN: Linear '{name}' has a bias; not supported."
                         )
                     setattr(layer, "name", name)
-                    self._layers.append((name, layer))
                     self._orig_forward[id(layer)] = layer.forward
                     if self.mode == "capture":
                         if isinstance(layer, nn.LayerNorm):
@@ -406,17 +426,19 @@ class GhostDecoupledManager:
                                 "GHOST_DECOUPLED_FN: LayerNorm is only supported in the default "
                                 "ingraph mode, not the deprecated capture mode."
                             )
-                        weight = layer.weight
-                        if isinstance(layer, nn.Linear):
-                            op = lambda x, w=weight: F.linear(x, w)
-                        elif isinstance(layer, nn.Embedding):
-                            op = lambda x, w=weight, p=layer.padding_idx: F.embedding(x, w, p)
-                        else:
-                            ns = tuple(layer.normalized_shape)
-                            ep = layer.eps if layer.eps is not None else 1e-5
-                            op = lambda x, w=weight, ns=ns, ep=ep: F.rms_norm(x, ns, w, ep)
-                        layer.forward = self._wrap_capture(layer, op)
-                    else:  # ingraph
+                        layer.forward = self._wrap_capture(layer, self._build_op(layer))
+                        self._layers.append((name, layer))
+                    elif tied:
+                        # Tied weight: capture (A, B) eagerly and combine post-backward with
+                        # cross-terms (these layers are top-level, not in compiled regions).
+                        if not isinstance(layer, (nn.Linear, nn.Embedding)):
+                            raise RuntimeError(
+                                f"GHOST_DECOUPLED_FN: tied weight on unsupported layer '{name}' "
+                                f"({type(layer).__name__}); only Linear/Embedding tying is handled."
+                            )
+                        layer.forward = self._wrap_capture(layer, self._build_op(layer))
+                        self._tied_layers.append((name, layer))
+                    else:  # ingraph (non-tied)
                         if isinstance(layer, nn.Linear):
                             layer.forward = self._wrap_ingraph_linear(layer)
                         elif isinstance(layer, nn.Embedding):
@@ -425,6 +447,7 @@ class GhostDecoupledManager:
                             layer.forward = self._wrap_ingraph_layernorm(layer)
                         else:
                             layer.forward = self._wrap_ingraph_rmsnorm(layer)
+                        self._layers.append((name, layer))
             else:
                 is_leaf = not list(layer.children())
                 if is_leaf and any(p.requires_grad for p in layer.parameters(recurse=False)):
@@ -432,6 +455,17 @@ class GhostDecoupledManager:
                         f"GHOST_DECOUPLED_FN: unsupported parameterized layer '{name}' "
                         f"({type(layer).__name__})."
                     )
+
+    @staticmethod
+    def _build_op(layer):
+        weight = layer.weight
+        if isinstance(layer, nn.Linear):
+            return lambda x, w=weight: F.linear(x, w)
+        if isinstance(layer, nn.Embedding):
+            return lambda x, w=weight, p=layer.padding_idx: F.embedding(x, w, p)
+        ns = tuple(layer.normalized_shape)
+        ep = layer.eps if layer.eps is not None else 1e-5
+        return lambda x, w=weight, ns=ns, ep=ep: F.rms_norm(x, ns, w, ep)
 
     def warmup(self, example_input: torch.Tensor) -> None:
         was_training = self.model.training
@@ -442,11 +476,12 @@ class GhostDecoupledManager:
         self.model.train(was_training)
 
     def detach(self) -> None:
-        for _, layer in self._layers:
+        for _, layer in (self._layers + self._tied_layers):
             orig = self._orig_forward.get(id(layer))
             if orig is not None:
                 layer.forward = orig
         self._layers.clear()
+        self._tied_layers.clear()
         self._orig_forward.clear()
         self._cells.clear()
 
@@ -456,7 +491,9 @@ class GhostDecoupledManager:
         if self.mode == "capture":
             return self._run_capture()
         # ingraph: dot + grad_val already in buffers; just aggregate dot and publish grad_val.
-        from .supported_layers_grad_samplers_dotprod import _maybe_store_grad_val
+        from .supported_layers_grad_samplers_dotprod import (
+            _maybe_store_grad_val, stash_tied_contribution, finalize_tied_param,
+        )
         total = None
         for _, layer in self._layers:
             cell = self._cells.get(id(layer))
@@ -466,6 +503,21 @@ class GhostDecoupledManager:
             for param, gv in gvs:
                 _maybe_store_grad_val(param, gv)
             total = dot.detach().clone() if total is None else total + dot.detach()
+
+        # Tied weights: combine the captured per-use (A, B) into the exact dot (with cross-terms).
+        for _, layer in self._tied_layers:
+            cell = self._cells.get(id(layer))
+            if cell is None or cell[0] is None:
+                raise RuntimeError(f"GHOST_DECOUPLED_FN: tied '{getattr(layer,'name','?')}' no buffer.")
+            stash_tied_contribution(layer, cell[0], cell[1], self.val_batch_size)
+        seen = set()
+        for _, layer in self._tied_layers:
+            w = layer.weight
+            if id(w) not in seen and hasattr(w, "_ghost_tied_stash"):
+                finalize_tied_param(w)
+                dp = w.grad_dot_prod
+                total = dp.detach().clone() if total is None else total + dp.detach()
+                seen.add(id(w))
         return total
 
     def _run_capture(self) -> Optional[torch.Tensor]:
@@ -507,3 +559,27 @@ class GhostDecoupledManager:
                     del param._ghost_grad_val
                 if hasattr(param, "grad_dot_prod"):
                     del param.grad_dot_prod
+
+        # Tied weights: recover once per unique shared weight (stash_tied_contribution already
+        # accumulated the full validation aggregate in _ghost_grad_val).
+        seen = set()
+        for name, layer in self._tied_layers:
+            w = layer.weight
+            if id(w) in seen:
+                continue
+            seen.add(id(w))
+            total_bs = self._cells[id(layer)][0].shape[0]
+            train_bs = total_bs - self.val_batch_size
+            scale = float(total_bs) / float(train_bs)
+            grad_val = getattr(w, "_ghost_grad_val", None)
+            if grad_val is None:
+                raise RuntimeError(f"GHOST_DECOUPLED_FN: tied '{name}' has no _ghost_grad_val.")
+            if w.grad is None:
+                raise RuntimeError(f"GHOST_DECOUPLED_FN: tied '{name}' weight has no autograd .grad.")
+            w.grad = (scale * (w.grad.float() - grad_val)).to(w.grad.dtype)
+            if hasattr(w, "_ghost_grad_val"):
+                del w._ghost_grad_val
+            if hasattr(w, "grad_dot_prod"):
+                del w.grad_dot_prod
+            if hasattr(w, "_ghost_tied_gval"):
+                del w._ghost_tied_gval

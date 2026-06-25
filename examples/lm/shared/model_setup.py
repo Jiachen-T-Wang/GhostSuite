@@ -127,8 +127,7 @@ def setup_model_GPT(config):
         bias=bias,
         vocab_size=vocab_size,
         dropout=dropout,
-        # Untie the embedding/LM-head weight when requested (ghost batched/decoupled paths do not
-        # yet handle a weight shared across two layers). Defaults to standard GPT-2 tying.
+        # Embedding/LM-head weight tying (default standard GPT-2 tying; --no_tie_weights to untie).
         tie_weights=getattr(config, "tie_weights", True),
     )
     

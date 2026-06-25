@@ -125,9 +125,8 @@ class GPTConfig:
     dropout: float = 0.0
     bias: bool = False
     # Weight-tying between the token embedding and the LM head. Default True (standard GPT-2).
-    # Set False for the ghost decoupled/compile and batched dot-product paths, whose handling does
-    # not yet cover a parameter shared across two layers (faithful tied-weight support is a
-    # follow-up; see docs/plans/optimize_graddotprod_lm_2026-06-25.md).
+    # All ghost dot-product paths (eager, batched, decoupled) handle the tied shared weight,
+    # including the cross-terms, via the tied-weight finalizer. Set False to untie if desired.
     tie_weights: bool = True
 
 class GPT(nn.Module):

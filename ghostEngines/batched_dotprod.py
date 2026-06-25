@@ -34,7 +34,11 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-from .supported_layers_grad_samplers_dotprod import _maybe_store_grad_val
+from .supported_layers_grad_samplers_dotprod import (
+    _maybe_store_grad_val,
+    stash_tied_contribution,
+    finalize_tied_param,
+)
 
 
 _BATCHED_DOTPROD = os.getenv("GHOST_BATCHED_DOTPROD", "0") == "1"
@@ -288,6 +292,14 @@ def run_batched_dotprod(pending: List[Tuple[nn.Module, torch.Tensor, torch.Tenso
                 f"Supported: {[t.__name__ for t in _BATCHED_SUPPORTED]}."
             )
 
+        # Tied weight (shared by >=2 supported modules, e.g. wte/lm_head): the per-use dot products
+        # miss the cross-terms of the shared parameter's true gradient. Accumulate this use's val
+        # aggregate + stash its train factors; finalize_tied_param below computes the exact dot
+        # (with cross-terms). Same machinery the eager per-layer path uses.
+        if getattr(layer.weight, "_ghost_tied", False):
+            stash_tied_contribution(layer, A, B, val_batch_size)
+            continue
+
         if isinstance(layer, nn.Embedding):
             total_bs = A.shape[0]
             train_bs = total_bs - val_batch_size
@@ -378,5 +390,15 @@ def run_batched_dotprod(pending: List[Tuple[nn.Module, torch.Tensor, torch.Tenso
             if layer.bias is not None:
                 layer.bias.grad_dot_prod = dot_b[g]
                 _maybe_store_grad_val(layer.bias, grad_b[g])
+
+    # --- Tied weights: materialize the combined per-sample gradient (with cross-terms) once per
+    # unique shared weight. stash_tied_contribution already accumulated _ghost_grad_val (the full
+    # val aggregate) for subtract-val recovery.
+    seen_tied = set()
+    for layer, _A, _B in pending:
+        w = layer.weight
+        if getattr(w, "_ghost_tied", False) and id(w) not in seen_tied and hasattr(w, "_ghost_tied_stash"):
+            finalize_tied_param(w)
+            seen_tied.add(id(w))
 
     _bench_report()
