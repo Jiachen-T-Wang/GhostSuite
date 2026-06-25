@@ -34,19 +34,46 @@ def concat_messages(messages: List[dict], tokenizer) -> str:
 
 
 def encode_messages(example: dict, tokenizer, max_seq_length: int) -> Optional[Dict[str, torch.Tensor]]:
-    """Tokenize one instruction example. Labels = input_ids (no masking), matching
-    the upstream `encode_with_messages_format` whose masking line is commented out."""
+    """Tokenize one instruction example, masking the non-assistant tokens (only the
+    assistant completions carry a loss). Port of the up-to-date upstream
+    `encode_with_messages_format` (the masking is active in current GREATS)."""
     messages = example.get("messages", [])
     if not messages:
         return None
     text = concat_messages(messages, tokenizer)
     enc = tokenizer(text, return_tensors="pt", max_length=max_seq_length, truncation=True)
-    input_ids = enc.input_ids.flatten()
+    input_ids = enc.input_ids  # [1, L]
     if input_ids.numel() == 0:
         return None
+    labels = input_ids.clone()
+
+    # Mask every non-assistant span so only assistant-response tokens are learned.
+    for idx, message in enumerate(messages):
+        if message["role"] == "assistant":
+            continue
+        if idx == 0:
+            start = 0
+        else:
+            start = tokenizer(concat_messages(messages[:idx], tokenizer),
+                              return_tensors="pt", max_length=max_seq_length,
+                              truncation=True).input_ids.shape[1]
+        if idx < len(messages) - 1 and messages[idx + 1]["role"] == "assistant":
+            so_far = concat_messages(messages[:idx + 1], tokenizer) + "<|assistant|>\n"
+        else:
+            so_far = concat_messages(messages[:idx + 1], tokenizer)
+        end = tokenizer(so_far, return_tensors="pt", max_length=max_seq_length,
+                        truncation=True).input_ids.shape[1]
+        labels[:, start:end] = -100
+        if end >= max_seq_length:
+            break
+
+    input_ids = input_ids.flatten()
+    labels = labels.flatten()
+    if (labels != -100).sum() == 0:
+        return None  # no assistant tokens survived truncation
     return {
         "input_ids": input_ids,
-        "labels": input_ids.clone(),
+        "labels": labels,
         "attention_mask": torch.ones_like(input_ids),
     }
 

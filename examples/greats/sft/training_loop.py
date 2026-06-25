@@ -13,12 +13,14 @@ Per optimizer step:
 See docs/plans/greats_sft_phaseB_2026-06-25.md.
 """
 
+import json
 import os
 import time
 
 import torch
 
 from data_utils import collate
+from mmlu_accuracy import compute_mmlu_accuracy
 from ghostEngines import GradDotProdEngine
 
 
@@ -38,6 +40,8 @@ class GreatsSFTTrainer:
         self.pad_id = tokenizer.pad_token_id
         self.is_greats = (config.method == "GREATS")
         self.global_step = 0
+        self._results = []
+        self._results_path = os.path.join(config.result_dir, f"{config.method}_test_acc.json")
 
         # Shuffled stream over the training samples.
         self._order = list(range(len(train_samples)))
@@ -45,22 +49,30 @@ class GreatsSFTTrainer:
         self._gen = torch.Generator().manual_seed(config.seed)
         self._reshuffle()
 
-        # Pre-collate the fixed validation target once (re-padded with candidates each step).
+        # Per-step scoring val mini-batch is resampled from the n_val pool (upstream uses
+        # val_batchsize=2, shuffle=True). The engine's val size is val_batchsize.
+        self.val_bs = min(config.val_batchsize, len(self.val_samples))
+        self._val_gen = torch.Generator().manual_seed(config.seed + 1)
+
         self.engine = None
         if self.is_greats:
             save_path = os.path.join(config.result_dir, "grad_dotprods")
             os.makedirs(save_path, exist_ok=True)
             self.engine = GradDotProdEngine(
                 module=self.model,
-                # Track the actually-built val target, not the requested n_val, so the
-                # [candidate ++ val] split stays aligned even if fewer rows were loaded.
-                val_batch_size=len(self.val_samples),
+                val_batch_size=self.val_bs,
                 loss_reduction="mean",
                 use_dummy_bias=False,
                 dot_prod_save_path=save_path,
                 log_grad_norms=config.log_grad_norms,
             )
             self.engine.attach(self.optimizer)
+
+    def _sample_val(self):
+        """Resample a fresh val mini-batch from the n_val pool each scoring step."""
+        n = len(self.val_samples)
+        idx = torch.randperm(n, generator=self._val_gen)[: self.val_bs].tolist()
+        return [self.val_samples[i] for i in idx]
 
     # ------------------------------------------------------------------ #
     def _reshuffle(self):
@@ -81,6 +93,7 @@ class GreatsSFTTrainer:
               f"(k={self.config.batch_size}, N={self.config.candidate_batch_size}, "
               f"n_val={self.config.n_val}).")
         self.model.train()
+        self._evaluate()  # baseline accuracy before any update
         while self.global_step < self.total_steps:
             t0 = time.time()
             if self.is_greats:
@@ -96,11 +109,11 @@ class GreatsSFTTrainer:
 
             if (self.config.eval_interval and self.global_step > 0
                     and self.global_step % self.config.eval_interval == 0):
-                self._log_val_loss()
+                self._evaluate()
 
             self.global_step += 1
 
-        self._log_val_loss()
+        self._evaluate()
         print("[INFO] Training completed.")
 
     # ------------------------------------------------------------------ #
@@ -124,7 +137,8 @@ class GreatsSFTTrainer:
 
     def _score_candidates(self, candidates):
         n = len(candidates)
-        batch = collate(candidates + self.val_samples, self.pad_id, self.device)
+        val_batch = self._sample_val()
+        batch = collate(candidates + val_batch, self.pad_id, self.device)
         # aggregate_and_log records X_train/Y_train in its log dict; set them.
         self.engine.attach_train_batch(
             batch["input_ids"][:n], batch["labels"][:n], self.global_step
@@ -170,16 +184,15 @@ class GreatsSFTTrainer:
         return float(loss.detach())
 
     @torch.no_grad()
-    def _log_val_loss(self):
-        was_training = self.model.training
-        self.model.eval()
-        batch = collate(self.val_samples, self.pad_id, self.device)
-        outputs = self.model(
-            input_ids=batch["input_ids"],
-            attention_mask=batch["attention_mask"],
-            labels=batch["labels"],
+    def _evaluate(self):
+        """Report the headline metric: MMLU few-shot test accuracy (n_test questions)."""
+        acc, n = compute_mmlu_accuracy(
+            self.model, self.tokenizer, self.config.data_dir, self.config.subject,
+            n_val=self.config.n_val, n_test=self.config.n_test, device=self.device,
         )
         print(f"  [eval] step {self.global_step} | MMLU '{self.config.subject}' "
-              f"val loss {float(outputs.loss):.4f}")
-        if was_training:
-            self.model.train()
+              f"test acc {acc:.4f} (n={n})", flush=True)
+        self._results.append({"step": self.global_step, "test_acc": acc, "n_test": n})
+        with open(self._results_path, "w") as f:
+            json.dump(self._results, f, indent=2)
+        return acc

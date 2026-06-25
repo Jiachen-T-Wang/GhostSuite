@@ -27,9 +27,14 @@ def parse_arguments():
     # Model / data paths.
     p.add_argument("--model_path", type=str, default=DEFAULT_MODEL_PATH)
     p.add_argument("--data_dir", type=str, default=DEFAULT_DATA_DIR)
-    p.add_argument("--subject", type=str, default="world_religions",
+    p.add_argument("--subject", type=str, default="sociology",
                    help="MMLU subject used as the validation/scoring target")
-    p.add_argument("--n_val", type=int, default=4, help="number of MMLU dev examples")
+    p.add_argument("--n_val", type=int, default=5,
+                   help="number of MMLU dev examples in the scoring/val pool")
+    p.add_argument("--val_batchsize", type=int, default=2,
+                   help="val mini-batch resampled from the n_val pool each scoring step")
+    p.add_argument("--n_test", type=int, default=500,
+                   help="number of MMLU test questions for the accuracy eval")
 
     # Online selection (upstream uses fracinv: candidate pool = fracinv * batch).
     p.add_argument("--batch_size", type=int, default=4, help="trained subset size k")
@@ -44,7 +49,7 @@ def parse_arguments():
                    default="q_proj,k_proj,v_proj,o_proj")
 
     # Optimization.
-    p.add_argument("--learning_rate", type=float, default=1e-5)
+    p.add_argument("--learning_rate", type=float, default=2e-5)
     p.add_argument("--weight_decay", type=float, default=0.0)
     p.add_argument("--warmup_ratio", type=float, default=0.03)
     p.add_argument("--grad_clip", type=float, default=1.0)
@@ -85,6 +90,8 @@ class TrainingConfig:
         self.data_dir = args.data_dir
         self.subject = args.subject
         self.n_val = args.n_val
+        self.val_batchsize = args.val_batchsize
+        self.n_test = args.n_test
 
         self.batch_size = args.batch_size            # k
         self.fracinv = args.fracinv
