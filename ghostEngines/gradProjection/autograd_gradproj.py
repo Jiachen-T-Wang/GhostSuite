@@ -134,7 +134,14 @@ class GradProjHooks:
         # Flatten to [B, T, D] format
         A = _flatten_tokens(A_raw)  # [B, T, n_i]
         B = _flatten_tokens(B_out)  # [B, T, n_o]
-        
+
+        # Backward hooks run outside autocast, so A/B carry the model dtype
+        # (e.g. bf16/fp16) while the projection matrices are float32. Cast the
+        # operands to the projection dtype so the matmuls below don't raise on a
+        # dtype mismatch and the projection is accumulated in full precision.
+        A = A.to(self.P_i.dtype)
+        B = B.to(self.P_o.dtype)
+
         batch_size = A.shape[0]
         
         # For Conv1D, the weight is transposed, so we need to swap projections
@@ -187,7 +194,11 @@ class GradProjHooks:
             indices_flat = indices  # [B, T]
             grad_flat = grad_output  # [B, T, D]
             batch_size = indices.shape[0]
-            
+
+        # Backward hooks run outside autocast: cast grads to the projection dtype
+        # (float32) so the projection below matches the dense-layer precision.
+        grad_flat = grad_flat.to(self.P_o.dtype)
+
         k_o, _ = self.P_o.shape  # [k_o, embed_dim]
         k_i, _ = self.P_i.shape  # [k_i, vocab_size]
         
