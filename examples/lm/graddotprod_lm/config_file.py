@@ -27,7 +27,12 @@ def parse_arguments():
     # Architecture parameters
     parser.add_argument('--architecture', type=str, default='GPT2-Small',
                        choices=['GPT2-Tiny', 'GPT2-Small', 'GPT2-Medium', 'GPT2-Large', 'LLaVA-7B', 'LLaVA-13B'])
-    
+    parser.add_argument('--no_tie_weights', dest='tie_weights', action='store_false',
+                        help='Untie the token-embedding and LM-head weight. Required for the ghost '
+                             'batched/decoupled dot-product paths, which do not yet handle a weight '
+                             'shared across two layers. Default: tied (standard GPT-2).')
+    parser.set_defaults(tie_weights=True)
+
     # Training parameters
     parser.add_argument('--batch_size', type=int, default=16, help='Training batch size')
     parser.add_argument('--val_batch_size', type=int, default=1)
@@ -113,6 +118,8 @@ class TrainingConfig:
 
         # Defer the model config to a separate function
         self.architecture = args.architecture
+        # Weight-tying of the token embedding / LM head (see --no_tie_weights).
+        self.tie_weights = getattr(args, 'tie_weights', True)
 
         # Sequence length (block size). For GPT architectures it is fixed by the
         # model config table; sampled windows must match it (e.g. GPT2-Tiny=64).

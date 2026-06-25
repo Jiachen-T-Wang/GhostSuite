@@ -39,7 +39,7 @@ from .batched_dotprod import run_batched_dotprod
 _DECOUPLED_FN = os.getenv("GHOST_DECOUPLED_FN", "0") == "1"
 _MODE = os.getenv("GHOST_DECOUPLED_MODE", "ingraph")  # "ingraph" (default) | "capture"
 
-_SUPPORTED = (nn.Linear, nn.Embedding, nn.RMSNorm)
+_SUPPORTED = (nn.Linear, nn.Embedding, nn.RMSNorm, nn.LayerNorm)
 ACCUM_DTYPE = torch.float32
 
 
@@ -196,6 +196,66 @@ class _IGRMSNormFn(torch.autograd.Function):
         return grad_out, None, None, None, None, None, None
 
 
+class _IGLayerNormFn(torch.autograd.Function):
+    """Identity on a LayerNorm's output; computes weight (and bias) dot-products in backward.
+
+    Mirrors the eager ``_compute_layernorm_dot_product`` reference: the per-sample gradient for the
+    weight is ``B * normalized_A`` and for the bias is ``B``. We store the combined per-train-sample
+    ``dot`` plus the validation-side weight/bias gradients (``grad_val``) for subtract-val recovery.
+    The wrapped ``nn.LayerNorm`` keeps its native backward (this Function is a transparent identity
+    on the output), so weight/bias ``.grad`` are still produced by autograd.
+    """
+
+    @staticmethod
+    def forward(ctx, output, input_act, normalized_shape, eps, has_bias,
+                dot_buf, gw_buf, gb_buf, train_bs, val_bs):
+        ctx.save_for_backward(input_act)
+        ctx.normalized_shape = normalized_shape
+        ctx.eps = eps
+        ctx.has_bias = has_bias
+        ctx.dot_buf = dot_buf
+        ctx.gw_buf = gw_buf
+        ctx.gb_buf = gb_buf
+        ctx.train_bs = train_bs
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        A = ctx.saved_tensors[0].to(ACCUM_DTYPE)
+        B = grad_output.to(ACCUM_DTYPE)
+        train_bs = ctx.train_bs
+        ns = ctx.normalized_shape
+        eps = ctx.eps
+        A_train, A_val = A[:train_bs], A[train_bs:]
+        B_train, B_val = B[:train_bs], B[train_bs:]
+
+        # --- weight: grad = B * normalized_A (recompute normalized input without affine) ---
+        norm_A_train = F.layer_norm(A_train, ns, eps=eps)
+        norm_A_val = F.layer_norm(A_val, ns, eps=eps)
+        gw_train = B_train * norm_A_train
+        gw_val = B_val * norm_A_val
+        sum_dims_w = list(range(1, gw_train.dim() - 1))
+        per_sample_w = gw_train.sum(dim=sum_dims_w) if sum_dims_w else gw_train  # [train, F]
+        total_w = gw_val.sum(dim=list(range(gw_val.dim() - 1)))                  # [F]
+        dot = torch.einsum("bf,f->b", per_sample_w, total_w)                    # [train]
+
+        # --- bias: grad = B (folded into the same per-sample dot) ---
+        if ctx.has_bias:
+            sum_dims_b = list(range(1, B_train.dim() - 1))
+            per_sample_b = B_train.sum(dim=sum_dims_b) if sum_dims_b else B_train  # [train, F]
+            total_b = B_val.sum(dim=list(range(B_val.dim() - 1)))                  # [F]
+            dot = dot + torch.einsum("bf,f->b", per_sample_b, total_b)
+
+        m = _store(ctx.dot_buf, dot) + _store(ctx.gw_buf, total_w)
+        if ctx.has_bias:
+            m = m + _store(ctx.gb_buf, total_b)
+
+        grad_out = grad_output + (0.0 * m).to(grad_output.dtype)
+        # grads for (output, input_act, normalized_shape, eps, has_bias,
+        #            dot_buf, gw_buf, gb_buf, train_bs, val_bs)
+        return grad_out, None, None, None, None, None, None, None, None, None
+
+
 # ---------------------------------------------------------------------------------------
 # Manager
 # ---------------------------------------------------------------------------------------
@@ -213,19 +273,28 @@ class GhostDecoupledManager:
     # -- forward wrappers (ingraph mode) --------------------------------------------------
 
     def _alloc_ingraph(self, layer, x, out):
+        """Allocate the per-layer buffers: one shared ``dot`` [train_bs] plus a ``grad_val`` buffer
+        per trainable parameter. Returns ``[dot, [(param, grad_val_buf), ...]]``. All layer types
+        except ``nn.LayerNorm`` (weight + optional bias) have a single weight parameter."""
         train_bs = x.shape[0] - self.val_batch_size
         dev = x.device
+        dot = torch.zeros((train_bs,), dtype=ACCUM_DTYPE, device=dev)
+        gvs = []
         if isinstance(layer, nn.Linear):
             d_out, d_in = layer.weight.shape
-            gv = torch.zeros((d_out, d_in), dtype=ACCUM_DTYPE, device=dev)
+            gvs.append((layer.weight, torch.zeros((d_out, d_in), dtype=ACCUM_DTYPE, device=dev)))
         elif isinstance(layer, nn.Embedding):
             vocab, d = layer.weight.shape
-            gv = torch.zeros((vocab, d), dtype=ACCUM_DTYPE, device=dev)
+            gvs.append((layer.weight, torch.zeros((vocab, d), dtype=ACCUM_DTYPE, device=dev)))
+        elif isinstance(layer, nn.LayerNorm):
+            d = layer.weight.shape[0]
+            gvs.append((layer.weight, torch.zeros((d,), dtype=ACCUM_DTYPE, device=dev)))
+            if layer.bias is not None:
+                gvs.append((layer.bias, torch.zeros((d,), dtype=ACCUM_DTYPE, device=dev)))
         else:  # RMSNorm
             d = layer.weight.shape[0]
-            gv = torch.zeros((d,), dtype=ACCUM_DTYPE, device=dev)
-        dot = torch.zeros((train_bs,), dtype=ACCUM_DTYPE, device=dev)
-        return [dot, gv]
+            gvs.append((layer.weight, torch.zeros((d,), dtype=ACCUM_DTYPE, device=dev)))
+        return [dot, gvs]
 
     def _wrap_ingraph_linear(self, layer):
         cell = [None]
@@ -237,7 +306,8 @@ class GhostDecoupledManager:
             out = F.linear(x, weight)
             if cell[0] is None:
                 cell[0] = self._alloc_ingraph(layer, x, out)
-            dot_buf, gv_buf = cell[0]
+            dot_buf = cell[0][0]
+            gv_buf = cell[0][1][0][1]
             return _IGLinearFn.apply(out, x, dot_buf, gv_buf, x.shape[0] - vbs, vbs)
 
         return forward
@@ -254,7 +324,8 @@ class GhostDecoupledManager:
             out = F.embedding(idx, weight, padding_idx)
             if cell[0] is None:
                 cell[0] = self._alloc_ingraph(layer, idx, out)
-            dot_buf, gv_buf = cell[0]
+            dot_buf = cell[0][0]
+            gv_buf = cell[0][1][0][1]
             return _IGEmbeddingFn.apply(out, idx, wshape, dot_buf, gv_buf, idx.shape[0] - vbs, vbs)
 
         return forward
@@ -271,8 +342,33 @@ class GhostDecoupledManager:
             out = F.rms_norm(x, normalized_shape, weight, eps)
             if cell[0] is None:
                 cell[0] = self._alloc_ingraph(layer, x, out)
-            dot_buf, gv_buf = cell[0]
+            dot_buf = cell[0][0]
+            gv_buf = cell[0][1][0][1]
             return _IGRMSNormFn.apply(out, x, eps, dot_buf, gv_buf, x.shape[0] - vbs, vbs)
+
+        return forward
+
+    def _wrap_ingraph_layernorm(self, layer):
+        cell = [None]
+        self._cells[id(layer)] = cell
+        weight = layer.weight
+        bias = layer.bias
+        has_bias = bias is not None
+        normalized_shape = tuple(layer.normalized_shape)
+        eps = layer.eps if layer.eps is not None else 1e-5
+        vbs = self.val_batch_size
+
+        def forward(x):
+            out = F.layer_norm(x, normalized_shape, weight, bias, eps)
+            if cell[0] is None:
+                cell[0] = self._alloc_ingraph(layer, x, out)
+            dot_buf = cell[0][0]
+            gw_buf = cell[0][1][0][1]
+            gb_buf = cell[0][1][1][1] if has_bias else None
+            return _IGLayerNormFn.apply(
+                out, x, normalized_shape, eps, has_bias,
+                dot_buf, gw_buf, gb_buf, x.shape[0] - vbs, vbs,
+            )
 
         return forward
 
@@ -305,6 +401,11 @@ class GhostDecoupledManager:
                     self._layers.append((name, layer))
                     self._orig_forward[id(layer)] = layer.forward
                     if self.mode == "capture":
+                        if isinstance(layer, nn.LayerNorm):
+                            raise NotImplementedError(
+                                "GHOST_DECOUPLED_FN: LayerNorm is only supported in the default "
+                                "ingraph mode, not the deprecated capture mode."
+                            )
                         weight = layer.weight
                         if isinstance(layer, nn.Linear):
                             op = lambda x, w=weight: F.linear(x, w)
@@ -320,6 +421,8 @@ class GhostDecoupledManager:
                             layer.forward = self._wrap_ingraph_linear(layer)
                         elif isinstance(layer, nn.Embedding):
                             layer.forward = self._wrap_ingraph_embedding(layer)
+                        elif isinstance(layer, nn.LayerNorm):
+                            layer.forward = self._wrap_ingraph_layernorm(layer)
                         else:
                             layer.forward = self._wrap_ingraph_rmsnorm(layer)
             else:
@@ -359,8 +462,9 @@ class GhostDecoupledManager:
             cell = self._cells.get(id(layer))
             if cell is None or cell[0] is None:
                 raise RuntimeError(f"GHOST_DECOUPLED_FN: '{getattr(layer,'name','?')}' no buffer.")
-            dot, gv = cell[0]
-            _maybe_store_grad_val(layer.weight, gv)
+            dot, gvs = cell[0]
+            for param, gv in gvs:
+                _maybe_store_grad_val(param, gv)
             total = dot.detach().clone() if total is None else total + dot.detach()
         return total
 
@@ -380,21 +484,26 @@ class GhostDecoupledManager:
 
     def recover_train_grads(self) -> None:
         for name, layer in self._layers:
-            param = layer.weight
-            grad_val = getattr(param, "_ghost_grad_val", None)
-            if grad_val is None:
-                raise RuntimeError(f"GHOST_DECOUPLED_FN: '{name}' has no _ghost_grad_val.")
-            if param.grad is None:
-                raise RuntimeError(f"GHOST_DECOUPLED_FN: '{name}' weight has no autograd .grad.")
-            # train_bs from the dot buffer length (ingraph) or captured activation (capture).
+            # train_bs from the dot buffer length (ingraph) or captured activation (capture);
+            # the parameters to recover are the layer's trainable params (weight + optional bias
+            # for LayerNorm). capture mode publishes grad_val on the weight only.
             if self.mode == "capture":
                 total_bs = self._cells[id(layer)][0].shape[0]
+                params = [layer.weight]
             else:
-                total_bs = self._cells[id(layer)][0][0].shape[0] + self.val_batch_size
+                cell0 = self._cells[id(layer)][0]
+                total_bs = cell0[0].shape[0] + self.val_batch_size
+                params = [p for p, _ in cell0[1]]
             train_bs = total_bs - self.val_batch_size
             scale = float(total_bs) / float(train_bs)
-            param.grad = (scale * (param.grad.float() - grad_val)).to(param.grad.dtype)
-            if hasattr(param, "_ghost_grad_val"):
-                del param._ghost_grad_val
-            if hasattr(param, "grad_dot_prod"):
-                del param.grad_dot_prod
+            for param in params:
+                grad_val = getattr(param, "_ghost_grad_val", None)
+                if grad_val is None:
+                    raise RuntimeError(f"GHOST_DECOUPLED_FN: '{name}' has no _ghost_grad_val.")
+                if param.grad is None:
+                    raise RuntimeError(f"GHOST_DECOUPLED_FN: '{name}' param has no autograd .grad.")
+                param.grad = (scale * (param.grad.float() - grad_val)).to(param.grad.dtype)
+                if hasattr(param, "_ghost_grad_val"):
+                    del param._ghost_grad_val
+                if hasattr(param, "grad_dot_prod"):
+                    del param.grad_dot_prod
