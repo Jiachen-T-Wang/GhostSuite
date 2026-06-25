@@ -104,8 +104,7 @@ activation checkpointing** that is faster than the eager engine **at the same lo
 *and* dot-product-identical). Activation checkpointing then gives a single speed↔memory dial. The
 default is **op-SAC `mme1`** — the runtime-memory frontier point that runs *below* the eager
 engine's peak memory while still ~15% faster. Numbers: Llama-3 130M, seq 4096, train bs2 + val bs2,
-single H200, one session; throughput is tokens/s, loss-identical in every row
-(`docs/analysis/ac_frontier_2026-06-21.md`):
+single H200, one session; throughput is tokens/s, loss-identical in every row:
 
 | config | flags | throughput vs eager | peak memory |
 |---|---|---:|---:|
@@ -118,8 +117,7 @@ single H200, one session; throughput is tokens/s, loss-identical in every row
 op-SAC strictly dominates the older layer-frequency dial: it sits on the pareto frontier at every
 memory level, whereas `--activation_checkpoint.selective_ac_option=2` and the `torch.compile`
 `memory_budget` partitioner are both off-frontier here (the latter gives no peak-memory reduction —
-the fp32 logits tensor floors it). See the analysis doc for the full frontier and the negative
-results.
+the fp32 logits tensor floors it).
 
 Caveats: the combined `train + val` batch and the compiled path both raise peak memory, so at the
 *max speed* (no-AC) setting a ghost run hits the memory ceiling **earlier** than a same-train-batch
