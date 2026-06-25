@@ -199,37 +199,16 @@ class GradProjHooks:
         # (float32) so the projection below matches the dense-layer precision.
         grad_flat = grad_flat.to(self.P_o.dtype)
 
-        k_o, _ = self.P_o.shape  # [k_o, embed_dim]
-        k_i, _ = self.P_i.shape  # [k_i, vocab_size]
-        
-        # Compute per-sample projected gradients efficiently
-        per_sample_grads = []
-        
-        for b in range(batch_size):
-            # Initialize projected gradient accumulator in low-dim space
-            grad_proj = torch.zeros(k_o, k_i, dtype=torch.float32, device=grad_flat.device)
-            
-            idx_b = indices_flat[b]  # [T]
-            grad_b = grad_flat[b]    # [T, D]
-            
-            # Process each token
-            for t in range(idx_b.shape[0]):
-                token_idx = idx_b[t].item()
-                token_grad = grad_b[t]  # [D]
-                
-                # Project gradient: P_o @ g_t -> [k_o]
-                grad_o_proj = self.P_o @ token_grad  # [k_o]
-                
-                # Get projection for this token index: P_i[:, j] -> [k_i]
-                grad_i_proj = self.P_i[:, token_idx]  # [k_i]
-                
-                # Accumulate outer product: [k_o] x [k_i] -> [k_o, k_i]
-                grad_proj += grad_o_proj.unsqueeze(1) @ grad_i_proj.unsqueeze(0)
-            
-            per_sample_grads.append(grad_proj)
-            
-        # Stack all per-sample gradients: [B, k_o, k_i]
-        gradG = torch.stack(per_sample_grads, dim=0)
+        # Vectorized over batch and tokens (no Python per-token loop):
+        #   gradG[b] = sum_t (P_o @ g_{b,t}) outer (P_i[:, idx_{b,t}])
+        # Project output grads: [B, T, D] @ [D, k_o] -> [B, T, k_o]
+        B_proj = torch.matmul(grad_flat, self.P_o.t())
+        # Gather the input-projection column for each token index.
+        # P_i.t() is [V, k_i]; indexing by [B, T] gives [B, T, k_i].
+        A_proj = self.P_i.t()[indices_flat]
+        # Accumulate the per-sample outer products over tokens -> [B, k_o, k_i]
+        gradG = torch.einsum('bto,bti->boi', B_proj, A_proj)
+
         module._ghost_grad_proj = gradG.to(torch.float32)
         
     def attach(self, module: nn.Module) -> None:
