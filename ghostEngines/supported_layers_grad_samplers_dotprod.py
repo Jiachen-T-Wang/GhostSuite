@@ -717,45 +717,29 @@ def _compute_Conv1D_dot_product(
     weight_val_norm_sq = None
 
     # --- Compute weight gradient dot product ---
+    # The validation gradient is the sum of the validation samples' per-sample
+    # gradients: grad_val[d, p] = sum_j sum_t A_val[j, t, d] * B_val[j, t, p].
+    # Each sample j is contracted with itself, so there are no cross-terms between
+    # distinct validation samples. (Summing A_val / B_val over the batch dimension
+    # *before* the outer product would introduce spurious j != k cross-terms.)
     if layer.use_ghost_computation:
-        # Sum over the validation batch dimension to get the validation gradient components
-        A_val_sum = torch.sum(A_val_f, dim=0)
-        B_val_sum = torch.sum(B_val_f, dim=0)
-
-        # The dot product of gradients G1 and G2 is trace((A1 @ A2.T) * (B1 @ B2.T))
-        # We use torch.matmul which correctly broadcasts the validation tensors across the training batch dimension.
-
-        # start_time = time.time()
-
-        # A_val_sum: [t, d] -> unsqueezed to [1, t, d] for broadcasting
-        # A_train.transpose(-1, -2): [b, d, t]
-        # Result AA: [b, t, t]
-        AA = torch.matmul(A_val_sum.unsqueeze(0), A_train_f.transpose(-1, -2))
-
-        # B_val_sum: [t, p] -> unsqueezed to [1, t, p]
-        # B_train.transpose(-1, -2): [b, p, t]
-        # Result BB: [b, t, t]
-        BB = torch.matmul(B_val_sum.unsqueeze(0), B_train_f.transpose(-1, -2))
-
-        # Element-wise product and sum over the two `t` dimensions to get the trace
-        # The result is a tensor of shape [b], with one value per training sample.
-        # layer.weight.grad_dot_prod = torch.sum(AA * BB, dim=[1, 2])
-        layer.weight.grad_dot_prod = torch.sum((AA * BB).to(accum_dtype), dim=[1, 2])
+        # Materialize the (single) validation gradient, then project it through the
+        # per-sample train output grads and contract with the train inputs. No
+        # per-sample train gradient is ever materialized.
+        grad_val = torch.einsum('jtd,jtp->dp', A_val_f, B_val_f)
+        grad_val_proj = torch.einsum('bsp,dp->bsd', B_train_f, grad_val)
+        token_scores = torch.einsum('bsd,bsd->bs', A_train_f, grad_val_proj)
+        layer.weight.grad_dot_prod = token_scores.sum(dim=1).to(accum_dtype)
 
         if log_grad_norms:
             grad_train = torch.einsum('btd,btp->bpd', A_train_f, B_train_f)
             weight_train_norm = (grad_train.to(accum_dtype) ** 2).sum(dim=[1, 2])
-            grad_val = torch.einsum('td,tp->pd', A_val_sum, B_val_sum)
             weight_val_norm_sq = (grad_val.to(accum_dtype) ** 2).sum()
-
-        # torch.cuda.synchronize()  # Ensure all operations are complete
-        # print(f"Prepare Dotprod time for {layer.name}: {(time.time() - start_time)*1000:.4f}ms")
-        # print(f"Debug: Check grad dot product value for Conv1D layer: {layer.weight.grad_dot_prod}")
 
     else:
         # Materialize gradients to compute the dot product
         grad_train = torch.einsum('b...d, b...p->bpd', A_train_f, B_train_f).detach()
-        grad_val = torch.einsum('...d, ...p->pd', torch.sum(A_val_f, dim=0), torch.sum(B_val_f, dim=0)).detach()
+        grad_val = torch.einsum('jtd,jtp->pd', A_val_f, B_val_f).detach()
         layer.weight.grad_dot_prod = torch.einsum('pd,bpd->b', grad_val, grad_train)
         if log_grad_norms:
             weight_train_norm = (grad_train.to(accum_dtype) ** 2).sum(dim=[1, 2])
@@ -886,18 +870,24 @@ def _compute_conv2d_dot_product(
     weight_train_norm = None
     weight_val_norm_sq = None
 
+    # The validation gradient sums each validation sample's per-sample gradient,
+    # contracting every sample with itself over the spatial locations:
+    # grad_val[p, i] = sum_j sum_k B_val[j, p, k] * A_val[j, i, k]. Summing the
+    # unfolded activations over the batch dimension before the outer product would
+    # introduce spurious cross-terms between distinct validation samples.
     if layer.use_ghost_computation:
-        A_val_sum = torch.sum(A_val_u, dim=0).to(accum_dtype)
-        B_val_sum = torch.sum(B_val_r, dim=0).to(accum_dtype)
         A_train_u_f = A_train_u.to(accum_dtype)
         B_train_r_f = B_train_r.to(accum_dtype)
-        AA = torch.matmul(A_val_sum.unsqueeze(0), A_train_u_f.transpose(1, 2))
-        BB = torch.matmul(B_val_sum.unsqueeze(0), B_train_r_f.transpose(1, 2))
-        layer.weight.grad_dot_prod = torch.sum((AA * BB).to(accum_dtype), dim=[1, 2])
+        A_val_u_f = A_val_u.to(accum_dtype)
+        B_val_r_f = B_val_r.to(accum_dtype)
+        # Materialize the (single) validation gradient, then project it through the
+        # per-sample train output grads and contract with the train inputs.
+        grad_val = torch.einsum('jik,jpk->pi', A_val_u_f, B_val_r_f)
+        grad_val_proj = torch.einsum('bpk,pi->bik', B_train_r_f, grad_val)
+        layer.weight.grad_dot_prod = torch.einsum('bik,bik->b', A_train_u_f, grad_val_proj).to(accum_dtype)
         if log_grad_norms:
             grad_train = torch.einsum('bik,bpk->bpi', A_train_u_f, B_train_r_f)
             weight_train_norm = (grad_train.to(accum_dtype) ** 2).sum(dim=[1, 2])
-            grad_val = torch.einsum('ik,pk->pi', A_val_sum, B_val_sum)
             weight_val_norm_sq = (grad_val.to(accum_dtype) ** 2).sum()
     else:
         A_train_u_f = A_train_u.to(accum_dtype)
@@ -905,7 +895,7 @@ def _compute_conv2d_dot_product(
         A_val_u_f = A_val_u.to(accum_dtype)
         B_val_r_f = B_val_r.to(accum_dtype)
         grad_train = torch.einsum('bik,bpk->bpi', A_train_u_f, B_train_r_f)
-        grad_val = torch.einsum('ik,pk->pi', A_val_u_f.sum(dim=0), B_val_r_f.sum(dim=0))
+        grad_val = torch.einsum('jik,jpk->pi', A_val_u_f, B_val_r_f)
         layer.weight.grad_dot_prod = torch.einsum('pi,bpi->b', grad_val, grad_train)
         if log_grad_norms:
             weight_train_norm = (grad_train.to(accum_dtype) ** 2).sum(dim=[1, 2])
