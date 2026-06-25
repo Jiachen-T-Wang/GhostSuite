@@ -227,16 +227,20 @@ class GradProjLoraEngine:
         self.is_attached = False
         print(f"Detached projection hooks from {len(self.matched_layers)} layers")
         
-    def collect_batch(self, batch_indices: Optional[List[int]] = None) -> torch.Tensor:
+    def collect_batch(self, batch_indices: Optional[List[int]] = None,
+                      extra: Optional[dict] = None) -> torch.Tensor:
         """
         Collect projected gradients from all layers and optionally save.
-        
+
         Args:
             batch_indices: Optional list of sample indices in the batch
-            
+            extra: Optional dict of extra per-step metadata to store in the saved
+                file (e.g. {'lr': ..., 'order': ...} for Data Value Embedding). Keys
+                'proj', 'iter', 'batch_size', 'batch_idx' are reserved.
+
         Returns:
             Concatenated projection tensor of shape [B, total_proj_dim]
-            
+
         Raises:
             RuntimeError: If no gradients are available
         """
@@ -274,14 +278,16 @@ class GradProjLoraEngine:
         
         # Save if needed
         if self.iteration % self.proj_save_interval == 0:
-            self._save_projection(full_projection, batch_indices)
-            
+            self._save_projection(full_projection, batch_indices, extra)
+
         self.iteration += 1
         self.batch_count += batch_size
-        
+
         return full_projection
-        
-    def _save_projection(self, projection: torch.Tensor, batch_indices: Optional[List[int]] = None):
+
+    def _save_projection(self, projection: torch.Tensor,
+                         batch_indices: Optional[List[int]] = None,
+                         extra: Optional[dict] = None):
         """Save projection to disk."""
         # Create directory if needed
         self.proj_dir.mkdir(parents=True, exist_ok=True)
@@ -302,7 +308,14 @@ class GradProjLoraEngine:
         
         if batch_indices is not None:
             save_dict['batch_idx'] = batch_indices
-            
+
+        if extra is not None:
+            reserved = {'proj', 'iter', 'batch_size', 'batch_idx'}
+            for key, val in extra.items():
+                if key in reserved:
+                    raise ValueError(f"extra key '{key}' is reserved")
+                save_dict[key] = val
+
         # Save projection
         filename = f'proj_iter_{self.iteration:06d}.pt'
         save_path = self.proj_dir / filename
