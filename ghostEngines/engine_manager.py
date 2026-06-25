@@ -160,8 +160,25 @@ class GhostEngineManager:
                 )
             regions = list(blocks)
 
+        # Top-level compile lever (P3.2): candidate non-repeated layers (output + final norm).
+        # The harness compiles only the in-graph (non-tied) ones; for the default tied GPT-2 the
+        # lm_head is on the capture path and is skipped there.
+        extra_regions = None
+        if regions is not None and getattr(self.config, "decoupled_compile_toplevel", False):
+            extra_regions = []
+            if hasattr(model, "lm_head"):
+                extra_regions.append(model.lm_head)
+            transformer = getattr(model, "transformer", None)
+            if transformer is not None and hasattr(transformer, "ln_f"):
+                extra_regions.append(transformer.ln_f)
+
+        # Activation-checkpointing lever (P3.1): min-cut partitioner recompute budget for the
+        # compiled regions (cuts the in-graph path's pinned activations; matters at larger scale).
+        mem_budget = getattr(self.config, "decoupled_mem_budget", None)
+
         self.decoupled_mgr = attach_and_compile_decoupled(
             model, val_batch_size=val_bs, warmup_fn=warmup_fn, compile_regions=regions,
+            extra_regions=extra_regions, activation_memory_budget=mem_budget,
         )
         self.is_fn_path = True
         self.engine = None

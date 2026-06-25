@@ -41,7 +41,9 @@ def attach_and_compile_decoupled(
     warmup_fn,
     *,
     compile_regions=None,
+    extra_regions=None,
     compile_kwargs=None,
+    activation_memory_budget=None,
 ):
     """Attach the decoupled manager, warm up its buffers outside the graph, then compile.
 
@@ -50,7 +52,14 @@ def attach_and_compile_decoupled(
         val_batch_size: trailing rows of each batch that form the fixed validation batch.
         warmup_fn: zero-arg callable running one eager forward+backward at the real train shape.
         compile_regions: iterable of submodules to ``torch.compile`` (None => no compilation).
+        extra_regions: additional non-repeated submodules to compile in place (e.g. the top-level
+            ``lm_head``/``norm``); compiled only when ``compile_regions`` is also given.
         compile_kwargs: forwarded to ``torch.compile`` (default backend='inductor', fullgraph=True).
+        activation_memory_budget: if set (in (0, 1]), the Inductor min-cut partitioner is told to
+            recompute activations in backward to fit this fraction of the save-everything memory —
+            the compile-native form of activation checkpointing. 1.0 = save everything (default);
+            lower = recompute more (less peak memory, more compute). Cuts the in-graph-dot path's
+            pinned ``save_for_backward`` activations. Only affects the compiled regions.
 
     Returns:
         The attached ``GhostDecoupledManager``. Call ``run_step_dotprod()`` then
@@ -69,12 +78,26 @@ def attach_and_compile_decoupled(
         kwargs = {"backend": "inductor", "fullgraph": True}
         if compile_kwargs:
             kwargs.update(compile_kwargs)
+        if activation_memory_budget is not None:
+            # Set before compile so the partitioner builds the recompute plan for these graphs.
+            import torch._functorch.config as _fcfg
+            _fcfg.activation_memory_budget = float(activation_memory_budget)
+            print(f"[INFO] Ghost decoupled: activation_memory_budget={activation_memory_budget} "
+                  "(min-cut partitioner recompute).")
         n = 0
         for region in compile_regions:
             _compile_forward_in_place(region, kwargs)
             n += 1
-        print(f"[INFO] Ghost decoupled: regional-compiled {n} region(s) "
-              f"(backend={kwargs['backend']}, fullgraph={kwargs.get('fullgraph')}).")
+        # Top-level layers: compile only the in-graph (non-tied) ones. A tied layer is on the
+        # capture path (eager finalize); its in-graph dot isn't what we'd be folding in, so skip it.
+        tied_ids = {id(layer) for _, layer in mgr._tied_layers}
+        extra = [r for r in (extra_regions or []) if id(r) not in tied_ids]
+        for region in extra:
+            _compile_forward_in_place(region, kwargs)
+        msg = f"[INFO] Ghost decoupled: regional-compiled {n} block(s)"
+        if extra:
+            msg += f" + {len(extra)} top-level layer(s)"
+        print(msg + f" (backend={kwargs['backend']}, fullgraph={kwargs.get('fullgraph')}).")
     else:
         print("[INFO] Ghost decoupled: attached + warmed up (no compile).")
 

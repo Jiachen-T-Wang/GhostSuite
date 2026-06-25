@@ -39,6 +39,16 @@ def parse_arguments():
     parser.add_argument('--decoupled_compile', action='store_true',
                         help='With --decoupled_fn, regional-compile the transformer blocks via '
                              'torch.compile (the speedup lever). No effect without --decoupled_fn.')
+    parser.add_argument('--decoupled_compile_toplevel', action='store_true',
+                        help='With --decoupled_compile, also compile the top-level in-graph layers '
+                             '(output lm_head + final norm). Only the non-tied lm_head is compiled, '
+                             'so this mainly helps the --no_tie_weights config (TorchTitan found the '
+                             'output Linear is the only top-level layer worth compiling).')
+    parser.add_argument('--decoupled_mem_budget', type=float, default=None,
+                        help='With --decoupled_compile, set the Inductor activation-memory budget in '
+                             '(0,1] (compile-native activation checkpointing): 1.0 saves everything '
+                             '(default), lower recomputes more in backward to cut peak memory. '
+                             'Matters at GPT-2-Medium/Large scale.')
 
     # Training parameters
     parser.add_argument('--batch_size', type=int, default=16, help='Training batch size')
@@ -133,6 +143,8 @@ class TrainingConfig:
         # finalize_tied_param), so no untie is forced; --no_tie_weights remains available.
         self.decoupled_fn = getattr(args, 'decoupled_fn', False)
         self.decoupled_compile = getattr(args, 'decoupled_compile', False)
+        self.decoupled_compile_toplevel = getattr(args, 'decoupled_compile_toplevel', False)
+        self.decoupled_mem_budget = getattr(args, 'decoupled_mem_budget', None)
 
         # Sequence length (block size). For GPT architectures it is fixed by the
         # model config table; sampled windows must match it (e.g. GPT2-Tiny=64).
