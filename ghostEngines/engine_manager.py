@@ -14,6 +14,8 @@ from torch import nn
 
 from .graddotprod_engine import GradDotProdEngine
 from .gradProjection.gradproj_engine import GradProjLoraEngine
+from .decoupled_capture_dotprod import GhostDecoupledManager
+from .decoupled_compile import attach_and_compile_decoupled
 
 
 class GhostEngineManager:
@@ -41,6 +43,12 @@ class GhostEngineManager:
         
         # Initialize engine based on method
         self.engine = None
+        # Decoupled in-graph + compile path (fn-path): hosts a GhostDecoupledManager instead of the
+        # eager GradDotProdEngine; dot-products land in per-layer buffers during backward and train
+        # grads are recovered via subtract-val before the optimizer step.
+        self.decoupled_mgr = None
+        self.is_fn_path = False
+        self._last_dot = None
         if val_data is not None:
             self.X_val, self.Y_val = val_data
         else:
@@ -61,7 +69,11 @@ class GhostEngineManager:
             print(f"[WARNING] Unknown method '{self.config.method}' - no ghost engine initialized.")
     
     def _initialize_graddotprod_engine(self):
-        """Initialize GradDotProdEngine with all required setup."""
+        """Initialize the GradDotProd engine — eager by default, or the decoupled fn-path."""
+        if getattr(self.config, "decoupled_fn", False):
+            self._initialize_decoupled_engine()
+            return
+
         print("[INFO] Initializing GradDotProdEngine ...")
         
         # Prepare directory for saving dot products
@@ -91,7 +103,72 @@ class GhostEngineManager:
         self.engine.attach_and_store_valset(self.X_val, self.Y_val)
         
         print("[INFO] GradDotProdEngine initialized successfully.")
-    
+
+    def _initialize_decoupled_engine(self):
+        """Decoupled in-graph + (optional) regional-compile path for GradDotProd.
+
+        Hosts a ``GhostDecoupledManager`` (compile-clean: native layer backward preserved, the
+        dot-product computed as a small transient in-backward) instead of the eager engine, and
+        regional-compiles the transformer blocks via the general ``attach_and_compile_decoupled``
+        harness. Train grads are recovered via subtract-val in ``prepare_gradients``.
+        """
+        print("[INFO] Initializing ghost decoupled in-graph engine ...")
+        if self.X_val is None or self.Y_val is None:
+            raise ValueError("X_val and Y_val are required for GradDotProd method")
+        if isinstance(self.X_val, dict):
+            raise NotImplementedError(
+                "Ghost decoupled fn-path supports tensor token inputs only (not LLaVA dict inputs)."
+            )
+        if self.ddp_info.get("ddp", False):
+            raise RuntimeError("Ghost decoupled fn-path is single-GPU only (no DDP).")
+        if getattr(self.config, "gradient_accumulation_steps", 1) != 1:
+            raise RuntimeError(
+                "Ghost decoupled fn-path requires gradient_accumulation_steps == 1 "
+                "(per-layer buffers hold only the last microbatch's grad_val)."
+            )
+
+        device = self.ddp_info["device"]
+        train_bs = self.config.batch_size
+        val_bs = self.config.val_batch_size
+        total = train_bs + val_bs
+
+        # Shape-faithful warmup batch: tile the stored validation tokens up to the combined batch
+        # size (valid indices without needing the vocab size; seq matches the val batch's seq).
+        xv = self.X_val
+        reps = (total + xv.shape[0] - 1) // xv.shape[0]
+        warm_idx = xv.repeat(reps, 1)[:total].to(device)
+
+        model = self.model
+
+        def warmup_fn():
+            was_training = model.training
+            model.train()
+            out = model(warm_idx, warm_idx)
+            out.loss.backward()
+            model.train(was_training)
+
+        regions = None
+        if getattr(self.config, "decoupled_compile", False):
+            # Regional-compile the repeated transformer blocks (analogue of TorchTitan model.layers).
+            transformer = getattr(model, "transformer", None)
+            blocks = getattr(transformer, "h", None) if transformer is not None else None
+            if blocks is None:
+                raise RuntimeError(
+                    "Ghost decoupled compile: could not find transformer blocks at "
+                    "model.transformer.h to regional-compile."
+                )
+            regions = list(blocks)
+
+        self.decoupled_mgr = attach_and_compile_decoupled(
+            model, val_batch_size=val_bs, warmup_fn=warmup_fn, compile_regions=regions,
+        )
+        self.is_fn_path = True
+        self.engine = None
+        print(
+            "[INFO] Ghost decoupled in-graph engine initialized "
+            f"(compile={'on' if regions is not None else 'off'})."
+        )
+
     def _initialize_gradproj_engine(self):
         """Initialize GradProjLoraEngine with projection setup."""
         print("[INFO] Initializing GradProjLoraEngine ...")
@@ -132,7 +209,7 @@ class GhostEngineManager:
 
     def is_active(self) -> bool:
         """Check if any ghost engine is active."""
-        return self.engine is not None
+        return self.engine is not None or self.is_fn_path
     
     def get_method(self) -> str:
         """Get the current method name."""
@@ -149,6 +226,13 @@ class GhostEngineManager:
     
     def prepare_gradients(self):
         """Prepare gradients after backward pass (if applicable)."""
+        if self.is_fn_path and self.decoupled_mgr is not None:
+            # fn-path: dot-products are already in per-layer buffers (computed in the in-graph
+            # backward). Aggregate them (also publishes grad_val), then recover train grads via
+            # subtract-val — all before the optimizer step.
+            self._last_dot = self.decoupled_mgr.run_step_dotprod()
+            self.decoupled_mgr.recover_train_grads()
+            return
         if self.engine and hasattr(self.engine, 'prepare_gradients'):
             self.engine.prepare_gradients()
 
@@ -236,6 +320,13 @@ class GhostEngineManager:
     
     def cleanup(self):
         """Cleanup and save any remaining data during training termination."""
+        if self.is_fn_path:
+            if self.decoupled_mgr is not None:
+                try:
+                    self.decoupled_mgr.detach()
+                except Exception as e:
+                    print(f"Error detaching decoupled manager during cleanup: {e}")
+            return
         if not self.engine:
             return
             
