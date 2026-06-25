@@ -160,8 +160,6 @@ def main():
             generator=generator
         )
 
-        print(X)
-
         model.zero_grad(set_to_none=True)
         with ctx:
             with torch.enable_grad():

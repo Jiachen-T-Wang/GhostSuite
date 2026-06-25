@@ -37,13 +37,6 @@ def _flatten_tokens(x: torch.Tensor) -> torch.Tensor:
     return x.reshape(B, T, D)
 
 
-def _extract_batch_size(x: torch.Tensor) -> int:
-    """Extract batch size from tensor, handling different input formats."""
-    if x.dim() == 0:
-        return 1
-    return x.shape[0]
-
-
 class GradProjHooks:
     """
     Container for forward and backward hooks used in gradient projection.

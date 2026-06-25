@@ -27,7 +27,7 @@ def is_transformers_conv1d(module: nn.Module) -> bool:
     return module.__class__.__name__ == 'Conv1D'
 
 
-def is_supported_layer(module: nn.Module, include_embeddings: bool = True,
+def is_supported_layer(module: nn.Module, include_embeddings: bool = False,
                       include_conv2d: bool = False) -> bool:
     """
     Check if a layer is supported for gradient projection.
@@ -102,7 +102,7 @@ def get_layer_dimensions(module: nn.Module) -> Tuple[int, int]:
 
 
 def find_matching_layers(module: nn.Module, layer_patterns: Union[str, List[str]],
-                        include_embeddings: bool = True,
+                        include_embeddings: bool = False,
                         include_conv2d: bool = False) -> Dict[str, nn.Module]:
     """
     Find all layers in a module that match the given patterns and are supported.

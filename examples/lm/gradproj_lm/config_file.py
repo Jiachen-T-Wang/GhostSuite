@@ -129,37 +129,6 @@ class ProjectionConfig:
         
         # Create output directory
         os.makedirs(self.proj_dir, exist_ok=True)
-        
-    def get_model_config(self):
-        """Get GPT2 model configuration."""
-        config_GPT = {
-            'GPT2-Small': {
-                'n_layer': 12,
-                'n_head': 12,
-                'n_embd': 768,
-                'block_size': 1024,
-                'vocab_size': 50304,
-            },
-            'GPT2-Medium': {
-                'n_layer': 24,
-                'n_head': 16,
-                'n_embd': 1024,
-                'block_size': 1024,
-                'vocab_size': 50304,
-            },
-            'GPT2-Large': {
-                'n_layer': 36,
-                'n_head': 20,
-                'n_embd': 1280,
-                'block_size': 1024,
-                'vocab_size': 50304,
-            }
-        }
-        
-        if self.architecture not in config_GPT:
-            raise ValueError(f"Unknown GPT architecture: {self.architecture}")
-            
-        return config_GPT[self.architecture]
-    
+
     def __repr__(self):
         return f"ProjectionConfig(architecture={self.architecture}, batch_size={self.batch_size})"
