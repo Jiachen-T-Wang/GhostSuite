@@ -25,6 +25,7 @@ dependencies = [
     "matplotlib",
     # Local, editable (see [tool.uv.sources]); brings its own deps.
     "torchtitan",
+    "peft>=0.19.1",
 ]
 
 # ghostEngines (this repo) is packaged below and installed editable by uv sync.
