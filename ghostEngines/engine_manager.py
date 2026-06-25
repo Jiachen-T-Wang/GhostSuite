@@ -6,6 +6,7 @@ based on configuration, removing the need for method-specific code in training l
 """
 
 import os
+import warnings
 from contextlib import nullcontext
 from typing import Optional, Union, Dict, Any
 
@@ -164,10 +165,53 @@ class GhostEngineManager:
         )
         self.is_fn_path = True
         self.engine = None
+
+        # Persistence: mirror the eager engine's outputs (valset.pt + dot_prod_log_iter_*.pt) so
+        # --decoupled_fn produces the same GradDotProd scores instead of silently discarding them.
+        self._fn_save_dir = os.path.join(self.config.result_dir, "grad_dotprods")
+        self.dot_product_log = []
+        self._fn_train_batch = None  # (X_train, Y_train, iter_num, batch_idx) for the current step
+        if self.ddp_info.get("master_process", True):
+            os.makedirs(self._fn_save_dir, exist_ok=True)
+            valset_path = os.path.join(self._fn_save_dir, "valset.pt")
+            torch.save(
+                {"X_val": self._to_cpu(self.X_val), "Y_val": self._to_cpu(self.Y_val)},
+                valset_path,
+            )
+            print(f"[INFO] Saved validation set to {valset_path}")
+
         print(
             "[INFO] Ghost decoupled in-graph engine initialized "
             f"(compile={'on' if regions is not None else 'off'})."
         )
+
+    @staticmethod
+    def _to_cpu(t):
+        return t.detach().to("cpu") if isinstance(t, torch.Tensor) else t
+
+    def _fn_append_log(self, iter_num, batch_idx, X_train, Y_train):
+        """Append this step's aggregated per-train-sample dot-product to the log (fn-path)."""
+        if self._last_dot is None:
+            warnings.warn("decoupled fn-path: no dot-product computed this step; nothing logged.")
+            return
+        entry = {
+            "dot_product": self._to_cpu(self._last_dot),
+            "X_train": self._to_cpu(X_train),
+            "Y_train": self._to_cpu(Y_train),
+            "iter_num": iter_num,
+            "batch_idx": batch_idx,
+        }
+        self.dot_product_log.append(entry)
+
+    def _fn_save_log(self, iter_num: int):
+        """Write the accumulated fn-path dot-product log to disk and clear it."""
+        if not self.dot_product_log:
+            return
+        os.makedirs(self._fn_save_dir, exist_ok=True)
+        file_path = os.path.join(self._fn_save_dir, f"dot_prod_log_iter_{iter_num}.pt")
+        torch.save(self.dot_product_log, file_path)
+        print(f"[INFO] Saved decoupled dot-product log at iteration {iter_num} ...")
+        self.dot_product_log.clear()
 
     def _initialize_gradproj_engine(self):
         """Initialize GradProjLoraEngine with projection setup."""
@@ -217,6 +261,10 @@ class GhostEngineManager:
     
     def attach_train_batch(self, X_train, Y_train, iter_num, batch_idx=None):
         """Attach training batch information to the engine (if applicable)."""
+        if self.is_fn_path:
+            # Keep the current step's batch + iter so prepare_gradients can log this step's dot.
+            self._fn_train_batch = (X_train, Y_train, iter_num, batch_idx)
+            return
         if self.engine and hasattr(self.engine, 'attach_train_batch'):
             self.engine.attach_train_batch(X_train, Y_train, iter_num, batch_idx)
 
@@ -229,9 +277,12 @@ class GhostEngineManager:
         if self.is_fn_path and self.decoupled_mgr is not None:
             # fn-path: dot-products are already in per-layer buffers (computed in the in-graph
             # backward). Aggregate them (also publishes grad_val), then recover train grads via
-            # subtract-val — all before the optimizer step.
+            # subtract-val — all before the optimizer step. Log the dot for persistence.
             self._last_dot = self.decoupled_mgr.run_step_dotprod()
             self.decoupled_mgr.recover_train_grads()
+            if self._fn_train_batch is not None:
+                X_train, Y_train, iter_num, batch_idx = self._fn_train_batch
+                self._fn_append_log(iter_num, batch_idx, X_train, Y_train)
             return
         if self.engine and hasattr(self.engine, 'prepare_gradients'):
             self.engine.prepare_gradients()
@@ -265,6 +316,9 @@ class GhostEngineManager:
     
     def save_metrics(self, iter_num: int):
         """Save metrics to disk (if applicable)."""
+        if self.is_fn_path:
+            self._fn_save_log(iter_num)
+            return
         if self.config.method == 'GradDotProd' and self.engine:
             self.engine.save_dot_product_log(iter_num=iter_num)
         elif self.config.method == 'GradProjLora' and self.engine:
@@ -321,6 +375,12 @@ class GhostEngineManager:
     def cleanup(self):
         """Cleanup and save any remaining data during training termination."""
         if self.is_fn_path:
+            # Persist any remaining dot-products (matching the eager cleanup save at iter -1).
+            if self.dot_product_log:
+                try:
+                    self._fn_save_log(-1)
+                except Exception as e:
+                    print(f"Error saving remaining decoupled dot-products during cleanup: {e}")
             if self.decoupled_mgr is not None:
                 try:
                     self.decoupled_mgr.detach()
