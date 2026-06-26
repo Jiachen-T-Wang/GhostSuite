@@ -95,6 +95,28 @@ def parse_arguments():
                         help="Comma-separated param-name substrings to EXCLUDE from the "
                              "score (e.g. 'wte,lm_head'); training is unaffected")
 
+    # Engine fast path. The decoupled in-graph + torch.compile path is the DEFAULT (same as
+    # examples/lm/graddotprod_lm): each GPT-2 block runs compiled in BOTH the scoring and update
+    # passes and the dot-product is a small in-graph transient. --eager selects the per-layer-hook
+    # engine (needed for --select_metric cosine, which the fast path does not support yet).
+    parser.add_argument("--decoupled_fn", dest="decoupled_fn", action="store_true",
+                        help="Use the decoupled in-graph fast path (default).")
+    parser.add_argument("--eager", dest="decoupled_fn", action="store_false",
+                        help="Use the eager per-layer-hook engine instead of the decoupled "
+                             "in-graph + torch.compile fast path.")
+    parser.add_argument("--decoupled_compile", dest="decoupled_compile", action="store_true",
+                        help="Regional-compile the transformer blocks (default on with the "
+                             "decoupled path; the speedup lever).")
+    parser.add_argument("--no_decoupled_compile", dest="decoupled_compile", action="store_false",
+                        help="Keep the decoupled path but skip torch.compile (decoupled-eager).")
+    parser.set_defaults(decoupled_fn=True, decoupled_compile=True)
+    parser.add_argument("--decoupled_compile_toplevel", action="store_true",
+                        help="Also compile the top-level in-graph layers (wpe + final norm); the "
+                             "tied wte/lm_head stay on the eager capture path.")
+    parser.add_argument("--decoupled_mem_budget", type=float, default=None,
+                        help="With --decoupled_compile, Inductor activation-memory budget in (0,1] "
+                             "(compile-native activation checkpointing); lower = recompute more.")
+
     # WandB.
     parser.add_argument("--wandb", action="store_true")
     parser.add_argument("--wandb_project", type=str, default="GhostSuite")
@@ -139,10 +161,24 @@ class TrainingConfig:
         # Cosine ranking needs per-sample gradient norms from the engine.
         self.log_grad_norms = args.log_grad_norms or (self.select_metric == "cosine")
 
+        # Engine fast path (decoupled in-graph + torch.compile), default on.
+        self.decoupled_fn = args.decoupled_fn
+        self.decoupled_compile = args.decoupled_compile
+        self.decoupled_compile_toplevel = args.decoupled_compile_toplevel
+        self.decoupled_mem_budget = args.decoupled_mem_budget
+
         if self.method == "GREATS" and self.candidate_batch_size < self.batch_size:
             raise ValueError(
                 f"--candidate_batch_size ({self.candidate_batch_size}) must be >= "
                 f"--batch_size ({self.batch_size}) for GREATS selection."
+            )
+
+        # The decoupled fast path returns only the per-sample dot (no grad norms), so cosine
+        # ranking is eager-only for now (future work: add grad-norm outputs to the in-graph path).
+        if self.decoupled_fn and (self.select_metric == "cosine" or args.log_grad_norms):
+            raise ValueError(
+                "--select_metric cosine / --log_grad_norms require per-sample grad norms, which "
+                "the decoupled fast path does not produce. Re-run with --eager for cosine ranking."
             )
 
         # Optimizer settings (AdamW).

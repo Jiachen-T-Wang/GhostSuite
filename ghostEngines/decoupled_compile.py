@@ -44,6 +44,8 @@ def attach_and_compile_decoupled(
     extra_regions=None,
     compile_kwargs=None,
     activation_memory_budget=None,
+    score_exclude_params=None,
+    warmup_shapes=None,
 ):
     """Attach the decoupled manager, warm up its buffers outside the graph, then compile.
 
@@ -65,13 +67,21 @@ def attach_and_compile_decoupled(
         The attached ``GhostDecoupledManager``. Call ``run_step_dotprod()`` then
         ``recover_train_grads()`` each step, and ``detach()`` at teardown.
     """
-    mgr = GhostDecoupledManager(model, val_batch_size)
+    mgr = GhostDecoupledManager(model, val_batch_size,
+                                score_exclude_params=score_exclude_params)
     mgr.attach()
 
     # Eager warmup: allocate the per-layer dot/grad_val buffers before any tracing. compile() must
     # not allocate inside the traced region; the buffers become closure cells read (not allocated)
-    # during tracing.
-    warmup_fn()
+    # during tracing. Multi-shape callers (e.g. GREATS, with distinct scoring/update batch sizes)
+    # pass ``warmup_shapes`` so EACH shape's buffers are allocated up front via ``prepare_shape``;
+    # ``warmup_fn`` then takes the combined batch size and runs one fwd/bwd at that shape.
+    if warmup_shapes:
+        for total_bs in warmup_shapes:
+            mgr.prepare_shape(total_bs)
+            warmup_fn(total_bs)
+    else:
+        warmup_fn()
     model.zero_grad(set_to_none=True)
 
     if compile_regions is not None:

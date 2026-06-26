@@ -264,28 +264,62 @@ class _IGLayerNormFn(torch.autograd.Function):
 
 
 class GhostDecoupledManager:
-    def __init__(self, model: nn.Module, val_batch_size: int) -> None:
+    def __init__(self, model: nn.Module, val_batch_size: int,
+                 score_exclude_params=None) -> None:
         self.model = model
         self.val_batch_size = val_batch_size
+        # Layer-name substrings whose dot-product is dropped from the logged SCORE only
+        # (grad_val is still published, so training is unaffected) — mirrors the eager engine's
+        # score_exclude_params. Used e.g. to drop the dominant tied wte/lm_head term from GREATS
+        # selection without changing the update.
+        self.score_exclude_params = list(score_exclude_params or [])
         self._orig_forward: Dict[int, object] = {}
         self._layers: List[Tuple[str, nn.Module]] = []
         # Tied weights (shared by >=2 supported modules, e.g. wte/lm_head) are handled separately:
         # the per-use in-graph dot would miss the cross-terms of the shared parameter's gradient, so
         # these layers capture (A, B) and are combined post-backward via stash/finalize_tied_param.
         self._tied_layers: List[Tuple[str, nn.Module]] = []
-        self._cells: Dict[int, list] = {}  # id(layer) -> mode-specific buffer cell
+        self._cells: Dict[int, list] = {}  # id(layer) -> mode-specific ACTIVE buffer cell
+        # Per-layer cache of in-graph buffers keyed by total batch size, so a caller running
+        # several fixed batch shapes through one attached manager (e.g. GREATS' scoring pass
+        # at N+m and update pass at k+m) gets a STABLE buffer object per shape. The compiled
+        # block graph for each shape then always binds the same buffers (no realloc inside the
+        # trace, no stale-buffer recompile). Single-shape callers (e.g. graddotprod_lm) never
+        # populate this beyond one entry and keep the original lazy behavior.
+        self._cell_bufs: Dict[int, dict] = {}  # id(layer) -> {total_bs: [dot, gvs]}
         # Track attach-time mutations so detach() restores the model cleanly (no leaked attrs):
         self._flagged_weights: List[torch.Tensor] = []   # weights WE set ``_ghost_tied`` on
         self._name_restore: Dict[int, object] = {}       # id(layer) -> prior ``name`` (or _MISSING)
 
     # -- forward wrappers (ingraph mode) --------------------------------------------------
 
-    def _alloc_ingraph(self, layer, x, out):
+    def _ensure_bufs_ingraph(self, layer, total_bs, device):
+        """Return the in-graph buffer set for this ``total_bs``, allocating + caching on first
+        use. A stable object per (layer, total_bs) so each compiled shape binds fixed buffers."""
+        cache = self._cell_bufs[id(layer)]
+        bufs = cache.get(total_bs)
+        if bufs is None:
+            bufs = self._alloc_ingraph(layer, total_bs, device)
+            cache[total_bs] = bufs
+        return bufs
+
+    def prepare_shape(self, total_bs: int) -> None:
+        """Point every in-graph layer's active cell at the buffers for this combined batch size.
+
+        Multi-shape callers (e.g. GREATS, whose scoring and update passes use different batch
+        sizes) must call this BEFORE each forward so allocation never happens inside a compiled
+        region. Tied-weight capture layers are eager (not compiled) and resize lazily, so they
+        are not handled here. No-op-safe for single-shape callers that never call it."""
+        for _, layer in self._layers:
+            self._cells[id(layer)][0] = self._ensure_bufs_ingraph(
+                layer, total_bs, layer.weight.device
+            )
+
+    def _alloc_ingraph(self, layer, total_bs, dev):
         """Allocate the per-layer buffers: one shared ``dot`` [train_bs] plus a ``grad_val`` buffer
         per trainable parameter. Returns ``[dot, [(param, grad_val_buf), ...]]``. All layer types
         except ``nn.LayerNorm`` (weight + optional bias) have a single weight parameter."""
-        train_bs = x.shape[0] - self.val_batch_size
-        dev = x.device
+        train_bs = total_bs - self.val_batch_size
         dot = torch.zeros((train_bs,), dtype=ACCUM_DTYPE, device=dev)
         gvs = []
         if isinstance(layer, nn.Linear):
@@ -313,7 +347,7 @@ class GhostDecoupledManager:
         def forward(x):
             out = F.linear(x, weight)
             if cell[0] is None:
-                cell[0] = self._alloc_ingraph(layer, x, out)
+                cell[0] = self._ensure_bufs_ingraph(layer, x.shape[0], x.device)
             dot_buf = cell[0][0]
             gv_buf = cell[0][1][0][1]
             return _IGLinearFn.apply(out, x, dot_buf, gv_buf, x.shape[0] - vbs, vbs)
@@ -331,7 +365,7 @@ class GhostDecoupledManager:
         def forward(idx):
             out = F.embedding(idx, weight, padding_idx)
             if cell[0] is None:
-                cell[0] = self._alloc_ingraph(layer, idx, out)
+                cell[0] = self._ensure_bufs_ingraph(layer, idx.shape[0], weight.device)
             dot_buf = cell[0][0]
             gv_buf = cell[0][1][0][1]
             return _IGEmbeddingFn.apply(out, idx, wshape, dot_buf, gv_buf, idx.shape[0] - vbs, vbs)
@@ -349,7 +383,7 @@ class GhostDecoupledManager:
         def forward(x):
             out = F.rms_norm(x, normalized_shape, weight, eps)
             if cell[0] is None:
-                cell[0] = self._alloc_ingraph(layer, x, out)
+                cell[0] = self._ensure_bufs_ingraph(layer, x.shape[0], x.device)
             dot_buf = cell[0][0]
             gv_buf = cell[0][1][0][1]
             return _IGRMSNormFn.apply(out, x, eps, dot_buf, gv_buf, x.shape[0] - vbs, vbs)
@@ -369,7 +403,7 @@ class GhostDecoupledManager:
         def forward(x):
             out = F.layer_norm(x, normalized_shape, weight, bias, eps)
             if cell[0] is None:
-                cell[0] = self._alloc_ingraph(layer, x, out)
+                cell[0] = self._ensure_bufs_ingraph(layer, x.shape[0], x.device)
             dot_buf = cell[0][0]
             gw_buf = cell[0][1][0][1]
             gb_buf = cell[0][1][1][1] if has_bias else None
@@ -388,7 +422,10 @@ class GhostDecoupledManager:
 
         def forward(x):
             out = op(x)
-            if cell[0] is None:
+            # Tied-capture layers are eager (top-level, never in a compiled region), so resizing
+            # the (A, B) capture buffers when the batch shape changes is safe here — this is what
+            # lets one attached manager serve GREATS' two per-step shapes (N+m scoring, k+m update).
+            if cell[0] is None or cell[0].shape != x.shape or cell[1].shape != out.shape:
                 cell[0] = torch.empty_like(x)
                 cell[1] = torch.empty_like(out)
             return _CaptureFn.apply(out, x, cell[0], cell[1])
@@ -446,6 +483,7 @@ class GhostDecoupledManager:
                             layer.forward = self._wrap_ingraph_layernorm(layer)
                         else:
                             layer.forward = self._wrap_ingraph_rmsnorm(layer)
+                        self._cell_bufs[id(layer)] = {}  # total_bs -> buffers (per-shape cache)
                         self._layers.append((name, layer))
             else:
                 is_leaf = not list(layer.children())
@@ -494,6 +532,7 @@ class GhostDecoupledManager:
         self._tied_layers.clear()
         self._orig_forward.clear()
         self._cells.clear()
+        self._cell_bufs.clear()
         self._flagged_weights.clear()
         self._name_restore.clear()
 
@@ -505,13 +544,15 @@ class GhostDecoupledManager:
             _maybe_store_grad_val, stash_tied_contribution, finalize_tied_param,
         )
         total = None
-        for _, layer in self._layers:
+        for name, layer in self._layers:
             cell = self._cells.get(id(layer))
             if cell is None or cell[0] is None:
                 raise RuntimeError(f"GHOST_DECOUPLED_FN: '{getattr(layer,'name','?')}' no buffer.")
             dot, gvs = cell[0]
             for param, gv in gvs:
-                _maybe_store_grad_val(param, gv)
+                _maybe_store_grad_val(param, gv)  # always publish grad_val (training unaffected)
+            if self._excluded(name):
+                continue  # drop from the score only
             total = dot.detach().clone() if total is None else total + dot.detach()
 
         # Tied weights: combine the captured per-use (A, B) into the exact dot (with cross-terms).
@@ -521,14 +562,21 @@ class GhostDecoupledManager:
                 raise RuntimeError(f"GHOST_DECOUPLED_FN: tied '{getattr(layer,'name','?')}' no buffer.")
             stash_tied_contribution(layer, cell[0], cell[1], self.val_batch_size)
         seen = set()
-        for _, layer in self._tied_layers:
+        for name, layer in self._tied_layers:
             w = layer.weight
             if id(w) not in seen and hasattr(w, "_ghost_tied_stash"):
-                finalize_tied_param(w)
-                dp = w.grad_dot_prod
-                total = dp.detach().clone() if total is None else total + dp.detach()
+                finalize_tied_param(w)  # publishes _ghost_grad_val (for recover) + grad_dot_prod
+                if self._excluded(name):
+                    if hasattr(w, "grad_dot_prod"):
+                        del w.grad_dot_prod  # excluded from the score; drop the leftover attr
+                else:
+                    dp = w.grad_dot_prod
+                    total = dp.detach().clone() if total is None else total + dp.detach()
                 seen.add(id(w))
         return total
+
+    def _excluded(self, name: str) -> bool:
+        return any(pat in name for pat in self.score_exclude_params)
 
     def recover_train_grads(self) -> None:
         for name, layer in self._layers:

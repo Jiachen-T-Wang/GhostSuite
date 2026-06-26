@@ -82,6 +82,16 @@ class GreatsTrainer:
                 ddp_info=ddp_info,
                 val_data=(X_val, Y_val),
             )
+            # The decoupled fast path reads grad_val from the UNSCALED backward, so it requires
+            # the GradScaler disabled (true for bf16 training; fp16 is unsupported on this path).
+            self.is_fn = self.ghost.is_fn_path
+            if self.is_fn and self.scaler.is_enabled():
+                raise RuntimeError(
+                    "The decoupled fast path requires the GradScaler disabled. Use bf16 "
+                    "(--train_dtype bfloat16) or select --eager."
+                )
+        else:
+            self.is_fn = False
 
         self._init_wandb()
 
@@ -182,19 +192,41 @@ class GreatsTrainer:
         recovered (train-only) gradient; otherwise grads are discarded.
         """
         self.ghost.attach_train_batch(X_train, Y_train, iter_num)
+        if self.is_fn:
+            # Point the in-graph buffers at this pass's combined batch size (scoring N+m or
+            # update k+m) before the forward, so nothing is allocated inside the compiled graph.
+            self.ghost.prepare_decoupled_shape(X_train.shape[0] + self.config.val_batch_size)
 
-        with self.ghost.saved_tensors_context():
+        with self.ghost.saved_tensors_context():  # nullcontext on the fn-path
             with self.ctx:
                 X_fwd, Y_fwd = self.ghost.prepare_forward_input(X_train, Y_train)
                 outputs = self.model(X_fwd, Y_fwd)
                 loss = outputs.loss
             self.scaler.scale(loss).backward()
 
+        if self.is_fn:
+            return self._finalize_fn_pass(loss, do_step)
+        return self._finalize_eager_pass(loss, do_step)
+
+    def _finalize_fn_pass(self, loss, do_step):
+        """Decoupled fast path: the per-candidate dot is in the in-graph buffers. Aggregate it
+        (also publishes grad_val); recover train grads + step only on the update pass."""
+        dot = self.ghost.decoupled_run_step()
+        entry = {"dot_product": dot.detach().to("cpu")} if dot is not None else None
         if do_step:
-            # Recover the train-only gradient into .grad (subtract-val) for the
-            # optimizer. Skipped on the scoring pass: the per-candidate score log is
-            # produced by the backward hooks and read via aggregate_and_log() below,
-            # so the (per-parameter) subtract-val recovery would only be discarded.
+            self.ghost.decoupled_recover()  # subtract-val train grad into .grad (scaler disabled)
+            if self.config.grad_clip != 0.0:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.grad_clip)
+            self.optimizer.step()
+        self.optimizer.zero_grad(set_to_none=True)
+        return loss, entry
+
+    def _finalize_eager_pass(self, loss, do_step):
+        """Eager per-layer-hook engine: recover + step on the update pass, then read the dot log."""
+        if do_step:
+            # Recover the train-only gradient into .grad (subtract-val) for the optimizer. Skipped
+            # on the scoring pass: the per-candidate score log is produced by the backward hooks and
+            # read via aggregate_and_log() below, so the recovery would only be discarded.
             self.ghost.prepare_gradients()
             self.scaler.unscale_(self.optimizer)
             if self.config.grad_clip != 0.0:

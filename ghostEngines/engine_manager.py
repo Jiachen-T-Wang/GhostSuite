@@ -131,20 +131,30 @@ class GhostEngineManager:
         device = self.ddp_info["device"]
         train_bs = self.config.batch_size
         val_bs = self.config.val_batch_size
-        total = train_bs + val_bs
 
-        # Shape-faithful warmup batch: tile the stored validation tokens up to the combined batch
-        # size (valid indices without needing the vocab size; seq matches the val batch's seq).
+        # GREATS runs two passes per step at different combined batch sizes (scoring over
+        # candidate_batch_size + val, update over batch_size + val). Prime BOTH shapes so the
+        # per-shape buffers are allocated and torch.compile caches one graph per shape. Single-pass
+        # callers (no candidate_batch_size) keep the one update-size shape.
+        cand = getattr(self.config, "candidate_batch_size", None)
+        if cand is not None:
+            warmup_shapes = sorted({cand + val_bs, train_bs + val_bs})
+        else:
+            warmup_shapes = None
+        default_total = train_bs + val_bs
+
         xv = self.X_val
-        reps = (total + xv.shape[0] - 1) // xv.shape[0]
-        warm_idx = xv.repeat(reps, 1)[:total].to(device)
-
         model = self.model
 
-        def warmup_fn():
+        def warmup_fn(total_bs=None):
+            # Shape-faithful warmup batch: tile the stored validation tokens up to the combined
+            # batch size (valid indices without needing the vocab size; seq matches the val batch).
+            tb = default_total if total_bs is None else total_bs
+            reps = (tb + xv.shape[0] - 1) // xv.shape[0]
+            idx = xv.repeat(reps, 1)[:tb].to(device)
             was_training = model.training
             model.train()
-            out = model(warm_idx, warm_idx)
+            out = model(idx, idx)
             out.loss.backward()
             model.train(was_training)
 
@@ -179,6 +189,8 @@ class GhostEngineManager:
         self.decoupled_mgr = attach_and_compile_decoupled(
             model, val_batch_size=val_bs, warmup_fn=warmup_fn, compile_regions=regions,
             extra_regions=extra_regions, activation_memory_budget=mem_budget,
+            score_exclude_params=getattr(self.config, "score_exclude_params", None),
+            warmup_shapes=warmup_shapes,
         )
         self.is_fn_path = True
         self.engine = None
@@ -289,6 +301,29 @@ class GhostEngineManager:
         """Update validation batch (useful when refreshing every step)."""
         self.X_val, self.Y_val = X_val, Y_val
     
+    def prepare_decoupled_shape(self, total_bs):
+        """fn-path multi-shape: point the in-graph buffers at this combined batch size before a
+        forward (no-op off the fn-path). Required when one attached manager serves more than one
+        batch shape per step, e.g. the GREATS scoring (N+m) and update (k+m) passes."""
+        if self.is_fn_path and self.decoupled_mgr is not None:
+            self.decoupled_mgr.prepare_shape(total_bs)
+
+    def decoupled_run_step(self):
+        """fn-path: aggregate the per-train-sample dot from the in-graph buffers and publish
+        grad_val onto each param (needed before ``decoupled_recover``). Returns the dot tensor.
+        Use directly (instead of ``prepare_gradients``) when a caller wants the score WITHOUT
+        recovering train grads — e.g. a GREATS scoring pass that takes no optimizer step."""
+        if not (self.is_fn_path and self.decoupled_mgr is not None):
+            raise RuntimeError("decoupled_run_step is only valid on the decoupled fn-path.")
+        return self.decoupled_mgr.run_step_dotprod()
+
+    def decoupled_recover(self):
+        """fn-path: recover train-only grads into ``.grad`` via subtract-val (call after
+        ``decoupled_run_step`` has published grad_val)."""
+        if not (self.is_fn_path and self.decoupled_mgr is not None):
+            raise RuntimeError("decoupled_recover is only valid on the decoupled fn-path.")
+        self.decoupled_mgr.recover_train_grads()
+
     def prepare_gradients(self):
         """Prepare gradients after backward pass (if applicable)."""
         if self.is_fn_path and self.decoupled_mgr is not None:
