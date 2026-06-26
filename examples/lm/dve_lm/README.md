@@ -68,13 +68,28 @@ python main.py --data_source pile --architecture GPT2-Small --device cuda \
 ## Correctness
 
 ```bash
-python validate_dve.py
+python validate_dve.py        # recursion + projection math (CPU, seconds)
+python validate_dve_model.py  # direct-on-model checks (GPT2 + MLP)
 ```
+
+`validate_dve.py`:
 - **Test 1** — the recursion matches a literal port of the reference exactly (`lr_mode=none`).
 - **Test 2** — on a small linear model where exact full-dim DVE is feasible, the projected DVE
   values track the exact values, with correlation → 1 as the projection rank grows (the JL
   guarantee). Full-dim exact DVE is infeasible on a real GPT (the `vocab × d_model` embedding
   makes `M` enormous) — which is exactly why the method projects.
+
+`validate_dve_model.py` (stronger, directly on real models):
+- **Test A — ghost capture on GPT2.** The engine's per-sample *projected* gradient must equal a
+  brute-force projected gradient assembled from per-sample backward passes (`allclose`). Validates
+  the `P_i ⊗ P_o` ghost trick, token-sum, batch rescale, and per-layer dispatch on GPT2.
+  Measured: max per-sample relative L2 error **3.7e-7**.
+- **Test B — exact unrolled-SGD influence on an MLP.** The semantic ground truth (which the
+  reference repo lacks): the *true* first-order influence `dL_test/dw_{s,b}` is computed by
+  autodiff *through the SGD trajectory* (double-backprop, no Gauss-Newton, no projection). DVE
+  values must track it and beat a plain gradient-dot (TracIn-style) baseline. Measured:
+  Pearson(DVE, −influence) **0.994** vs grad-dot baseline **0.979** — the reverse recursion adds
+  real signal.
 
 ## Notes / caveats
 
