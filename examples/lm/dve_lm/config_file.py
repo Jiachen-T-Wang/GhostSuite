@@ -56,7 +56,7 @@ def parse_arguments():
     parser.add_argument('--learning_rate', type=float, default=3e-4)
     parser.add_argument('--min_lr', type=float, default=3e-5)
     parser.add_argument('--lr_schedule', type=str, default='constant',
-                        choices=['constant', 'cosine'])
+                        choices=['constant', 'linear', 'cosine'])
     parser.add_argument('--warmup_steps', type=int, default=0)
     parser.add_argument('--weight_decay', type=float, default=0.0)
     parser.add_argument('--momentum', type=float, default=0.0, help='SGD momentum')

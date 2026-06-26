@@ -21,17 +21,23 @@ from shared.dataloader import get_batch_from_dataset
 
 
 def compute_lr(step, config):
-    """Per-step learning rate: constant, or cosine with linear warmup."""
-    if config.lr_schedule == 'constant':
-        if step < config.warmup_steps:
-            return config.learning_rate * (step + 1) / max(1, config.warmup_steps)
-        return config.learning_rate
-
-    # cosine
+    """Per-step learning rate: constant, linear, or cosine -- each with linear warmup."""
+    # Linear warmup from 0 to learning_rate over the first warmup_steps.
     if step < config.warmup_steps:
         return config.learning_rate * (step + 1) / max(1, config.warmup_steps)
+
     progress = (step - config.warmup_steps) / max(1, config.max_steps - config.warmup_steps)
     progress = min(1.0, max(0.0, progress))
+
+    if config.lr_schedule == 'constant':
+        return config.learning_rate
+
+    if config.lr_schedule == 'linear':
+        # Linear decay to 0 at max_steps (matches HF get_linear_schedule_with_warmup,
+        # the reference DVE pretraining schedule).
+        return config.learning_rate * (1.0 - progress)
+
+    # cosine
     coeff = 0.5 * (1.0 + math.cos(math.pi * progress))
     return config.min_lr + coeff * (config.learning_rate - config.min_lr)
 
