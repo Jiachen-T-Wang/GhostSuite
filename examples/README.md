@@ -53,6 +53,10 @@ python examples/lm/graddotprod_lm/main.py --method GradDotProd \
     --model_dtype float32 --train_dtype float32
 ```
 
+For faster runs, this example also supports the compiled fast path (`--decoupled_fn
+--decoupled_compile`, ~+9% step time on GPT-2-Small), the batched lever (`GHOST_BATCHED_DOTPROD=1`),
+and activation checkpointing (`--decoupled_mem_budget`) — see the README's "Performance" section.
+
 See [`lm/graddotprod_lm/README.md`](lm/graddotprod_lm/README.md) for detailed instructions.
 
 ### `lm/gradproj_lm/` — offline per-sample gradient projection
