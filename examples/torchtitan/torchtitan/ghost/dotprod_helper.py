@@ -4,19 +4,16 @@ from typing import Dict, Tuple
 import torch
 
 from ghostEngines import GradDotProdEngine
-from ghostEngines.autograd_function_dotprod import GhostAutogradFnManager
 from ghostEngines.decoupled_capture_dotprod import GhostDecoupledManager
 from torchtitan.hf_datasets.text_datasets import build_text_validation_dataloader
 from torchtitan.config import JobConfig
 from torchtitan.distributed import ParallelDims
 
 
-# Phase 2: graph-clean custom-Function dot-product path (compile-compatible). When enabled,
-# the helper attaches GhostAutogradFnManager instead of the eager GradDotProdEngine.
-_AUTOGRAD_FN = os.getenv("GHOST_AUTOGRAD_FN", "0") == "1"
-# Decoupled-capture path (re-examination doc §3): transparent identity capture Function keeps
-# native layer backward, model regional-compiles, dot-products run in the 1b grouped post-
-# backward pass. Compatible with the same deferred-compile trainer wiring as _AUTOGRAD_FN.
+# Decoupled in-graph path (re-examination doc §3): a transparent identity Function keeps each
+# layer's native backward, the model regional-compiles, and the per-sample dot-product is computed
+# as a small in-backward transient. Uses the deferred-compile trainer wiring (attach -> warmup ->
+# compile); train grads are recovered via subtract-val. When off, the eager GradDotProdEngine runs.
 _DECOUPLED_FN = os.getenv("GHOST_DECOUPLED_FN", "0") == "1"
 
 
@@ -49,25 +46,15 @@ class GhostDotProdHelper:
         )
         os.makedirs(save_dir, exist_ok=True)
 
-        self.use_autograd_fn = _AUTOGRAD_FN
         self.use_decoupled_fn = _DECOUPLED_FN
-        # Both Function paths share the trainer wiring (no saved_tensors_context; dot-products
-        # collected after backward; subtract-val recovery before the optimizer step).
-        self.use_fn_path = _AUTOGRAD_FN or _DECOUPLED_FN
-        if _AUTOGRAD_FN and _DECOUPLED_FN:
-            raise RuntimeError("Set only one of GHOST_AUTOGRAD_FN / GHOST_DECOUPLED_FN.")
+        # The decoupled Function path uses the trainer's fn-path wiring (no saved_tensors_context;
+        # dot-products collected after backward; subtract-val recovery before the optimizer step).
+        self.use_fn_path = _DECOUPLED_FN
         if self.use_decoupled_fn:
             self.fn_manager = GhostDecoupledManager(model, val_batch_size=self.val_batch_size)
             self.fn_manager.attach()
             self.engine = None
             self.dot_products = []
-        elif self.use_autograd_fn:
-            # Phase 2 compile path: graph-clean custom-Function manager. Dot-products live in
-            # per-layer buffers; train grads are recovered via subtract-val from autograd .grad.
-            self.fn_manager = GhostAutogradFnManager(model, val_batch_size=self.val_batch_size)
-            self.fn_manager.attach()
-            self.engine = None
-            self.dot_products = []  # list of [train_bs] tensors per step (kept on device)
         else:
             self.fn_manager = None
             self.engine = GradDotProdEngine(
@@ -127,10 +114,10 @@ class GhostDotProdHelper:
             return
         self.engine.attach_train_batch(train_input, train_labels, iter_num, batch_idx=batch_idx)
 
-    # -- Phase 2 custom-Function path helpers --------------------------------------------
+    # -- Decoupled Function path helpers -------------------------------------------------
 
     def warmup_for_compile(self, train_local_batch_size: int, seq_len: int) -> None:
-        """Run one eager forward+backward to populate the custom-Function buffers BEFORE
+        """Run one eager forward+backward to populate the per-layer dot/grad_val buffers BEFORE
         torch.compile traces the model (compile must not allocate buffers inside the graph).
         Uses a combined train+val token batch matching the real training shape."""
         combined_bs = train_local_batch_size + self.val_batch_size
@@ -140,13 +127,9 @@ class GhostDotProdHelper:
         self.fn_manager.warmup(example)
 
     def collect_step_dot(self) -> None:
-        """After backward: compute/read the aggregated per-train-sample dot-product."""
-        if self.use_decoupled_fn:
-            # Runs the grouped 1b pass over captured (A, B); also populates _ghost_grad_val
-            # for the subtract-val recovery in prepare_gradients_fn.
-            dot = self.fn_manager.run_step_dotprod()
-        else:
-            dot = self.fn_manager.collect_dot_products()
+        """After backward: aggregate the per-train-sample dot-product from the in-graph buffers
+        (also publishes _ghost_grad_val for the subtract-val recovery in prepare_gradients_fn)."""
+        dot = self.fn_manager.run_step_dotprod()
         if dot is not None:
             self.dot_products.append(dot.detach())
 

@@ -1003,22 +1003,14 @@ class Ghost:
     """subtract-val fast path: recover train grad post-backward instead of masking activations."""
 
     decoupled_fn: bool = True
-    """Default fast path: graph-clean decoupled-Function manager (native backward + grouped
-    post-backward dot-product) that lets torch.compile regional-compile the model. Requires
-    subtract_val; supersedes the eager lever 1b (batched_dotprod) when on. Needs compile.enable
-    for the speedup."""
+    """Default fast path: graph-clean decoupled-Function manager (native backward + in-backward
+    dot-product transient) that lets torch.compile regional-compile the model. Requires
+    subtract_val; needs compile.enable for the speedup."""
 
     compile_toplevel: bool = True
     """Also regional-compile the top-level output Linear so its in-graph dot folds into a compiled
     region (+~2% tps, memory-free). Output-only by default; emb/norm via GHOST_COMPILE_EMB/_NORM.
     Only effective on the decoupled_fn path with compile.enable."""
-
-    batched_dotprod: bool = False
-    """Eager lever 1b: store-only hooks + one grouped post-backward dot-product pass. The no-compile
-    fallback; superseded by decoupled_fn in the default. Requires subtract_val."""
-
-    batched_dotprod_compile: bool = True
-    """Lever 1b: torch.compile the grouped dot-product core (once per group). Needs batched_dotprod."""
 
     regional_compile: bool = False
     """Lever 1c: regional torch.compile of RoPE/SwiGLU. GPU-dependent (+A100 / -H200); default off."""
