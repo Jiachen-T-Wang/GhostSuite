@@ -124,6 +124,10 @@ class GPTConfig:
     n_embd: int = 768
     dropout: float = 0.0
     bias: bool = False
+    # Weight-tying between the token embedding and the LM head. Default True (standard GPT-2).
+    # All ghost dot-product paths (eager, batched, decoupled) handle the tied shared weight,
+    # including the cross-terms, via the tied-weight finalizer. Set False to untie if desired.
+    tie_weights: bool = True
 
 class GPT(nn.Module):
 
@@ -145,7 +149,8 @@ class GPT(nn.Module):
         # "UserWarning: functional_call was passed multiple values for tied weights.
         # This behavior is deprecated and will be an error in future versions"
         # not 100% sure what this is, so far seems to be harmless. TODO investigate
-        self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
+        if getattr(config, "tie_weights", True):
+            self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
 
         # init all weights
         self.apply(self._init_weights)

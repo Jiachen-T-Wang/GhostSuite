@@ -32,8 +32,13 @@ import time
 
 import torch
 from torch import nn
+import torch.nn.functional as F
 
-from .supported_layers_grad_samplers_dotprod import _maybe_store_grad_val
+from .supported_layers_grad_samplers_dotprod import (
+    _maybe_store_grad_val,
+    stash_tied_contribution,
+    finalize_tied_param,
+)
 
 
 _BATCHED_DOTPROD = os.getenv("GHOST_BATCHED_DOTPROD", "0") == "1"
@@ -91,7 +96,7 @@ def _bench_report():
 
 # Types supported by the batched path. Anything else under the flag fails loudly (plan §4
 # scope decision #4): no silent fallback that could quietly diverge.
-_BATCHED_SUPPORTED = (nn.Linear, nn.Embedding, nn.RMSNorm)
+_BATCHED_SUPPORTED = (nn.Linear, nn.Embedding, nn.RMSNorm, nn.LayerNorm)
 
 ACCUM_DTYPE = torch.float32
 
@@ -168,6 +173,47 @@ def _rmsnorm_group(
     return dot, total_val
 
 
+def _layernorm_group(
+    A: torch.Tensor,  # [G, total_bs, seq, d]
+    B: torch.Tensor,  # [G, total_bs, seq, d]
+    train_bs: int,
+    val_bs: int,
+    eps: float,
+    normalized_shape: Tuple[int, ...],
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    """LayerNorm (weight + bias) path; mirrors ``_compute_layernorm_dot_product``.
+
+    Returns (dot_w [G, train_bs], dot_b [G, train_bs], grad_w [G, d], grad_b [G, d]). The caller
+    publishes the bias terms only for layers that actually have a bias (a group may mix presence;
+    the compute is identical and cheap, so it is always done here).
+    """
+    A = A.to(ACCUM_DTYPE)
+    B = B.to(ACCUM_DTYPE)
+
+    A_train = A[:, :train_bs]
+    A_val = A[:, train_bs:]
+    B_train = B[:, :train_bs]
+    B_val = B[:, train_bs:]
+
+    # Normalized input WITHOUT affine, matching the eager reference's F.layer_norm recompute.
+    norm_A_train = F.layer_norm(A_train, normalized_shape, eps=eps)
+    norm_A_val = F.layer_norm(A_val, normalized_shape, eps=eps)
+
+    # --- weight: grad = B * normalized_A ---
+    gw_train = B_train * norm_A_train          # [G, train, seq, d]
+    gw_val = B_val * norm_A_val
+    per_sample_w = gw_train.sum(dim=2)         # [G, train, d]
+    total_w = gw_val.sum(dim=(1, 2))           # [G, d]
+    dot_w = torch.einsum("gbf,gf->gb", per_sample_w, total_w)
+
+    # --- bias: grad = B ---
+    per_sample_b = B_train.sum(dim=2)          # [G, train, d]
+    total_b = B_val.sum(dim=(1, 2))            # [G, d]
+    dot_b = torch.einsum("gbf,gf->gb", per_sample_b, total_b)
+
+    return dot_w, dot_b, total_w, total_b
+
+
 def _embedding_single(
     layer: nn.Embedding,
     A: torch.Tensor,
@@ -233,9 +279,10 @@ def run_batched_dotprod(pending: List[Tuple[nn.Module, torch.Tensor, torch.Tenso
     if not pending:
         return
 
-    # Group linears / rmsnorms by structural signature; handle embeddings individually.
+    # Group linears / rmsnorms / layernorms by structural signature; handle embeddings individually.
     linear_groups: Dict[tuple, List] = {}
     rmsnorm_groups: Dict[tuple, List] = {}
+    layernorm_groups: Dict[tuple, List] = {}
 
     for layer, A, B in pending:
         if not isinstance(layer, _BATCHED_SUPPORTED):
@@ -244,6 +291,14 @@ def run_batched_dotprod(pending: List[Tuple[nn.Module, torch.Tensor, torch.Tenso
                 f"{type(layer).__name__} is not supported by the batched path. "
                 f"Supported: {[t.__name__ for t in _BATCHED_SUPPORTED]}."
             )
+
+        # Tied weight (shared by >=2 supported modules, e.g. wte/lm_head): the per-use dot products
+        # miss the cross-terms of the shared parameter's true gradient. Accumulate this use's val
+        # aggregate + stash its train factors; finalize_tied_param below computes the exact dot
+        # (with cross-terms). Same machinery the eager per-layer path uses.
+        if getattr(layer.weight, "_ghost_tied", False):
+            stash_tied_contribution(layer, A, B, val_batch_size)
+            continue
 
         if isinstance(layer, nn.Embedding):
             total_bs = A.shape[0]
@@ -273,6 +328,13 @@ def run_batched_dotprod(pending: List[Tuple[nn.Module, torch.Tensor, torch.Tenso
             eps = getattr(layer, "eps", 1e-5)
             key = (tuple(A.shape), tuple(B.shape), round(float(eps), 12))
             rmsnorm_groups.setdefault(key, []).append((layer, A, B))
+            continue
+
+        if isinstance(layer, nn.LayerNorm):
+            eps = getattr(layer, "eps", 1e-5)
+            ns = tuple(layer.normalized_shape)
+            key = (tuple(A.shape), tuple(B.shape), round(float(eps), 12), ns)
+            layernorm_groups.setdefault(key, []).append((layer, A, B))
             continue
 
     val_bs = val_batch_size
@@ -307,5 +369,36 @@ def run_batched_dotprod(pending: List[Tuple[nn.Module, torch.Tensor, torch.Tenso
         for g, layer in enumerate(layers):
             layer.weight.grad_dot_prod = dot[g]
             _maybe_store_grad_val(layer.weight, grad_val[g])
+
+    # --- LayerNorm groups (weight + optional bias) ---
+    for key, items in layernorm_groups.items():
+        eps = key[2]
+        ns = key[3]
+        layers = [it[0] for it in items]
+        A_stack = torch.stack([it[1] for it in items], dim=0)
+        B_stack = torch.stack([it[2] for it in items], dim=0)
+        total_bs = A_stack.shape[1]
+        train_bs = total_bs - val_bs
+        fn = _get_fn("layernorm", _layernorm_group)
+        tag = f"LayerNorm x{len(layers)} [shape={tuple(A_stack.shape[1:])}] (e.g. {getattr(layers[0], 'name', '?')})"
+        dot_w, dot_b, grad_w, grad_b = _bench_group(
+            tag, A_stack.device, fn, A_stack, B_stack, train_bs, val_bs, eps, ns
+        )
+        for g, layer in enumerate(layers):
+            layer.weight.grad_dot_prod = dot_w[g]
+            _maybe_store_grad_val(layer.weight, grad_w[g])
+            if layer.bias is not None:
+                layer.bias.grad_dot_prod = dot_b[g]
+                _maybe_store_grad_val(layer.bias, grad_b[g])
+
+    # --- Tied weights: materialize the combined per-sample gradient (with cross-terms) once per
+    # unique shared weight. stash_tied_contribution already accumulated _ghost_grad_val (the full
+    # val aggregate) for subtract-val recovery.
+    seen_tied = set()
+    for layer, _A, _B in pending:
+        w = layer.weight
+        if getattr(w, "_ghost_tied", False) and id(w) not in seen_tied and hasattr(w, "_ghost_tied_stash"):
+            finalize_tied_param(w)
+            seen_tied.add(id(w))
 
     _bench_report()

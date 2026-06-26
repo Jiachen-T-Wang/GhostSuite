@@ -60,11 +60,19 @@ class Trainer:
         # Initialize ghost engine manager
         self.ghost_engine = GhostEngineManager(
             config=self.config,
-            model=self.model, 
+            model=self.model,
             optimizer=self.optimizer,
             ddp_info=self.ddp_info,
             val_data=val_data
         )
+
+        # The decoupled fn-path computes grad_val inside the (unscaled) backward; an enabled
+        # GradScaler (float16) would scale grad_output and corrupt it. Require bf16/fp32.
+        if self.ghost_engine.is_fn_path and self.scaler.is_enabled():
+            raise RuntimeError(
+                "Ghost decoupled fn-path requires the GradScaler disabled (use --train_dtype "
+                "bfloat16 or float32, not float16): fp16 loss scaling corrupts the in-graph grad_val."
+            )
 
         # Initialize Weights & Biases logging if requested
         self._init_wandb()

@@ -27,7 +27,29 @@ def parse_arguments():
     # Architecture parameters
     parser.add_argument('--architecture', type=str, default='GPT2-Small',
                        choices=['GPT2-Tiny', 'GPT2-Small', 'GPT2-Medium', 'GPT2-Large', 'LLaVA-7B', 'LLaVA-13B'])
-    
+    parser.add_argument('--no_tie_weights', dest='tie_weights', action='store_false',
+                        help='Untie the token-embedding and LM-head weight. Default: tied (standard '
+                             'GPT-2). Tied weights are handled by all ghost paths (eager, batched, '
+                             'decoupled) via the cross-term tied-weight finalizer.')
+    parser.set_defaults(tie_weights=True)
+    parser.add_argument('--decoupled_fn', action='store_true',
+                        help='Use the decoupled in-graph ghost dot-product path (compile-clean: '
+                             'native layer backward preserved). Single-GPU, grad-accum 1, bf16/fp32 '
+                             '(no GradScaler).')
+    parser.add_argument('--decoupled_compile', action='store_true',
+                        help='With --decoupled_fn, regional-compile the transformer blocks via '
+                             'torch.compile (the speedup lever). No effect without --decoupled_fn.')
+    parser.add_argument('--decoupled_compile_toplevel', action='store_true',
+                        help='With --decoupled_compile, also compile the top-level in-graph layers '
+                             '(output lm_head + final norm). Only the non-tied lm_head is compiled, '
+                             'so this mainly helps the --no_tie_weights config (TorchTitan found the '
+                             'output Linear is the only top-level layer worth compiling).')
+    parser.add_argument('--decoupled_mem_budget', type=float, default=None,
+                        help='With --decoupled_compile, set the Inductor activation-memory budget in '
+                             '(0,1] (compile-native activation checkpointing): 1.0 saves everything '
+                             '(default), lower recomputes more in backward to cut peak memory. '
+                             'Matters at GPT-2-Medium/Large scale.')
+
     # Training parameters
     parser.add_argument('--batch_size', type=int, default=16, help='Training batch size')
     parser.add_argument('--val_batch_size', type=int, default=1)
@@ -113,6 +135,16 @@ class TrainingConfig:
 
         # Defer the model config to a separate function
         self.architecture = args.architecture
+        # Weight-tying of the token embedding / LM head (see --no_tie_weights).
+        self.tie_weights = getattr(args, 'tie_weights', True)
+
+        # Decoupled in-graph + regional-compile ghost path (fn-path). Tied weights (wte/lm_head)
+        # are supported on both the batched and decoupled paths (cross-terms via
+        # finalize_tied_param), so no untie is forced; --no_tie_weights remains available.
+        self.decoupled_fn = getattr(args, 'decoupled_fn', False)
+        self.decoupled_compile = getattr(args, 'decoupled_compile', False)
+        self.decoupled_compile_toplevel = getattr(args, 'decoupled_compile_toplevel', False)
+        self.decoupled_mem_budget = getattr(args, 'decoupled_mem_budget', None)
 
         # Sequence length (block size). For GPT architectures it is fixed by the
         # model config table; sampled windows must match it (e.g. GPT2-Tiny=64).

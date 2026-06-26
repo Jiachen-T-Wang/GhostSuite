@@ -126,7 +126,9 @@ def setup_model_GPT(config):
         block_size=block_size,
         bias=bias,
         vocab_size=vocab_size,
-        dropout=dropout
+        dropout=dropout,
+        # Embedding/LM-head weight tying (default standard GPT-2 tying; --no_tie_weights to untie).
+        tie_weights=getattr(config, "tie_weights", True),
     )
     
     # Initialize model

@@ -178,6 +178,15 @@ class GradDotProdEngine:
             # This is a safeguard, though the new step logic doesn't require it as strictly.
             return
 
+        # Lever 1b: the batched backward hooks only stashed (A, B); the grouped pass that publishes
+        # ``_ghost_grad_val`` (needed by subtract-val recovery below) runs in ``aggregate_and_log``.
+        # Make recovery order-independent: if a caller invokes prepare_gradients() BEFORE
+        # aggregate_and_log() (the LM example does), run the grouped pass now. It is idempotent —
+        # ``run_batched_dotprod`` consumes the pending list, so the later aggregate call is a no-op
+        # over an empty list and still reads the ``grad_dot_prod`` set here.
+        if os.getenv("GHOST_BATCHED_DOTPROD", "0") == "1" and self._saved_tensor_mgr is not None:
+            self._saved_tensor_mgr.run_batched_dotprod()
+
         # subtract-val (default): standard autograd produces the full combined-batch grad; recover
         # the train-only mean grad as (total/train)*(grad - grad_val), reusing grad_val from the
         # dot-product. This is the correct path for all networks: unlike the legacy masking path
