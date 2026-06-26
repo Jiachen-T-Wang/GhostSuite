@@ -334,6 +334,76 @@ class GhostEngineManager:
             raise RuntimeError("decoupled_recover is only valid on the decoupled fn-path.")
         self.decoupled_mgr.recover_train_grads()
 
+    # ------------------------------------------------------------------ #
+    # Pluggable-policy primitives (used by examples/lm/shared.online_selection_step)
+    # ------------------------------------------------------------------ #
+    @property
+    def val_batch_size(self):
+        return self.config.val_batch_size
+
+    def read_scores(self, metric="dot"):
+        """One unified per-sample score read after a ghost scoring backward, hiding the eager-vs-fn
+        split. Returns the per-train-sample score tensor on CPU (or None). Also appends the dot to
+        the log so a caller can persist it (save_metrics). On the fn-path this publishes grad_val,
+        so a subsequent ``recover_train_grads`` is valid; it does NOT recover or step.
+
+        ``metric``: 'dot' (raw <g_i, g_val>) or 'cosine' (needs per-sample grad norms, eager only;
+        the fast path has no norms and raises)."""
+        if self.is_fn_path:
+            self._last_dot = self.decoupled_run_step()  # also publishes grad_val for a later recover
+            if self._fn_train_batch is not None:
+                X_train, Y_train, iter_num, batch_idx = self._fn_train_batch
+                self._fn_append_log(iter_num, batch_idx, X_train, Y_train)
+            if metric != "dot":
+                raise ValueError(
+                    f"read_scores(metric={metric!r}) needs per-sample grad norms, which the "
+                    "decoupled fast path does not produce. Use --eager for cosine ranking.")
+            return None if self._last_dot is None else self._last_dot.detach().to("cpu")
+        self.engine.aggregate_and_log()
+        log = self.engine.dot_product_log
+        entry = log[-1] if log else None
+        if entry is None:
+            return None
+        scores = entry["dot_product"].float()
+        if metric == "cosine":
+            tn = entry["train_grad_norm"].float()
+            vn = float(entry.get("val_grad_norm", 1.0)) or 1.0
+            scores = scores / (tn * vn + 1e-12)
+        return scores
+
+    def recover_train_grads(self):
+        """Reuse path: recover the train-only grad into ``.grad`` via subtract-val. Assumes
+        ``read_scores`` already ran (fn-path needs grad_val published first)."""
+        if self.is_fn_path:
+            self.decoupled_recover()
+        elif self.engine is not None and hasattr(self.engine, "prepare_gradients"):
+            self.engine.prepare_gradients()
+
+    def finish_step(self):
+        """Post-step cleanup for the reuse path: the eager engine unlocks grad creation that
+        ``recover_train_grads`` locked; the fn-path has nothing to do."""
+        if self.is_fn_path:
+            return
+        if self.engine is not None and hasattr(self.engine, "clear_gradients"):
+            self.engine.clear_gradients()
+
+    def discard_scores(self):
+        """Reselect path: drop the scoring pass's logged dots + transient grad state WITHOUT
+        recovering train grads (the caller then takes a fresh plain backward on the selection)."""
+        if self.is_fn_path:
+            self.dot_product_log.clear()
+            self._last_dot = None
+        else:
+            if self.engine is not None:
+                self.engine.dot_product_log.clear()
+                if hasattr(self.engine, "clear_gradients"):
+                    self.engine.clear_gradients()
+
+    def set_capture_enabled(self, flag):
+        """Toggle dot capture so a plain backward can run with the manager attached. Eager is
+        gated on the saved-tensors context already, so this is a no-op there."""
+        self.set_decoupled_enabled(flag)
+
     def prepare_gradients(self):
         """Prepare gradients after backward pass (if applicable)."""
         if self.is_fn_path and self.decoupled_mgr is not None:

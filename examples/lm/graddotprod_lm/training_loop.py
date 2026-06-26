@@ -19,7 +19,8 @@ from shared.training_utils import (
 )
 
 # Ghost Engines
-from ghostEngines import GhostEngineManager
+from ghostEngines import GhostEngineManager, UpdateAll, NoSelection
+from shared.selection_trainer import online_selection_step
 
 
 class Trainer: 
@@ -74,6 +75,11 @@ class Trainer:
                 "bfloat16 or float32, not float16): fp16 loss scaling corrupts the in-graph grad_val."
             )
 
+        # Update rule as a pluggable policy: GradDotProd scores the whole batch (logs the dots for
+        # offline selection) and updates on all via subtract-val recovery; Regular is a plain step.
+        self.policy = UpdateAll() if self.config.method == 'GradDotProd' else NoSelection()
+        self.forward_fn = lambda m, X, Y: m(X, Y).loss
+
         # Initialize Weights & Biases logging if requested
         self._init_wandb()
 
@@ -124,77 +130,34 @@ class Trainer:
         # Refresh validation batch if configured (for GradDotProd)
         if self.dynamic_val_batch:
             self._refresh_validation_batch()
-        
+
         # Get training batch
         X, Y, batch_idx = self.get_batch(
-            'train', 
-            batch_size=self.config.batch_size, 
+            'train',
+            batch_size=self.config.batch_size,
             return_idx=True
         )
 
-        # Store batch info for ghost engine
-        self.ghost_engine.attach_train_batch(X, Y, iter_num, batch_idx)
-        
         # Update learning rate
         lr = get_learning_rate(iter_num, self.config) if self.config.decay_lr else self.config.learning_rate
         update_learning_rate(self.optimizer, lr)
-        
-        # Save ghost engine metrics at their own interval (before training step)
+
+        # Save the accumulated dot-product log at its interval (start of step, as before).
         if iter_num > 0 and self.ddp_info['master_process']:
             if self.ghost_engine.should_save_metrics(iter_num):
                 self.ghost_engine.save_metrics(iter_num)
-        
-        loss = None
 
-        # Forward and backward pass with gradient accumulation
-        for micro_step in range(self.config.gradient_accumulation_steps):
-            if self.ddp_info['ddp']:
-                self.model.require_backward_grad_sync = (
-                    micro_step == self.config.gradient_accumulation_steps - 1
-                )
-            
-            # GradDotProd captures per-sample activations via saved-tensor hooks
-            # that are only installed inside saved_tensors_context(); the forward
-            # AND backward must both run inside it (no-op for other methods).
-            with self.ghost_engine.saved_tensors_context():
-                with self.ctx:
-                    # Prepare input based on the ghost engine method
-                    X_forward, Y_forward = self.ghost_engine.prepare_forward_input(X, Y)
-
-                    # Forward pass with method-appropriate input
-                    outputs = self.model(X_forward, Y_forward)
-                    logits, loss = outputs.logits, outputs.loss
-
-                    # Scale loss for gradient accumulation
-                    if loss is not None:
-                        loss = loss / self.config.gradient_accumulation_steps
-
-                # Backward pass (inside the saved-tensors context so the ghost
-                # hooks see the saved activations during backprop)
-                if loss is not None:
-                    self.scaler.scale(loss).backward()
-        
-        # Prepare gradients using ghost engine
-        self.ghost_engine.prepare_gradients()
+        # The shared driver runs the scoring pass (logging the dots), then updates on the whole
+        # batch via subtract-val recovery (UpdateAll) — or a plain step (Regular).
+        _scores, _idx, loss = online_selection_step(
+            manager=self.ghost_engine, model=self.model, optimizer=self.optimizer,
+            scaler=self.scaler, ctx=self.ctx, forward_fn=self.forward_fn, X=X, Y=Y,
+            policy=self.policy, iter_num=iter_num, grad_clip=self.config.grad_clip,
+            grad_accum=self.config.gradient_accumulation_steps,
+            batch_idx=batch_idx, ddp=self.ddp_info['ddp'],
+        )
 
         print(f"Step {iter_num}, Loss: {loss.item() if loss is not None else 'N/A'}, LR: {lr:.6f}")
-
-        # Gradient clipping and optimization step
-        self.scaler.unscale_(self.optimizer)
-        
-        if self.config.grad_clip != 0.0:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.grad_clip)
-        
-        # This will call the custom engine's step() if it's enabled, which computes values
-        # before calling the original optimizer step.
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
-
-        # Aggregate metrics and clear gradients using ghost engine
-        self.ghost_engine.aggregate_and_log()
-        self.ghost_engine.clear_gradients()
-
-        self.optimizer.zero_grad(set_to_none=True)
 
         torch.cuda.synchronize()
         end_time = time.time()

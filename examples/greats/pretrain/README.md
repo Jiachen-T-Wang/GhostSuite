@@ -38,6 +38,14 @@ path, same as `examples/lm/graddotprod_lm`). Notes:
   floor — see `docs/analysis/greats_pretrain_decoupled_compile_2026-06-26.md`).
 - The fast path requires bf16 training (`--train_dtype bfloat16`, GradScaler disabled).
 
+### Update rule = a pluggable policy
+The per-step "which samples to update on" logic is a `ghostEngines.SelectionPolicy` fed to the
+shared `examples/lm/shared/selection_trainer.online_selection_step` driver. GREATS uses
+`TopK(batch_size)`; the Regular baseline uses `NoSelection` (no scoring, plain step). The driver
+also backs `examples/lm/graddotprod_lm` (`UpdateAll`), and `BottomK`/`Threshold` are available for
+rejected-arm / online-sel50 ablations — so a new selection experiment is a one-line policy swap.
+See `docs/plans/pluggable_update_policy_2026-06-26.md`.
+
 ## Quick start
 
 ### Smoke test (synthetic data, 1 GPU, no corpus)

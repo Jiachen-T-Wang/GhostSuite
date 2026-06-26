@@ -7,5 +7,11 @@ such as gradient dot products, with minimal integration overhead.
 
 from .graddotprod_engine import GradDotProdEngine
 from .engine_manager import GhostEngineManager
+from .selection import (
+    SelectionPolicy, UpdateAll, TopK, BottomK, Threshold, NoSelection,
+)
 
-__all__ = ['GradDotProdEngine', 'GhostEngineManager']
+__all__ = [
+    'GradDotProdEngine', 'GhostEngineManager',
+    'SelectionPolicy', 'UpdateAll', 'TopK', 'BottomK', 'Threshold', 'NoSelection',
+]

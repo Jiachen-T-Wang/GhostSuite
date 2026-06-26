@@ -14,6 +14,12 @@ The GradDotProd engine enables computation of gradient similarities between vali
    - Per-parameter gradient dot products between validation and training samples. 
    - Aggregated training gradients are recovered separately and stored in `.grad` before optimizer step. 
 
+The per-step update rule is a pluggable `ghostEngines.SelectionPolicy` run by the shared
+`examples/lm/shared/selection_trainer.online_selection_step` driver. This example uses `UpdateAll`
+(score the batch, log the dots, update on all via subtract-val recovery); `Regular` uses
+`NoSelection`. Online-selection variants (`TopK`/`BottomK`/`Threshold`) reuse the same driver — see
+`examples/greats/` and `docs/plans/pluggable_update_policy_2026-06-26.md`.
+
 
 ## Quick Start
 

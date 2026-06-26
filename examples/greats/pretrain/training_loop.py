@@ -43,7 +43,8 @@ from shared.training_utils import (
     save_training_results,
     to_device,
 )
-from ghostEngines import GhostEngineManager
+from ghostEngines import GhostEngineManager, TopK, NoSelection
+from shared.selection_trainer import online_selection_step
 
 
 class GreatsTrainer:
@@ -96,6 +97,11 @@ class GreatsTrainer:
         else:
             self.is_fn = False
 
+        # Update rule as a pluggable policy: GREATS keeps the top-k by score (fresh plain update on
+        # them); Regular takes no scoring pass and a plain step on the whole batch.
+        self.policy = TopK(config.batch_size) if self.is_greats else NoSelection()
+        self.forward_fn = lambda m, X, Y: m(X, Y).loss
+
         self._init_wandb()
 
     # ------------------------------------------------------------------ #
@@ -112,10 +118,7 @@ class GreatsTrainer:
                     print("Eval only mode, exiting now")
                     break
                 try:
-                    if self.is_greats:
-                        self._greats_step(self.iter_num)
-                    else:
-                        self._regular_step(self.iter_num)
+                    self._train_step(self.iter_num)
                 except StopIteration:
                     print("[INFO] Data exhausted; terminating training loop.")
                     break
@@ -128,190 +131,65 @@ class GreatsTrainer:
             self._cleanup(result_file)
 
     # ------------------------------------------------------------------ #
-    # GREATS step
+    # Training step (GREATS selection or the Regular baseline, via the shared driver)
     # ------------------------------------------------------------------ #
-    def _greats_step(self, iter_num):
+    def _train_step(self, iter_num):
         t0 = time.time()
 
-        # Fresh scoring val batch (online selection targets the current val draw).
-        X_val, Y_val = self.get_val_batch(self.config.val_batch_size, return_idx=False)
-        X_val = to_device(X_val, self.ddp_info["device"])
-        Y_val = to_device(Y_val, self.ddp_info["device"])
-        self.ghost.update_validation_batch(X_val, Y_val)
+        if self.is_greats:
+            # Fresh scoring val batch (online selection targets the current val draw).
+            X_val, Y_val = self.get_val_batch(self.config.val_batch_size, return_idx=False)
+            X_val = to_device(X_val, self.ddp_info["device"])
+            Y_val = to_device(Y_val, self.ddp_info["device"])
+            self.ghost.update_validation_batch(X_val, Y_val)
+            draw = self.config.candidate_batch_size   # score N candidates, keep top-k
+        else:
+            draw = self.config.batch_size             # Regular: a normal batch of k
 
-        # Candidate pool of N samples.
-        X_cand, Y_cand, _ = self.get_batch(
-            "train", batch_size=self.config.candidate_batch_size, return_idx=True
-        )
-        if isinstance(X_cand, dict):
+        X, Y, _ = self.get_batch("train", batch_size=draw, return_idx=True)
+        if isinstance(X, dict):
             raise NotImplementedError(
                 "The GREATS pretrain example supports tensor inputs (GPT-2) only."
             )
 
-        # Scoring pass (no optimizer step).
-        _, entry = self._ghost_pass(X_cand, Y_cand, iter_num, do_step=False)
-        scores = self._scores_from_entry(entry)  # [N] cpu float
-
-        # Select the top-k candidates.
-        k = self.config.batch_size
-        sel = torch.topk(scores, k).indices
-        sel_dev = sel.to(X_cand.device)
-        X_sel = X_cand.index_select(0, sel_dev)
-        Y_sel = Y_cand.index_select(0, sel_dev)
-
-        # LR schedule for the real update.
         lr = (get_learning_rate(iter_num, self.config)
               if self.config.decay_lr else self.config.learning_rate)
         update_learning_rate(self.optimizer, lr)
 
-        # Update: a PLAIN step on the selected k (no val, no ghost). This is exact — subtract-val
-        # over [selected ++ val] recovers the mean train grad over the selected k, which equals a
-        # plain mean-loss backward over those k — so the update needs neither the val batch nor the
-        # dot-product machinery (its dots were discarded anyway). Drops m val-sample forwards and
-        # all ghost overhead from the update pass.
-        loss = self._plain_update(X_sel, Y_sel)
-
-        torch.cuda.synchronize()
-        dt = time.time() - t0
-
-        sel_scores = scores.index_select(0, sel)
-        frac_pos = (scores > 0).float().mean().item()
-        print(f"Step {iter_num} | loss {loss.item():.4f} | lr {lr:.6f} | "
-              f"selected {k}/{self.config.candidate_batch_size} | "
-              f"mean sel score {sel_scores.mean().item():.3e} | "
-              f"frac>0 {frac_pos:.2f} | {dt:.3f}s")
-
-        metrics = {
-            "train/lr": lr,
-            "train/loss": loss.item(),
-            "train/step_time": dt,
-            "select/mean_selected_score": sel_scores.mean().item(),
-            "select/mean_candidate_score": scores.mean().item(),
-            "select/frac_positive": frac_pos,
-        }
-        self._log_metrics(metrics, step=iter_num)
-
-    def _ghost_pass(self, X_train, Y_train, iter_num, do_step):
-        """One GradDotProd forward/backward over [train ++ val].
-
-        Returns ``(loss, log_entry)`` where ``log_entry`` is the per-sample score dict
-        for ``X_train``. When ``do_step`` is True the optimizer steps on the subtract-val
-        recovered (train-only) gradient; otherwise grads are discarded.
-        """
-        self.ghost.attach_train_batch(X_train, Y_train, iter_num)
-        if self.is_fn:
-            # Point the in-graph buffers at this pass's combined batch size (scoring N+m or
-            # update k+m) before the forward, so nothing is allocated inside the compiled graph.
-            self.ghost.prepare_decoupled_shape(X_train.shape[0] + self.config.val_batch_size)
-
-        with self.ghost.saved_tensors_context():  # nullcontext on the fn-path
-            with self.ctx:
-                X_fwd, Y_fwd = self.ghost.prepare_forward_input(X_train, Y_train)
-                outputs = self.model(X_fwd, Y_fwd)
-                loss = outputs.loss
-            self.scaler.scale(loss).backward()
-
-        if self.is_fn:
-            return self._finalize_fn_pass(loss, do_step)
-        return self._finalize_eager_pass(loss, do_step)
-
-    def _finalize_fn_pass(self, loss, do_step):
-        """Decoupled fast path: the per-candidate dot is in the in-graph buffers. Aggregate it
-        (also publishes grad_val); recover train grads + step only on the update pass."""
-        dot = self.ghost.decoupled_run_step()
-        entry = {"dot_product": dot.detach().to("cpu")} if dot is not None else None
-        if do_step:
-            self.ghost.decoupled_recover()  # subtract-val train grad into .grad (scaler disabled)
-            if self.config.grad_clip != 0.0:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.grad_clip)
-            self.optimizer.step()
-        self.optimizer.zero_grad(set_to_none=True)
-        return loss, entry
-
-    def _finalize_eager_pass(self, loss, do_step):
-        """Eager per-layer-hook engine: recover + step on the update pass, then read the dot log."""
-        if do_step:
-            # Recover the train-only gradient into .grad (subtract-val) for the optimizer. Skipped
-            # on the scoring pass: the per-candidate score log is produced by the backward hooks and
-            # read via aggregate_and_log() below, so the recovery would only be discarded.
-            self.ghost.prepare_gradients()
-            self.scaler.unscale_(self.optimizer)
-            if self.config.grad_clip != 0.0:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(),
-                                               self.config.grad_clip)
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-
-        # Aggregate per-layer scores into the engine log, then read + reset.
-        self.ghost.aggregate_and_log()
-        log = self.ghost.engine.dot_product_log
-        entry = log[-1] if log else None
-        self.ghost.clear_gradients()
-        log.clear()
-        self.optimizer.zero_grad(set_to_none=True)
-        return loss, entry
-
-    def _scores_from_entry(self, entry):
-        if entry is None:
-            raise RuntimeError(
-                "Scoring pass produced no gradient dot products; check that the model "
-                "contains supported layers (nn.Linear / nn.Embedding / ...)."
-            )
-        scores = entry["dot_product"].float()
-        if self.config.select_metric == "cosine":
-            train_norm = entry["train_grad_norm"].float()
-            val_norm = float(entry.get("val_grad_norm", 1.0)) or 1.0
-            scores = scores / (train_norm * val_norm + 1e-12)
-        return scores
-
-    # ------------------------------------------------------------------ #
-    # Plain update (Regular baseline AND the GREATS update on the selected subset)
-    # ------------------------------------------------------------------ #
-    def _plain_update(self, X, Y):
-        """A normal forward/backward + optimizer step on X (no val concat, no dot capture).
-
-        For the fn-path the dot-capture wrappers are toggled off so the model takes a clean
-        compiled forward; for the eager engine the per-layer hooks are already inert outside the
-        saved-tensors context, so this is plain either way. Scaler calls are no-ops when the
-        scaler is disabled (bf16 / fn-path)."""
-        if self.is_fn:
-            self.ghost.set_decoupled_enabled(False)
-        try:
-            with self.ctx:
-                outputs = self.model(X, Y)
-                loss = outputs.loss
-            self.scaler.scale(loss).backward()
-            self.scaler.unscale_(self.optimizer)
-            if self.config.grad_clip != 0.0:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.grad_clip)
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-            self.optimizer.zero_grad(set_to_none=True)
-        finally:
-            if self.is_fn:
-                self.ghost.set_decoupled_enabled(True)
-        return loss
-
-    # ------------------------------------------------------------------ #
-    # Regular (no-selection) baseline step
-    # ------------------------------------------------------------------ #
-    def _regular_step(self, iter_num):
-        t0 = time.time()
-        X, Y, _ = self.get_batch("train", batch_size=self.config.batch_size, return_idx=True)
-
-        lr = (get_learning_rate(iter_num, self.config)
-              if self.config.decay_lr else self.config.learning_rate)
-        update_learning_rate(self.optimizer, lr)
-
-        loss = self._plain_update(X, Y)
-
-        torch.cuda.synchronize()
-        dt = time.time() - t0
-        print(f"Step {iter_num} | loss {loss.item():.4f} | lr {lr:.6f} | {dt:.3f}s")
-        self._log_metrics(
-            {"train/lr": lr, "train/loss": loss.item(), "train/step_time": dt},
-            step=iter_num,
+        # The shared driver runs the scoring pass (if any), applies the policy, and does the update
+        # (subtract-val recovery for UpdateAll, or a plain backward on the selected subset for TopK).
+        scores, idx, loss = online_selection_step(
+            manager=self.ghost, model=self.model, optimizer=self.optimizer,
+            scaler=self.scaler, ctx=self.ctx, forward_fn=self.forward_fn, X=X, Y=Y,
+            policy=self.policy, iter_num=iter_num, grad_clip=self.config.grad_clip,
+            score_metric=self.config.select_metric,
         )
+
+        torch.cuda.synchronize()
+        dt = time.time() - t0
+        self._log_step(iter_num, lr, loss, dt, scores, idx)
+
+    def _log_step(self, iter_num, lr, loss, dt, scores, idx):
+        if self.is_greats:
+            sel_scores = scores.index_select(0, idx)
+            frac_pos = (scores > 0).float().mean().item()
+            k = self.config.batch_size
+            print(f"Step {iter_num} | loss {loss.item():.4f} | lr {lr:.6f} | "
+                  f"selected {k}/{self.config.candidate_batch_size} | "
+                  f"mean sel score {sel_scores.mean().item():.3e} | "
+                  f"frac>0 {frac_pos:.2f} | {dt:.3f}s")
+            metrics = {
+                "train/lr": lr,
+                "train/loss": loss.item(),
+                "train/step_time": dt,
+                "select/mean_selected_score": sel_scores.mean().item(),
+                "select/mean_candidate_score": scores.mean().item(),
+                "select/frac_positive": frac_pos,
+            }
+        else:
+            print(f"Step {iter_num} | loss {loss.item():.4f} | lr {lr:.6f} | {dt:.3f}s")
+            metrics = {"train/lr": lr, "train/loss": loss.item(), "train/step_time": dt}
+        self._log_metrics(metrics, step=iter_num)
 
     # ------------------------------------------------------------------ #
     # Evaluation / cleanup / logging
