@@ -52,6 +52,26 @@ def main():
         config, ddp_info['device'], ddp_info
     )
 
+    # The decoupled in-graph + torch.compile fast path is the default for GradDotProd, but it only
+    # supports GPT-2 token models on a single GPU with grad-accum 1 and bf16/fp32. Fall back to the
+    # eager engine (with a clear notice) for runs that can't use it, rather than erroring. Pass
+    # --eager to select the eager engine explicitly.
+    if config.method == 'GradDotProd' and config.decoupled_fn:
+        reason = None
+        if ddp_info.get('ddp', False):
+            reason = "multi-GPU / DDP"
+        elif getattr(config, 'gradient_accumulation_steps', 1) != 1:
+            reason = "gradient_accumulation_steps != 1"
+        elif scaler.is_enabled():
+            reason = "float16 GradScaler (use --train_dtype bfloat16 or float32)"
+        elif not str(config.architecture).startswith('GPT2'):
+            reason = f"architecture {config.architecture} (the fast path supports GPT-2 token models)"
+        if reason is not None:
+            print(f"[INFO] Optimized decoupled+compile path unavailable ({reason}); using the eager "
+                  f"engine. Pass --eager to select it explicitly.")
+            config.decoupled_fn = False
+            config.decoupled_compile = False
+
     # Load dataset
     dataset = load_dataset_main(args.train_set, args.val_set)
     

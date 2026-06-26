@@ -53,9 +53,10 @@ python examples/lm/graddotprod_lm/main.py --method GradDotProd \
     --model_dtype float32 --train_dtype float32
 ```
 
-For faster runs, this example also supports the compiled fast path (`--decoupled_fn
---decoupled_compile`, ~+9% step time on GPT-2-Small), the batched lever (`GHOST_BATCHED_DOTPROD=1`),
-and activation checkpointing (`--decoupled_mem_budget`) — see the README's "Performance" section.
+By default this example uses the decoupled in-graph + `torch.compile` fast path (~+9% step time on
+GPT-2-Small; it auto-falls back to the eager engine for incompatible configs). Pass `--eager` for
+the eager engine, or add `--decoupled_mem_budget` for activation-checkpointing memory savings — see
+the README's "Performance" section.
 
 See [`lm/graddotprod_lm/README.md`](lm/graddotprod_lm/README.md) for detailed instructions.
 

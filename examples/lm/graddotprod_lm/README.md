@@ -83,29 +83,34 @@ Edit `config_file.py` to adjust:
 
 ## Performance: optimized dot-product paths
 
-By default the example uses the eager engine (per-layer hooks). The same engine optimizations
-developed for the TorchTitan integration are also available here; all paths write the same
-`dot_prod_log_iter_*.pt` / `valset.pt` outputs. See
+**The decoupled in-graph + `torch.compile` fast path is the default** for GradDotProd (~+9% step
+time on GPT-2-Small vs eager). All paths produce identical `dot_prod_log_iter_*.pt` / `valset.pt`
+outputs (the dot-products are numerically equivalent). See
 [`docs/analysis/graddotprod_lm_benchmark_summary_2026-06-25.md`](../../../docs/analysis/graddotprod_lm_benchmark_summary_2026-06-25.md)
 for measured numbers and methodology.
 
-| path | how to enable | notes |
+| path | how to select | notes |
 |---|---|---|
-| **eager** (default) | *(nothing)* | per-layer hooks; the reference path |
-| **batched (lever 1b)** | `GHOST_BATCHED_DOTPROD=1` (env), opt. `GHOST_BATCHED_DOTPROD_COMPILE=1` | one grouped post-backward pass; ~neutral at GPT-2-Small, the win comes with `_COMPILE=1` |
-| **decoupled in-graph + compile** | `--decoupled_fn --decoupled_compile` | recommended fast path: keeps each layer's native backward, folds the dot into the `torch.compile`d transformer blocks. **~+9% step time** on GPT-2-Small vs eager |
+| **decoupled in-graph + compile** | *(default)* | keeps each layer's native backward, folds the dot into the `torch.compile`d transformer blocks. **~+9% step time** on GPT-2-Small |
+| **eager** | `--eager` | per-layer saved-tensor hooks; the reference path. Use for incompatible configs (also selected automatically — see below) |
+| **batched (lever 1b)** | `--eager` + `GHOST_BATCHED_DOTPROD=1` (env), opt. `..._COMPILE=1` | one grouped post-backward pass on the eager engine; ~neutral at GPT-2-Small |
 | **activation checkpointing** | add `--decoupled_mem_budget 0.5` | recompute in backward to cut peak memory (≈−27% on GPT-2-Medium for +29% time); tunable in `(0,1]`. The lever for scaling to GPT-2-Medium/Large |
 
 ```bash
-# Recommended optimized run (synthetic smoke):
+# Default run is already the optimized fast path:
 python examples/lm/graddotprod_lm/main.py --method GradDotProd --train_set synthetic \
-    --architecture GPT2-Small --batch_size 16 --val_batch_size 1 --max_steps 20 \
-    --decoupled_fn --decoupled_compile
+    --architecture GPT2-Small --batch_size 16 --val_batch_size 1 --max_steps 20
+
+# Force the eager engine:
+python examples/lm/graddotprod_lm/main.py --method GradDotProd ... --eager
 ```
 
-**Decoupled fn-path constraints:** single-GPU (no DDP), `gradient_accumulation_steps == 1`, and
-bf16/fp32 only (an enabled float16 `GradScaler` is rejected — it would corrupt the in-graph
-`grad_val`).
+**Fast-path scope + automatic fallback.** The decoupled fast path applies to GPT-2 token models on a
+single GPU with `gradient_accumulation_steps == 1` and bf16/fp32. For runs that can't use it —
+multi-GPU/DDP, grad-accum > 1, float16 (`GradScaler`), or a non-GPT-2 architecture (e.g. LLaVA) —
+`main.py` prints a notice and falls back to the **eager** engine automatically. Pass `--eager` to
+select eager explicitly. (`--no_decoupled_compile` keeps the decoupled path but skips compile;
+usually slower than `--eager`, for debugging.)
 
 **Tied weights:** the token-embedding ↔ LM-head tie (standard GPT-2) is handled by all paths
 (including the gradient cross-terms). `--no_tie_weights` unties if desired.

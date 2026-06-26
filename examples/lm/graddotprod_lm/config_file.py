@@ -32,13 +32,22 @@ def parse_arguments():
                              'GPT-2). Tied weights are handled by all ghost paths (eager, batched, '
                              'decoupled) via the cross-term tied-weight finalizer.')
     parser.set_defaults(tie_weights=True)
-    parser.add_argument('--decoupled_fn', action='store_true',
-                        help='Use the decoupled in-graph ghost dot-product path (compile-clean: '
-                             'native layer backward preserved). Single-GPU, grad-accum 1, bf16/fp32 '
-                             '(no GradScaler).')
-    parser.add_argument('--decoupled_compile', action='store_true',
-                        help='With --decoupled_fn, regional-compile the transformer blocks via '
-                             'torch.compile (the speedup lever). No effect without --decoupled_fn.')
+    # The decoupled in-graph + torch.compile fast path is the DEFAULT for GradDotProd (compile-clean:
+    # native layer backward preserved; ~+9% step time). It applies to GPT-2 token models on a single
+    # GPU with grad-accum 1 and bf16/fp32; main.py auto-falls back to the eager engine (with a notice)
+    # for runs that can't use it. Use --eager to force the eager per-layer-hook engine.
+    parser.add_argument('--decoupled_fn', dest='decoupled_fn', action='store_true',
+                        help='Use the decoupled in-graph fast path (this is the default).')
+    parser.add_argument('--eager', dest='decoupled_fn', action='store_false',
+                        help='Use the eager per-layer-hook engine instead of the default decoupled '
+                             'in-graph + torch.compile fast path.')
+    parser.add_argument('--decoupled_compile', dest='decoupled_compile', action='store_true',
+                        help='Regional-compile the transformer blocks via torch.compile (default on '
+                             'with the decoupled path; the speedup lever).')
+    parser.add_argument('--no_decoupled_compile', dest='decoupled_compile', action='store_false',
+                        help='Keep the decoupled path but skip torch.compile (decoupled-eager; '
+                             'usually slower than --eager — for debugging).')
+    parser.set_defaults(decoupled_fn=True, decoupled_compile=True)
     parser.add_argument('--decoupled_compile_toplevel', action='store_true',
                         help='With --decoupled_compile, also compile the top-level in-graph layers '
                              '(output lm_head + final norm). Only the non-tied lm_head is compiled, '
@@ -138,11 +147,12 @@ class TrainingConfig:
         # Weight-tying of the token embedding / LM head (see --no_tie_weights).
         self.tie_weights = getattr(args, 'tie_weights', True)
 
-        # Decoupled in-graph + regional-compile ghost path (fn-path). Tied weights (wte/lm_head)
-        # are supported on both the batched and decoupled paths (cross-terms via
-        # finalize_tied_param), so no untie is forced; --no_tie_weights remains available.
-        self.decoupled_fn = getattr(args, 'decoupled_fn', False)
-        self.decoupled_compile = getattr(args, 'decoupled_compile', False)
+        # Decoupled in-graph + regional-compile ghost path (fn-path) — the DEFAULT for GradDotProd
+        # (see --eager to opt out). Tied weights (wte/lm_head) are supported on both the batched and
+        # decoupled paths (cross-terms via finalize_tied_param); --no_tie_weights remains available.
+        # main.py gates this down to the eager engine for runs that can't use the fast path.
+        self.decoupled_fn = getattr(args, 'decoupled_fn', True)
+        self.decoupled_compile = getattr(args, 'decoupled_compile', True)
         self.decoupled_compile_toplevel = getattr(args, 'decoupled_compile_toplevel', False)
         self.decoupled_mem_budget = getattr(args, 'decoupled_mem_budget', None)
 
