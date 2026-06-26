@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 import math
 import os
 import threading
@@ -13,7 +13,6 @@ from .supported_layers_grad_samplers_dotprod import (
     _create_or_accumulate_train_grad,
     stash_tied_contribution,
 )
-from . import batched_dotprod
 
 ACCUM_DTYPE = torch.float32
 
@@ -29,11 +28,6 @@ ACCUM_DTYPE = torch.float32
 # MLPs. (Residual nets happen to be unaffected because the skip path carries the gradient.) Set
 # GHOST_SUBTRACT_VAL=0 only to reproduce that legacy behavior.
 _SUBTRACT_VAL = os.getenv("GHOST_SUBTRACT_VAL", "1") == "1"
-
-# Lever 1b: decouple the dot-product from the autograd backward. The per-layer backward hook
-# becomes store-only (stash activation + grad_output), and a single grouped/batched compiled
-# pass runs all dot-products after loss.backward(). Requires subtract-val. See batched_dotprod.
-_BATCHED_DOTPROD = os.getenv("GHOST_BATCHED_DOTPROD", "0") == "1"
 
 
 def _env_int(name: str, default: int) -> int:
@@ -131,10 +125,6 @@ class _NamedSavedTensorManager:
         self._val_batch_size: int = 0
         self._loss_reduction: str = "mean"
 
-        # Lever 1b: store-only backward hooks append (layer, activation, grad_output) here;
-        # run_batched_dotprod() consumes and clears it after loss.backward().
-        self._pending: List[Tuple[nn.Module, torch.Tensor, torch.Tensor]] = []
-
         # Book-keeping of tensor ids that have been used for activations (to avoid double usage across layers).
         self._used_ids: set[int] = set()
 
@@ -154,7 +144,6 @@ class _NamedSavedTensorManager:
             self._captured = {}
             self._tensor_meta = {}
             self._used_ids = set()
-            self._pending = []
         self._get_stack().clear()
 
     def disable(self) -> None:
@@ -163,33 +152,7 @@ class _NamedSavedTensorManager:
             self._captured = {}
             self._tensor_meta = {}
             self._used_ids = set()
-            # NOTE: _pending is intentionally NOT cleared here. The saved_tensors_context
-            # disables the manager right after loss.backward(), but the batched dot-product
-            # pass (run_batched_dotprod) runs just afterwards in aggregate_and_log and needs
-            # the stashed tensors. enable() / run_batched_dotprod() clear it.
         self._get_stack().clear()
-
-    def stash_for_batched(self, layer: nn.Module, backprops: torch.Tensor) -> None:
-        """Store-only backward hook (lever 1b): resolve this layer's activation and stash
-        ``(layer, A, B)`` for the post-backward batched pass. No dot-product math here."""
-        backprops = backprops.detach()
-        activation = getattr(layer, "activations", None)
-        if activation is None:
-            activation = self.resolve_activation(layer)
-            if activation is None:
-                raise RuntimeError(
-                    f"Failed to capture saved activations for layer "
-                    f"{getattr(layer, 'name', '<unnamed>')} (batched mode)."
-                )
-            activation = _reshape_activation_if_needed(layer, activation)
-        with self._lock:
-            self._pending.append((layer, activation.detach(), backprops))
-
-    def run_batched_dotprod(self) -> None:
-        with self._lock:
-            pending = self._pending
-            self._pending = []
-        batched_dotprod.run_batched_dotprod(pending, self._val_batch_size)
 
     def push(self, name: str) -> None:
         # If enabled, pushes the module name onto the thread‑local scope stack (forward‑pre hook).
@@ -458,14 +421,6 @@ def add_hooks(
 
             def _register_output_hook(this_layer, inputs, output):
                 def _grad_hook(grad: torch.Tensor) -> torch.Tensor:
-                    if _BATCHED_DOTPROD:
-                        # Store-only: stash (layer, A, B); the grouped/compiled dot-product
-                        # pass runs after loss.backward(). subtract-val recovers train grads
-                        # post-backward, so no masking is needed here either.
-                        manager.stash_for_batched(this_layer, grad)
-                        _cleanup_layer_state(this_layer)
-                        return grad
-
                     _compute_dotprod_from_backprops(
                         this_layer, grad, val_batch_size, loss_reduction, log_grad_norms
                     )

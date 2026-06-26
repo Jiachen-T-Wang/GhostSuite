@@ -16,9 +16,9 @@ from torchtitan.tools.logging import init_logger, logger
 # NOTE: GhostDotProdHelper (and the ghostEngines it pulls in) is imported lazily inside
 # GhostTrainer.__init__ — AFTER the ghost lever config is bridged to GHOST_* env vars — because
 # ghostEngines reads those env vars at import time. Importing it at module top would freeze the
-# lever flags before the config/CLI values are applied. For the same reason the Function-path
-# selectors (GHOST_AUTOGRAD_FN / GHOST_DECOUPLED_FN) are read inside __init__ after the bridge,
-# not at module top.
+# lever flags before the config/CLI values are applied. For the same reason the decoupled
+# Function-path selector (GHOST_DECOUPLED_FN) is read inside __init__ after the bridge, not at
+# module top.
 
 
 class GhostTrainer(Trainer):
@@ -28,28 +28,24 @@ class GhostTrainer(Trainer):
         if not job_config.ghost.enable:
             raise RuntimeError("GhostTrainer requires ghost.enable=true.")
 
-        # Bridge the dot-product lever config (--ghost.subtract_val / .batched_dotprod /
-        # .batched_dotprod_compile / .decoupled_fn / .compile_toplevel / .regional_compile) to the
-        # GHOST_* env vars the engine reads at import time. An explicitly-set env var wins (so
-        # ad-hoc `GHOST_*=...` runs still work); otherwise the config value is applied. Must run
-        # before the lazy GhostDotProdHelper import AND before the Function-path reads below.
+        # Bridge the dot-product lever config (--ghost.subtract_val / .decoupled_fn /
+        # .compile_toplevel / .regional_compile) to the GHOST_* env vars the engine reads at import
+        # time. An explicitly-set env var wins (so ad-hoc `GHOST_*=...` runs still work); otherwise
+        # the config value is applied. Must run before the lazy GhostDotProdHelper import AND before
+        # the Function-path read below.
         self._bridge_ghost_levers(job_config.ghost)
 
-        # Read the compile-compatible Function-path selectors AFTER bridging. Both remove the
-        # eager backward hooks so torch.compile can regional-compile the model. GHOST_AUTOGRAD_FN
-        # fuses the dot-product into the joint graph (Phase 2); GHOST_DECOUPLED_FN keeps native
-        # backward + the decoupled 1b grouped post-backward dot-product (the default fast path).
-        autograd_fn = os.getenv("GHOST_AUTOGRAD_FN", "0") == "1"
-        decoupled_fn = os.getenv("GHOST_DECOUPLED_FN", "0") == "1"
-        fn_path = autograd_fn or decoupled_fn
+        # Read the decoupled Function-path selector AFTER bridging. It removes the eager backward
+        # hooks so torch.compile can regional-compile the model, keeps each layer's native backward,
+        # and computes the decoupled dot-product as a small in-backward transient (the fast path).
+        fn_path = os.getenv("GHOST_DECOUPLED_FN", "0") == "1"
 
-        # Compile is only allowed on the graph-clean custom-Function path; the eager hook
-        # engine still hard-disables it (its hooks force compiled autograd + graph breaks).
-        # On the custom-Function path we DEFER compile: the model must be built uncompiled so
-        # the ghost manager can monkeypatch the supported layers' forward FIRST, then we
-        # regional-compile each block (attach-then-compile is the order Inductor functionalizes
-        # the per-layer buffer mutations cleanly; compile-then-attach yields an invalid graph
-        # output for the buffer copy_). See ghost_phase2_results.
+        # Compile is only allowed on the decoupled Function path; the eager hook engine still
+        # hard-disables it (its hooks force compiled autograd + graph breaks). On the Function path
+        # we DEFER compile: the model must be built uncompiled so the ghost manager can monkeypatch
+        # the supported layers' forward FIRST, then we regional-compile each block (attach-then-
+        # compile is the order Inductor functionalizes the per-layer buffer mutations cleanly;
+        # compile-then-attach yields an invalid graph output for the buffer copy_).
         self._deferred_compile = False
         if not fn_path:
             job_config.compile.enable = False
@@ -159,13 +155,11 @@ class GhostTrainer(Trainer):
         """Apply the dot-product lever config to the GHOST_* env vars the engine reads at import.
 
         An already-set env var takes precedence (so ad-hoc ``GHOST_*=...`` runs win); otherwise
-        the config value is written. Validates lever 1b's subtract-val dependency. Must run
-        before GhostDotProdHelper / ghostEngines are imported.
+        the config value is written. Validates the decoupled path's subtract-val dependency. Must
+        run before GhostDotProdHelper / ghostEngines are imported.
         """
         mapping = [
             ("GHOST_SUBTRACT_VAL", ghost_cfg.subtract_val),
-            ("GHOST_BATCHED_DOTPROD", ghost_cfg.batched_dotprod),
-            ("GHOST_BATCHED_DOTPROD_COMPILE", ghost_cfg.batched_dotprod_compile),
             ("GHOST_DECOUPLED_FN", ghost_cfg.decoupled_fn),
             ("GHOST_COMPILE_TOPLEVEL", ghost_cfg.compile_toplevel),
             ("GHOST_REGIONAL_COMPILE", ghost_cfg.regional_compile),
@@ -184,28 +178,18 @@ class GhostTrainer(Trainer):
             os.environ["GHOST_OPSAC_MM_EVERY"] = str(ghost_cfg.opsac_mm_every)
         resolved["GHOST_OPSAC_MM_EVERY"] = os.environ["GHOST_OPSAC_MM_EVERY"]
 
-        # Both grouped dot-product paths recover train grads via subtract-val after backward.
-        for lever in ("GHOST_BATCHED_DOTPROD", "GHOST_DECOUPLED_FN"):
-            if resolved[lever] and not resolved["GHOST_SUBTRACT_VAL"]:
-                raise ValueError(
-                    f"ghost lever {lever} requires ghost.subtract_val=true — it recovers train "
-                    "gradients via subtract-val after backward. Enable subtract_val or disable "
-                    "the lever."
-                )
-
-        # The decoupled-Function path selects its own manager (GhostDecoupledManager) instead of
-        # the eager engine, so the eager-engine lever 1b is inert when decoupled_fn is on.
-        if resolved["GHOST_DECOUPLED_FN"] and resolved["GHOST_BATCHED_DOTPROD"]:
-            logger.warning(
-                "ghost.decoupled_fn=true takes precedence; ghost.batched_dotprod (eager lever 1b) "
-                "is ignored on the decoupled-Function path."
+        # The decoupled path recovers train grads via subtract-val after backward.
+        if resolved["GHOST_DECOUPLED_FN"] and not resolved["GHOST_SUBTRACT_VAL"]:
+            raise ValueError(
+                "ghost lever GHOST_DECOUPLED_FN requires ghost.subtract_val=true — it recovers "
+                "train gradients via subtract-val after backward. Enable subtract_val or disable "
+                "the lever."
             )
 
         logger.info(
-            "Ghost levers: subtract_val=%s batched_dotprod=%s batched_dotprod_compile=%s "
-            "decoupled_fn=%s compile_toplevel=%s regional_compile=%s opsac_mm_every=%s",
-            resolved["GHOST_SUBTRACT_VAL"], resolved["GHOST_BATCHED_DOTPROD"],
-            resolved["GHOST_BATCHED_DOTPROD_COMPILE"], resolved["GHOST_DECOUPLED_FN"],
+            "Ghost levers: subtract_val=%s decoupled_fn=%s compile_toplevel=%s "
+            "regional_compile=%s opsac_mm_every=%s",
+            resolved["GHOST_SUBTRACT_VAL"], resolved["GHOST_DECOUPLED_FN"],
             resolved["GHOST_COMPILE_TOPLEVEL"], resolved["GHOST_REGIONAL_COMPILE"],
             resolved["GHOST_OPSAC_MM_EVERY"],
         )

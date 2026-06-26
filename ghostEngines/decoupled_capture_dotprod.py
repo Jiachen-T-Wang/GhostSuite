@@ -1,27 +1,18 @@
 """Compile-compatible ghost dot-products via transparent in-graph identity wrappers
 (``GHOST_DECOUPLED_FN=1``).
 
-Goal (re-examination doc §3): realize the model-compile win that lever 1b left on the table,
-without Phase 2's two regressions.
+Goal (re-examination doc §3): realize the model-compile win that the eager engine leaves on the
+table, without fusing the dot-product into the model's joint backward graph.
 
-Two designs were measured on H200 (llama3-130M, seq 4096, train bs2 + val bs2):
+**Design (in-graph dot).** An identity ``autograd.Function`` wraps each supported layer's *output*
+and computes the per-sample dot-product + ``grad_val`` *inside its backward*, storing only the
+**small** results (``dot`` [train_bs], ``grad_val`` weight-shaped). Because the Function is a
+transparent identity on the output, each layer keeps its **native fused backward**; the heavy dot
+intermediates (``grad_val_projected``) are transient in the backward, not stored. This keeps the
+eager-hook engine untouched and lets ``torch.compile`` regional-compile each block (no hooks /
+lock / setattr in the traced region). Train grads are recovered via subtract-val.
 
-  * **capture-full** (deprecated, ``GHOST_DECOUPLED_MODE=capture``): an identity Function
-    siphons each layer's *full* ``(A, grad_output)`` into preallocated buffers for a post-
-    backward grouped (1b) pass. RESULT: −44% tps / **+106% mem** — storing full A,B for 32
-    blocks doubles activation memory and the ~50 GiB/step of copies dominate. Wrong move.
-
-  * **in-graph dot** (default, ``GHOST_DECOUPLED_MODE=ingraph``): the identity Function computes
-    the per-sample dot-product + grad_val *inside its backward* (Phase 2's math) but stores only
-    the **small** results (``dot`` [train_bs], ``grad_val`` weight-shaped). Crucially it is a
-    transparent identity on the layer *output*, so each layer keeps its **native fused backward**
-    (Phase 2's −13% came partly from replacing that backward with hand-rolled matmuls). The
-    heavy dot intermediates (grad_val_projected) are transient in the backward, not stored.
-
-Both keep the eager-hook engine untouched and let ``torch.compile`` regional-compile each block
-(no hooks / lock / setattr in the traced region). Train grads are recovered via subtract-val.
-
-Supported leaves (in-graph mode): ``nn.Linear`` (no bias), ``nn.Embedding``, ``nn.RMSNorm``, and
+Supported leaves: ``nn.Linear`` (no bias), ``nn.Embedding``, ``nn.RMSNorm``, and
 ``nn.LayerNorm`` (weight + optional bias; ``_IGLayerNormFn``). **Tied weights** — a weight shared by
 two supported modules (e.g. GPT-2 ``wte`` ↔ ``lm_head``) — take a separate route: those (top-level,
 not in compiled regions) capture their ``(A, B)`` and are combined post-backward by
@@ -40,11 +31,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .batched_dotprod import run_batched_dotprod
-
 
 _DECOUPLED_FN = os.getenv("GHOST_DECOUPLED_FN", "0") == "1"
-_MODE = os.getenv("GHOST_DECOUPLED_MODE", "ingraph")  # "ingraph" (default) | "capture"
 
 _SUPPORTED = (nn.Linear, nn.Embedding, nn.RMSNorm, nn.LayerNorm)
 ACCUM_DTYPE = torch.float32
@@ -70,12 +58,18 @@ def _store(buf, val):
 
 
 # =======================================================================================
-# capture-full mode (deprecated; kept for reproducing the negative result)
+# tied-weight capture: store full (A, B) for the post-backward cross-term finalizer
 # =======================================================================================
 
 
 class _CaptureFn(torch.autograd.Function):
-    """Identity in forward; stores full (A, B) for a post-backward grouped pass."""
+    """Identity in forward; stores full (A, B) for a post-backward combine.
+
+    Used for tied weights (a weight shared by >=2 supported modules, e.g. GPT-2 ``wte``/``lm_head``):
+    the per-use in-graph dot would miss the cross-terms of the shared parameter's gradient, so each
+    use captures its full ``(A, B)`` here and ``stash_tied_contribution`` / ``finalize_tied_param``
+    combine them post-backward. These layers are top-level (not in compiled regions).
+    """
 
     @staticmethod
     def forward(ctx, output, input_act, a_buf, b_buf):
@@ -94,7 +88,7 @@ class _CaptureFn(torch.autograd.Function):
 
 
 # =======================================================================================
-# in-graph-dot mode (default): transparent identity, native backward preserved, small stores
+# in-graph-dot Functions: transparent identity, native backward preserved, small stores
 # =======================================================================================
 
 
@@ -273,7 +267,6 @@ class GhostDecoupledManager:
     def __init__(self, model: nn.Module, val_batch_size: int) -> None:
         self.model = model
         self.val_batch_size = val_batch_size
-        self.mode = _MODE
         self._orig_forward: Dict[int, object] = {}
         self._layers: List[Tuple[str, nn.Module]] = []
         # Tied weights (shared by >=2 supported modules, e.g. wte/lm_head) are handled separately:
@@ -387,7 +380,7 @@ class GhostDecoupledManager:
 
         return forward
 
-    # -- forward wrappers (capture mode, deprecated) --------------------------------------
+    # -- forward wrapper (tied weights: capture full (A, B)) ------------------------------
 
     def _wrap_capture(self, layer, op):
         cell = [None, None]
@@ -434,15 +427,7 @@ class GhostDecoupledManager:
                         self._name_restore[id(layer)] = getattr(layer, "name", _MISSING)
                     setattr(layer, "name", name)
                     self._orig_forward[id(layer)] = layer.forward
-                    if self.mode == "capture":
-                        if isinstance(layer, nn.LayerNorm):
-                            raise NotImplementedError(
-                                "GHOST_DECOUPLED_FN: LayerNorm is only supported in the default "
-                                "ingraph mode, not the deprecated capture mode."
-                            )
-                        layer.forward = self._wrap_capture(layer, self._build_op(layer))
-                        self._layers.append((name, layer))
-                    elif tied:
+                    if tied:
                         # Tied weight: capture (A, B) eagerly and combine post-backward with
                         # cross-terms (these layers are top-level, not in compiled regions).
                         if not isinstance(layer, (nn.Linear, nn.Embedding)):
@@ -515,9 +500,7 @@ class GhostDecoupledManager:
     # -- post-backward --------------------------------------------------------------------
 
     def run_step_dotprod(self) -> Optional[torch.Tensor]:
-        if self.mode == "capture":
-            return self._run_capture()
-        # ingraph: dot + grad_val already in buffers; just aggregate dot and publish grad_val.
+        # Non-tied layers: dot + grad_val already in buffers; aggregate dot and publish grad_val.
         from .supported_layers_grad_samplers_dotprod import (
             _maybe_store_grad_val, stash_tied_contribution, finalize_tied_param,
         )
@@ -547,32 +530,13 @@ class GhostDecoupledManager:
                 seen.add(id(w))
         return total
 
-    def _run_capture(self) -> Optional[torch.Tensor]:
-        pending = []
-        for _, layer in self._layers:
-            cell = self._cells.get(id(layer))
-            pending.append((layer, cell[0], cell[1]))
-        run_batched_dotprod(pending, self.val_batch_size)
-        total = None
-        for _, layer in self._layers:
-            dp = getattr(layer.weight, "grad_dot_prod", None)
-            if dp is None:
-                continue
-            total = dp.detach().clone() if total is None else total + dp.detach()
-        return total
-
     def recover_train_grads(self) -> None:
         for name, layer in self._layers:
-            # train_bs from the dot buffer length (ingraph) or captured activation (capture);
-            # the parameters to recover are the layer's trainable params (weight + optional bias
-            # for LayerNorm). capture mode publishes grad_val on the weight only.
-            if self.mode == "capture":
-                total_bs = self._cells[id(layer)][0].shape[0]
-                params = [layer.weight]
-            else:
-                cell0 = self._cells[id(layer)][0]
-                total_bs = cell0[0].shape[0] + self.val_batch_size
-                params = [p for p, _ in cell0[1]]
+            # train_bs from the dot buffer length; the parameters to recover are the layer's
+            # trainable params (weight + optional bias for LayerNorm).
+            cell0 = self._cells[id(layer)][0]
+            total_bs = cell0[0].shape[0] + self.val_batch_size
+            params = [p for p, _ in cell0[1]]
             train_bs = total_bs - self.val_batch_size
             scale = float(total_bs) / float(train_bs)
             for param in params:
