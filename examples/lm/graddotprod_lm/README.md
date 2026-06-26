@@ -85,9 +85,7 @@ Edit `config_file.py` to adjust:
 
 **The decoupled in-graph + `torch.compile` fast path is the default** for GradDotProd (~+9% step
 time on GPT-2-Small vs eager). All paths produce identical `dot_prod_log_iter_*.pt` / `valset.pt`
-outputs (the dot-products are numerically equivalent). See
-[`docs/analysis/graddotprod_lm_benchmark_summary_2026-06-25.md`](../../../docs/analysis/graddotprod_lm_benchmark_summary_2026-06-25.md)
-for measured numbers and methodology.
+outputs (the dot-products are numerically equivalent).
 
 | path | how to select | notes |
 |---|---|---|
