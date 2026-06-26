@@ -155,8 +155,18 @@ class DVEConfig:
 
         # Output layout: a run-specific root with per-stage subdirs so all stages
         # (possibly separate invocations) agree on paths from the same config.
+        # The name must encode EVERY parameter that determines the projection P, so a
+        # later stage run with a mismatched projection config resolves to a different
+        # dir and fails loudly (missing checkpoint/embeddings) rather than silently
+        # dotting test gradients against embeddings built under an incompatible P.
+        # proj_rank_min / include_embeddings change the projected dims (also caught by
+        # the dim check in dve_value), while proj_row_orthonormal / proj_dtype change
+        # P's values at identical dims (NOT caught there) -- all are included here.
+        proj_id = (f"rank_{self.proj_rank_total}_rmin_{self.proj_rank_min}"
+                   f"_seed_{self.proj_seed}_ortho_{int(self.proj_row_orthonormal)}"
+                   f"_pdt_{self.proj_dtype}_emb_{int(self.include_embeddings)}")
         run_name = (f"arch_{self.architecture}_layers_{self.proj_layers}"
-                    f"_rank_{self.proj_rank_total}_seed_{self.proj_seed}"
+                    f"_{proj_id}"
                     f"_opt_{self.optimizer}_lr_{self.learning_rate}"
                     f"_steps_{self.max_steps}_bs_{self.batch_size}"
                     f"_lrmode_{self.lr_mode}_data_{self.data_source}")

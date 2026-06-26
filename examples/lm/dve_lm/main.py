@@ -45,8 +45,10 @@ def _resolve_device(config):
 
 def _make_ctx(config, device):
     train_dtype = DTYPE_MAP[config.train_dtype]
-    return torch.amp.autocast(device_type='cuda', dtype=train_dtype,
-                              enabled=(device.type == 'cuda' and train_dtype != torch.float32))
+    # Keep autocast on only for CUDA half-precision; device_type tracks the real
+    # device so the context is valid (a no-op) on CPU runs.
+    enabled = device.type == 'cuda' and train_dtype != torch.float32
+    return torch.amp.autocast(device_type=device.type, dtype=train_dtype, enabled=enabled)
 
 
 def _build_model(config, device):
@@ -140,8 +142,6 @@ def _compute_test_projections(config, device, ctx, dataset):
 
     test_capture = os.path.join(config.value_dir, '_test_capture')
     engine = GradProjLoraEngine(model, **_engine_config(config, test_capture))
-    # Avoid writing spurious per-batch files; we use the returned tensors directly.
-    engine.proj_save_interval = 10 ** 12
     engine.attach()
 
     generator = torch.Generator()
@@ -161,7 +161,8 @@ def _compute_test_projections(config, device, ctx, dataset):
             with torch.enable_grad():
                 loss = model(X, Y).loss
         loss.backward()
-        proj = engine.collect_batch(batch_indices=[int(i) for i in ix])  # [cur, total]
+        # Transient pass: we use the returned tensor directly, never the disk file.
+        proj = engine.collect_batch(batch_indices=[int(i) for i in ix], save=False)  # [cur, total]
         blocks.append(proj.detach().float().cpu())
         ids.extend(int(i) for i in ix)
         engine.clear_gradients()

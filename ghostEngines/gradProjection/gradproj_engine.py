@@ -227,8 +227,12 @@ class GradProjLoraEngine:
         self.is_attached = False
         print(f"Detached projection hooks from {len(self.matched_layers)} layers")
         
+    # Keys written by _save_projection itself; callers may not override them via `extra`.
+    _RESERVED_EXTRA_KEYS = frozenset({'proj', 'iter', 'batch_size', 'batch_idx'})
+
     def collect_batch(self, batch_indices: Optional[List[int]] = None,
-                      extra: Optional[dict] = None) -> torch.Tensor:
+                      extra: Optional[dict] = None,
+                      save: bool = True) -> torch.Tensor:
         """
         Collect projected gradients from all layers and optionally save.
 
@@ -237,16 +241,26 @@ class GradProjLoraEngine:
             extra: Optional dict of extra per-step metadata to store in the saved
                 file (e.g. {'lr': ..., 'order': ...} for Data Value Embedding). Keys
                 'proj', 'iter', 'batch_size', 'batch_idx' are reserved.
+            save: When False, never write a file for this call regardless of
+                proj_save_interval. Use for transient passes (e.g. capturing test
+                gradients) where only the returned tensor is needed.
 
         Returns:
             Concatenated projection tensor of shape [B, total_proj_dim]
 
         Raises:
             RuntimeError: If no gradients are available
+            ValueError: If `extra` contains a reserved key
         """
         if not self.is_attached:
             raise RuntimeError("Engine is not attached. Call attach() first.")
-            
+
+        # Validate up front so a bad key fails fast even on non-save steps.
+        if extra is not None:
+            bad = self._RESERVED_EXTRA_KEYS & extra.keys()
+            if bad:
+                raise ValueError(f"extra keys {sorted(bad)} are reserved")
+
         # Collect per-layer projections
         layer_projections = []
         batch_size = None
@@ -277,7 +291,7 @@ class GradProjLoraEngine:
         full_projection = full_projection.to(self.proj_dtype)
         
         # Save if needed
-        if self.iteration % self.proj_save_interval == 0:
+        if save and self.iteration % self.proj_save_interval == 0:
             self._save_projection(full_projection, batch_indices, extra)
 
         self.iteration += 1
@@ -310,9 +324,8 @@ class GradProjLoraEngine:
             save_dict['batch_idx'] = batch_indices
 
         if extra is not None:
-            reserved = {'proj', 'iter', 'batch_size', 'batch_idx'}
             for key, val in extra.items():
-                if key in reserved:
+                if key in self._RESERVED_EXTRA_KEYS:
                     raise ValueError(f"extra key '{key}' is reserved")
                 save_dict[key] = val
 

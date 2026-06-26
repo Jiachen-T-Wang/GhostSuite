@@ -63,8 +63,7 @@ def test_ghost_capture_gpt2(seed=0, device=None):
     tmp = tempfile.mkdtemp()
     engine = GradProjLoraEngine(model, proj_layers='mlp,attn', proj_rank_total=32,
                                 proj_rank_min=4, proj_seed=0, proj_dtype='float32',
-                                proj_dir=tmp, proj_save_interval=10 ** 12)
-    engine.proj_save_interval = 10 ** 12
+                                proj_dir=tmp)
     engine.attach()
 
     g = torch.Generator(device='cpu').manual_seed(seed + 1)
@@ -75,7 +74,7 @@ def test_ghost_capture_gpt2(seed=0, device=None):
     model.zero_grad(set_to_none=True)
     loss = model(X, Y).loss
     loss.backward()
-    engine_out = engine.collect_batch().float().cpu()  # [B, total]
+    engine_out = engine.collect_batch(save=False).float().cpu()  # [B, total]
     engine.clear_gradients()
 
     # Brute force: each sample alone, full per-sample layer grad -> project -> compare.
