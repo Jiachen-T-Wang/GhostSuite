@@ -210,21 +210,7 @@ class GreatsTrainer:
         self.ghost.clear_gradients()
         log.clear()
         self.optimizer.zero_grad(set_to_none=True)
-
-        # Two ghost passes per step (scoring over N, update over k) have different
-        # batch sizes. In subtract-val mode the norm layers cache `layer.activations`
-        # and never clear it (their cleanup backward hook is not registered), so the
-        # scoring pass's activation would leak into the update pass and split with the
-        # wrong train size. Clear the transient per-module capture state so each pass
-        # resolves its own freshly-saved activations.
-        self._clear_transient_layer_state()
         return loss, entry
-
-    def _clear_transient_layer_state(self):
-        for module in self.model.modules():
-            for attr in ("activations", "backprops", "_ghost_saved_activation"):
-                if hasattr(module, attr):
-                    delattr(module, attr)
 
     def _scores_from_entry(self, entry):
         if entry is None:

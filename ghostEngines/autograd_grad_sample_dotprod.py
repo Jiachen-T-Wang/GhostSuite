@@ -420,6 +420,14 @@ def add_hooks(
             handles.append(layer.register_forward_hook(_pop_scope))
 
             def _register_output_hook(this_layer, inputs, output):
+                # Only install the dot-product backward hook while saved-tensor capture is
+                # active (inside saved_tensors_context). Forward/backward passes outside the
+                # context — evaluation, or a plain optimizer step on a selected subset — then
+                # run clean with the engine still attached, so callers don't need to detach
+                # and re-attach (re-registering every layer's hooks) around such passes.
+                if not manager._get_enabled():
+                    return
+
                 def _grad_hook(grad: torch.Tensor) -> torch.Tensor:
                     _compute_dotprod_from_backprops(
                         this_layer, grad, val_batch_size, loss_reduction, log_grad_norms
@@ -439,7 +447,17 @@ def add_hooks(
                         return masked_grad
 
                     if isinstance(this_layer, (nn.LayerNorm, nn.RMSNorm)):
-                        # Keep activation for the full backward hook to fix grad_input.
+                        if _SUBTRACT_VAL:
+                            # subtract-val does not register the grad_input-fixing
+                            # norm_backward_hook (see below), so nothing downstream needs
+                            # the saved activation. Clear the transient capture now — like
+                            # the embedding/linear branches — so multi-pass callers (e.g.
+                            # the GREATS scoring + update passes, which run at different
+                            # batch sizes) don't leak a stale activation across passes.
+                            _cleanup_layer_state(this_layer)
+                            return grad
+                        # Legacy masking path: keep the activation for the full backward
+                        # hook to fix grad_input.
                         this_layer._ghost_saved_activation = getattr(this_layer, "activations", None)
                         return grad
 

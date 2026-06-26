@@ -136,10 +136,10 @@ class GreatsSFTTrainer:
         scores = self._score_candidates(candidates)        # [N] cpu float
         topk = torch.topk(scores, k).indices.tolist()
         selected = [candidates[i] for i in topk]
-        self.engine.detach()                               # clean plain update, then reattach
-        loss = self._plain_update(selected)
-        self.engine.attach(self.optimizer)
-        return loss
+        # No detach needed: the engine only installs its dot-product backward hook inside
+        # saved_tensors_context() (used by the scoring pass), so the plain LoRA update below
+        # — which runs outside that context — is already clean, with no per-step hook churn.
+        return self._plain_update(selected)
 
     def _select_second_order(self, candidates, k):
         """True GREATS: Gram-based greedy selection weighted by (lr, lr^2)."""
