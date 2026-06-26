@@ -136,9 +136,12 @@ class GhostEngineManager:
         # candidate_batch_size + val, update over batch_size + val). Prime BOTH shapes so the
         # per-shape buffers are allocated and torch.compile caches one graph per shape. Single-pass
         # callers (no candidate_batch_size) keep the one update-size shape.
+        # GREATS' only ghost pass is scoring over candidate_batch_size + val (the update is a plain
+        # step on the selected subset, taken with capture disabled — no second ghost shape). Prime
+        # that one shape; single-pass callers (no candidate_batch_size) keep the update-size shape.
         cand = getattr(self.config, "candidate_batch_size", None)
         if cand is not None:
-            warmup_shapes = sorted({cand + val_bs, train_bs + val_bs})
+            warmup_shapes = [cand + val_bs]
         else:
             warmup_shapes = None
         default_total = train_bs + val_bs
@@ -301,6 +304,13 @@ class GhostEngineManager:
         """Update validation batch (useful when refreshing every step)."""
         self.X_val, self.Y_val = X_val, Y_val
     
+    def set_decoupled_enabled(self, flag):
+        """fn-path: toggle dot capture so a plain optimizer step (e.g. the GREATS update on the
+        selected subset) can run with the manager still attached. No-op off the fn-path (the eager
+        engine's output hook is already gated on the saved-tensors context)."""
+        if self.is_fn_path and self.decoupled_mgr is not None:
+            self.decoupled_mgr.set_enabled(flag)
+
     def prepare_decoupled_shape(self, total_bs):
         """fn-path multi-shape: point the in-graph buffers at this combined batch size before a
         forward (no-op off the fn-path). Required when one attached manager serves more than one

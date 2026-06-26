@@ -273,6 +273,10 @@ class GhostDecoupledManager:
         # score_exclude_params. Used e.g. to drop the dominant tied wte/lm_head term from GREATS
         # selection without changing the update.
         self.score_exclude_params = list(score_exclude_params or [])
+        # When disabled, the wrapped forwards fall through to the native op (no dot Function),
+        # so the model can take a plain forward/backward while the manager stays attached — e.g.
+        # the GREATS update pass, a plain step on the selected subset (no val, no ghost).
+        self._enabled = True
         self._orig_forward: Dict[int, object] = {}
         self._layers: List[Tuple[str, nn.Module]] = []
         # Tied weights (shared by >=2 supported modules, e.g. wte/lm_head) are handled separately:
@@ -302,6 +306,12 @@ class GhostDecoupledManager:
             bufs = self._alloc_ingraph(layer, total_bs, device)
             cache[total_bs] = bufs
         return bufs
+
+    def set_enabled(self, flag: bool) -> None:
+        """Toggle dot capture. Disabled => wrapped forwards run the native op only (a plain
+        forward/backward), so a caller can take a normal optimizer step on a selected subset
+        without detaching. Re-enable before the next scoring pass."""
+        self._enabled = bool(flag)
 
     def prepare_shape(self, total_bs: int) -> None:
         """Point every in-graph layer's active cell at the buffers for this combined batch size.
@@ -346,6 +356,8 @@ class GhostDecoupledManager:
 
         def forward(x):
             out = F.linear(x, weight)
+            if not self._enabled:
+                return out
             if cell[0] is None:
                 cell[0] = self._ensure_bufs_ingraph(layer, x.shape[0], x.device)
             dot_buf = cell[0][0]
@@ -364,6 +376,8 @@ class GhostDecoupledManager:
 
         def forward(idx):
             out = F.embedding(idx, weight, padding_idx)
+            if not self._enabled:
+                return out
             if cell[0] is None:
                 cell[0] = self._ensure_bufs_ingraph(layer, idx.shape[0], weight.device)
             dot_buf = cell[0][0]
@@ -382,6 +396,8 @@ class GhostDecoupledManager:
 
         def forward(x):
             out = F.rms_norm(x, normalized_shape, weight, eps)
+            if not self._enabled:
+                return out
             if cell[0] is None:
                 cell[0] = self._ensure_bufs_ingraph(layer, x.shape[0], x.device)
             dot_buf = cell[0][0]
@@ -402,6 +418,8 @@ class GhostDecoupledManager:
 
         def forward(x):
             out = F.layer_norm(x, normalized_shape, weight, bias, eps)
+            if not self._enabled:
+                return out
             if cell[0] is None:
                 cell[0] = self._ensure_bufs_ingraph(layer, x.shape[0], x.device)
             dot_buf = cell[0][0]
@@ -422,6 +440,8 @@ class GhostDecoupledManager:
 
         def forward(x):
             out = op(x)
+            if not self._enabled:
+                return out
             # Tied-capture layers are eager (top-level, never in a compiled region), so resizing
             # the (A, B) capture buffers when the batch shape changes is safe here — this is what
             # lets one attached manager serve GREATS' two per-step shapes (N+m scoring, k+m update).

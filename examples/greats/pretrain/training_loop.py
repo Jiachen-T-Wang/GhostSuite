@@ -6,16 +6,19 @@ step:
   1. Draw a candidate pool of N = ``candidate_batch_size`` train samples and a fresh
      scoring val batch of m = ``val_batch_size`` samples (from the eval window pool by
      default).
-  2. *Scoring pass* — one fused GradDotProd forward/backward over ``[candidate ++ val]``
-     giving per-candidate ``s_i = <g_i, g_val>`` (cosine optional). No optimizer step.
+  2. *Scoring pass* — one GradDotProd forward/backward over ``[candidate ++ val]`` giving
+     per-candidate ``s_i = <g_i, g_val>`` (cosine optional). No optimizer step. This is the
+     only ghost pass; by default it runs the decoupled in-graph + ``torch.compile`` fast path.
   3. Select the top-k candidates (k = ``batch_size``).
-  4. *Update pass* — a normal GradDotProd step over ``[selected ++ val]``; subtract-val
-     recovers the selected-subset mean gradient into ``.grad`` for the optimizer.
+  4. *Update* — a PLAIN forward/backward + optimizer step on the selected k only (no val, no
+     ghost). This is exact: subtract-val over ``[selected ++ val]`` recovers the mean train
+     gradient over the selected k, which equals a plain mean-loss backward over those k — so
+     the update needs neither the val batch nor the dot-product machinery (its dots were
+     discarded anyway). Dropping the val (m) forwards + ghost overhead from the update is the
+     ~25% per-step speedup vs running a second ghost pass.
 
-Steps 2 and 4 are two engine passes per step (the paper's two-pass note). Both reuse
-the validated GradDotProd path, so selection never touches engine internals.
-
-See docs/plans/greats_example_implementation_2026-06-25.md.
+See docs/plans/greats_example_implementation_2026-06-25.md and
+docs/analysis/greats_pretrain_decoupled_compile_2026-06-26.md.
 """
 
 import copy
@@ -161,8 +164,12 @@ class GreatsTrainer:
               if self.config.decay_lr else self.config.learning_rate)
         update_learning_rate(self.optimizer, lr)
 
-        # Update pass: real optimizer step on the selected subset.
-        loss, _ = self._ghost_pass(X_sel, Y_sel, iter_num, do_step=True)
+        # Update: a PLAIN step on the selected k (no val, no ghost). This is exact — subtract-val
+        # over [selected ++ val] recovers the mean train grad over the selected k, which equals a
+        # plain mean-loss backward over those k — so the update needs neither the val batch nor the
+        # dot-product machinery (its dots were discarded anyway). Drops m val-sample forwards and
+        # all ghost overhead from the update pass.
+        loss = self._plain_update(X_sel, Y_sel)
 
         torch.cuda.synchronize()
         dt = time.time() - t0
@@ -258,6 +265,34 @@ class GreatsTrainer:
         return scores
 
     # ------------------------------------------------------------------ #
+    # Plain update (Regular baseline AND the GREATS update on the selected subset)
+    # ------------------------------------------------------------------ #
+    def _plain_update(self, X, Y):
+        """A normal forward/backward + optimizer step on X (no val concat, no dot capture).
+
+        For the fn-path the dot-capture wrappers are toggled off so the model takes a clean
+        compiled forward; for the eager engine the per-layer hooks are already inert outside the
+        saved-tensors context, so this is plain either way. Scaler calls are no-ops when the
+        scaler is disabled (bf16 / fn-path)."""
+        if self.is_fn:
+            self.ghost.set_decoupled_enabled(False)
+        try:
+            with self.ctx:
+                outputs = self.model(X, Y)
+                loss = outputs.loss
+            self.scaler.scale(loss).backward()
+            self.scaler.unscale_(self.optimizer)
+            if self.config.grad_clip != 0.0:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.grad_clip)
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+            self.optimizer.zero_grad(set_to_none=True)
+        finally:
+            if self.is_fn:
+                self.ghost.set_decoupled_enabled(True)
+        return loss
+
+    # ------------------------------------------------------------------ #
     # Regular (no-selection) baseline step
     # ------------------------------------------------------------------ #
     def _regular_step(self, iter_num):
@@ -268,16 +303,7 @@ class GreatsTrainer:
               if self.config.decay_lr else self.config.learning_rate)
         update_learning_rate(self.optimizer, lr)
 
-        with self.ctx:
-            outputs = self.model(X, Y)
-            loss = outputs.loss
-        self.scaler.scale(loss).backward()
-        self.scaler.unscale_(self.optimizer)
-        if self.config.grad_clip != 0.0:
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.config.grad_clip)
-        self.scaler.step(self.optimizer)
-        self.scaler.update()
-        self.optimizer.zero_grad(set_to_none=True)
+        loss = self._plain_update(X, Y)
 
         torch.cuda.synchronize()
         dt = time.time() - t0
