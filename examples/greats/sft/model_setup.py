@@ -5,8 +5,6 @@ peft LoRA adapter mirroring the upstream `base_training_args.sh`, and builds an
 AdamW optimizer + linear schedule over the LoRA parameters.
 """
 
-from typing import Tuple
-
 import torch
 from peft import LoraConfig, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -61,10 +59,3 @@ def build_optimizer_and_scheduler(model, config, num_training_steps: int):
         optimizer, num_warmup_steps=warmup_steps, num_training_steps=num_training_steps
     )
     return optimizer, scheduler
-
-
-def setup_model_optimizer_tokenizer(config, device, num_training_steps: int) -> Tuple:
-    tokenizer = load_tokenizer(config)
-    model = load_model(config, device)
-    optimizer, scheduler = build_optimizer_and_scheduler(model, config, num_training_steps)
-    return model, optimizer, scheduler, tokenizer

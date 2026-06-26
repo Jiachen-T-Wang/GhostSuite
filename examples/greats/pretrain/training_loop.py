@@ -190,10 +190,12 @@ class GreatsTrainer:
                 loss = outputs.loss
             self.scaler.scale(loss).backward()
 
-        # Recover the train-only gradient into .grad (subtract-val).
-        self.ghost.prepare_gradients()
-
         if do_step:
+            # Recover the train-only gradient into .grad (subtract-val) for the
+            # optimizer. Skipped on the scoring pass: the per-candidate score log is
+            # produced by the backward hooks and read via aggregate_and_log() below,
+            # so the (per-parameter) subtract-val recovery would only be discarded.
+            self.ghost.prepare_gradients()
             self.scaler.unscale_(self.optimizer)
             if self.config.grad_clip != 0.0:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(),

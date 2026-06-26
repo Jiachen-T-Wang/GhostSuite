@@ -91,6 +91,18 @@ class TrainingConfig:
         self.select_metric = args.select_metric
         self.selection = args.selection
 
+        # `--select_metric` only affects the first-order engine path; the second-order
+        # Gram path always ranks on the raw dot/Gram. Fail loudly instead of silently
+        # ignoring a cosine request under the (default) second-order selection.
+        if self.method == "GREATS" and self.selection == "second_order" \
+                and self.select_metric != "dot":
+            raise ValueError(
+                f"--select_metric {self.select_metric!r} has no effect with "
+                "--selection second_order (the Gram path always uses the raw dot "
+                "product). Use --selection first_order for a non-dot metric, or drop "
+                "--select_metric."
+            )
+
         self.model_path = args.model_path
         self.data_dir = args.data_dir
         self.subject = args.subject

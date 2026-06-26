@@ -77,10 +77,6 @@ def parse_arguments():
                              "across training seeds so val/test loss noise is "
                              "seed-independent")
 
-    # Scoring-log save interval (selection stats per step are reduced; this controls
-    # how often the raw per-candidate score log is flushed to disk, like graddotprod).
-    parser.add_argument("--dot_prod_save_interval", type=int, default=10)
-
     # Precision.
     parser.add_argument("--model_dtype", type=str, default="float32",
                         choices=["float32", "float16", "bfloat16"])
@@ -177,7 +173,6 @@ class TrainingConfig:
         self.eval_interval = args.eval_interval
         self.eval_bs = args.eval_bs
         self.eval_seed = args.eval_seed
-        self.dot_prod_save_interval = args.dot_prod_save_interval or self.eval_interval
 
         # Scoring options.
         self.score_val_from_eval_pool = args.score_val_from_eval_pool

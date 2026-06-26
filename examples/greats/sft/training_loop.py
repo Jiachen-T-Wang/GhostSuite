@@ -62,15 +62,14 @@ class GreatsSFTTrainer:
             # True GREATS: Gram-based greedy selection over the LoRA params.
             self.gram_scorer = GramScorer(self.model)
         elif self.is_greats:
-            # First-order: top-k by <g_i, g_val> via the GradDotProd engine.
-            save_path = os.path.join(config.result_dir, "grad_dotprods")
-            os.makedirs(save_path, exist_ok=True)
+            # First-order: top-k by <g_i, g_val> via the GradDotProd engine. Scores are
+            # consumed in-memory each step (read + clear), so no on-disk score log is kept.
             self.engine = GradDotProdEngine(
                 module=self.model,
                 val_batch_size=self.val_bs,
                 loss_reduction="mean",
                 use_dummy_bias=False,
-                dot_prod_save_path=save_path,
+                dot_prod_save_path=None,
                 log_grad_norms=config.log_grad_norms,
             )
             self.engine.attach(self.optimizer)
