@@ -10,19 +10,33 @@ Let `N` = candidate pool size (`--candidate_batch_size`), `k` = trained subset s
 1. **Draw** a candidate pool of `N` train samples and a fresh scoring val batch of `m`
    samples (from the fixed eval window pool by default, so selection targets exactly the
    eval population).
-2. **Scoring pass** — one fused `GradDotProd` forward/backward over `[candidate ++ val]`
-   yields per-candidate `s_i = <g_i, g_val>` (or cosine with `--select_metric cosine`).
-   No optimizer step.
+2. **Scoring pass** — one `GradDotProd` forward/backward over `[candidate ++ val]` yields
+   per-candidate `s_i = <g_i, g_val>` (or cosine with `--eager --select_metric cosine`).
+   No optimizer step. This is the **only** ghost pass; by default it runs the **decoupled
+   in-graph + `torch.compile` fast path**.
 3. **Select** the top-`k` candidates by `s_i`.
-4. **Update pass** — a normal `GradDotProd` step over `[selected ++ val]`; subtract-val
-   recovers the selected-subset mean gradient into `.grad` and the optimizer steps.
-
-Steps 2 and 4 are **two engine passes per step** (matching GREATS' two-pass note). The
-scoring pass cannot be reused for the update because subtract-val recovers the mean
-gradient over the *whole* candidate pool, not the selected subset.
+4. **Update** — a **plain** forward/backward + optimizer step on the selected `k` only (no
+   val, no ghost). This is exact: subtract-val over `[selected ++ val]` recovers the mean
+   train gradient over the selected `k`, which equals a plain mean-loss backward over those
+   `k` (verified in `tests/test_greats_plain_update_equiv.py`). Dropping the val (`m`)
+   forwards + ghost overhead from the update is a **~25% per-step speedup** vs a second
+   ghost pass.
 
 This is first-order selection: there is **no** pairwise train–train Gram matrix and **no**
 greedy second-order redundancy term. Adding them is future work (see the plan).
+
+### Engine fast path (default) and flags
+The scoring pass defaults to `--decoupled_fn --decoupled_compile` (the compile-clean in-graph
+path, same as `examples/lm/graddotprod_lm`). Notes:
+- `--eager` uses the per-layer-hook engine instead. Needed for **`--select_metric cosine`**
+  (the fast path has no grad norms yet — future work) and for **large models** (e.g.
+  GPT2-Large) where compile's extra activation memory OOMs but eager fits. At the plain-update
+  working point eager is only ~4% slower than compile, so `--eager` is a safe choice.
+- `--no_decoupled_compile` keeps the in-graph path without compile (slower than eager — not
+  recommended); `--decoupled_mem_budget`, `--decoupled_compile_toplevel` are the compile levers
+  (note: top-level compile regresses GPT-2; `mem_budget` does not lower the fp32-logits memory
+  floor — see `docs/analysis/greats_pretrain_decoupled_compile_2026-06-26.md`).
+- The fast path requires bf16 training (`--train_dtype bfloat16`, GradScaler disabled).
 
 ## Quick start
 
@@ -64,6 +78,11 @@ See `examples/lm/graddotprod_lm/README.md` for how to tokenize the Pile.
   experiments.
 
 ## Cost & measurement
-GREATS does `~(N+m)` scoring + `~(k+m)` update sample-forwards per step vs. `k` for the
-baseline, so step time is genuinely higher — the scoring pass is real work. Report `tps`
-honestly and follow the GPU/Slurm method in `AGENTS.md` (H200, drop warmup, bench OFF).
+GREATS does `~(N+m)` scoring (ghost) + `~k` update (plain) sample-forwards per step vs. `k`
+for the baseline, so step time is genuinely higher — the scoring pass is real work. (The
+update is a plain step on the selected `k`, so it no longer pays the val `m` forwards or any
+ghost overhead — a ~25% step-time saving vs a second ghost pass.) Report `tps` honestly and
+follow the GPU/Slurm method in `AGENTS.md` (H200, drop warmup, bench OFF). Measured H200
+steady-state (GREATS `N=32/k=16/m=16`, bf16): GPT2-Small **0.199 s** (compile) / 0.207 s
+(eager); GPT2-Medium 0.463 s / 0.486 s — see
+`docs/analysis/greats_pretrain_decoupled_compile_2026-06-26.md`.
