@@ -100,7 +100,6 @@ single forward/backward on a **combined `train + val` batch**. Its runtime lever
 | `decoupled_fn` | on | graph-clean decoupled-Function path so `torch.compile` can compile the model |
 | `compile_toplevel` | on | also compile the output Linear's dot (memory-free; the rest of the gain) |
 | `opsac_mm_every` | 1 | op-SAC mm save-fraction: recompute every N-th matmul (1 = all → min memory; ↑N = more memory, faster). Active when `selective_ac_option="op"` |
-| `batched_dotprod` | off | eager grouped dot-product — the no-compile fallback (superseded by `decoupled_fn`) |
 | `regional_compile` | off | regional compile of RoPE/SwiGLU (helps A100, regresses H200) |
 
 The default also sets `[compile] enable = true` and `[activation_checkpoint] mode = "selective",
@@ -129,5 +128,4 @@ Caveats: the combined `train + val` batch and the compiled path both raise peak 
 baseline (the fp32 logits tensor, `batch · seq · vocab · 4` bytes, dominates for large-vocab
 models). The default op-SAC `mme1` keeps peak memory *below* the eager engine, so it has the most
 headroom — prefer it (or `mode=full`) on an 80 GB A100. To fall back to the pure eager engine, run
-with `--ghost.no-decoupled_fn --ghost.no-batched_dotprod` (compile is auto-disabled on the eager
-path).
+with `--ghost.no-decoupled_fn` (compile is auto-disabled on the eager path).

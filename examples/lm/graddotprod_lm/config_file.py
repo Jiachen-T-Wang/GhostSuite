@@ -29,7 +29,7 @@ def parse_arguments():
                        choices=['GPT2-Tiny', 'GPT2-Small', 'GPT2-Medium', 'GPT2-Large', 'LLaVA-7B', 'LLaVA-13B'])
     parser.add_argument('--no_tie_weights', dest='tie_weights', action='store_false',
                         help='Untie the token-embedding and LM-head weight. Default: tied (standard '
-                             'GPT-2). Tied weights are handled by all ghost paths (eager, batched, '
+                             'GPT-2). Tied weights are handled by all ghost paths (eager, '
                              'decoupled) via the cross-term tied-weight finalizer.')
     parser.set_defaults(tie_weights=True)
     # The decoupled in-graph + torch.compile fast path is the DEFAULT for GradDotProd (compile-clean:

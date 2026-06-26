@@ -93,7 +93,6 @@ for measured numbers and methodology.
 |---|---|---|
 | **decoupled in-graph + compile** | *(default)* | keeps each layer's native backward, folds the dot into the `torch.compile`d transformer blocks. **~+9% step time** on GPT-2-Small |
 | **eager** | `--eager` | per-layer saved-tensor hooks; the reference path. Use for incompatible configs (also selected automatically — see below) |
-| **batched (lever 1b)** | `--eager` + `GHOST_BATCHED_DOTPROD=1` (env), opt. `..._COMPILE=1` | one grouped post-backward pass on the eager engine; ~neutral at GPT-2-Small |
 | **activation checkpointing** | add `--decoupled_mem_budget 0.5` | recompute in backward to cut peak memory (≈−27% on GPT-2-Medium for +29% time); tunable in `(0,1]`. The lever for scaling to GPT-2-Medium/Large |
 
 ```bash
