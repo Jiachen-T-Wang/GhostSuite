@@ -7,7 +7,7 @@
 #SBATCH --mem-per-cpu=16G
 #SBATCH --gres=gpu:1
 #SBATCH --partition=ailab
-#SBATCH --output=/scratch/gpfs/PMITTAL/tianhao/GhostSuite-wt-greats-gram/outputs/sft_cmp_%x_%j.out
+#SBATCH --output=slurm-%x-%j.out
 
 # Reruns the SFT comparison with the up-to-date upstream config (lr 2e-5, label
 # masking, shuffled val mini-batch), reporting MMLU eval/test answer perplexity (the
@@ -25,7 +25,11 @@ SELECTION=${4:-second_order}
 module load proxy/default 2>/dev/null || true
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false
 
-REPO=/scratch/gpfs/PMITTAL/tianhao/GhostSuite-wt-greats-gram
+# Resolve the repo root (dir containing init.sh) from the submit directory, so this
+# works from any checkout/worktree without a hardcoded path.
+REPO="${SLURM_SUBMIT_DIR:-$(pwd)}"
+while [ "$REPO" != "/" ] && [ ! -f "$REPO/init.sh" ]; do REPO="$(dirname "$REPO")"; done
+[ -f "$REPO/init.sh" ] || { echo "ERROR: could not locate repo root (init.sh) from ${SLURM_SUBMIT_DIR:-$(pwd)}"; exit 1; }
 cd "$REPO"
 source init.sh >/dev/null 2>&1
 cd "$REPO/examples/greats/sft"

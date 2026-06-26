@@ -7,7 +7,7 @@
 #SBATCH --mem-per-cpu=16G
 #SBATCH --gres=gpu:1
 #SBATCH --constraint=gpu80
-#SBATCH --output=/scratch/gpfs/PMITTAL/tianhao/GhostSuite-wt-greats/examples/greats/pretrain/results/pre_cmp_%x_%j.out
+#SBATCH --output=slurm-%x-%j.out
 
 # GREATS pretraining comparison: GPT2-Small on Pile, online batch selection.
 # Equal update size: Regular trains on k=16 random; GREATS selects the best 16 of a
@@ -26,7 +26,11 @@ export PILE_DATA_DIR_TRAIN=/scratch/gpfs/PMITTAL/tianhao/PretrainData/pile/pile-
 export PILE_DATA_DIR_VAL=/scratch/gpfs/PMITTAL/tianhao/PretrainData/pile/pile-val-gpt2
 export PILE_DATA_DIR_TEST=/scratch/gpfs/PMITTAL/tianhao/PretrainData/pile/pile-test-gpt2
 
-REPO=/scratch/gpfs/PMITTAL/tianhao/GhostSuite-wt-greats
+# Resolve the repo root (dir containing init.sh) from the submit directory, so this
+# works from any checkout/worktree without a hardcoded path.
+REPO="${SLURM_SUBMIT_DIR:-$(pwd)}"
+while [ "$REPO" != "/" ] && [ ! -f "$REPO/init.sh" ]; do REPO="$(dirname "$REPO")"; done
+[ -f "$REPO/init.sh" ] || { echo "ERROR: could not locate repo root (init.sh) from ${SLURM_SUBMIT_DIR:-$(pwd)}"; exit 1; }
 cd "$REPO"
 source init.sh >/dev/null 2>&1
 cd "$REPO/examples/greats/pretrain"
