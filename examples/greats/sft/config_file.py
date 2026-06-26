@@ -23,6 +23,10 @@ def parse_arguments():
     # Method.
     p.add_argument("--method", type=str, default="GREATS", choices=["GREATS", "Regular"])
     p.add_argument("--select_metric", type=str, default="dot", choices=["dot", "cosine"])
+    p.add_argument("--selection", type=str, default="second_order",
+                   choices=["first_order", "second_order"],
+                   help="GREATS selection: first_order = top-k by <g_i,g_val>; "
+                        "second_order = Gram-based greedy (true GREATS, redundancy-aware)")
 
     # Model / data paths.
     p.add_argument("--model_path", type=str, default=DEFAULT_MODEL_PATH)
@@ -85,6 +89,7 @@ class TrainingConfig:
         self.args = args
         self.method = args.method
         self.select_metric = args.select_metric
+        self.selection = args.selection
 
         self.model_path = args.model_path
         self.data_dir = args.data_dir

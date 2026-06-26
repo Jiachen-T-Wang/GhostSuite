@@ -1,10 +1,12 @@
-"""MMLU few-shot accuracy eval, ported from upstream GREATS `less/train/mmlu_eval.py`.
+"""MMLU evals, ported from upstream GREATS.
 
-Builds an in-context (few-shot) prompt from the subject's dev rows, appends each test
-question, and reads the next-token probability restricted to the answer-choice tokens
-(A/B/C/D), argmax vs the gold answer. This is the metric the upstream README reports.
+- `compute_mmlu_perplexity`: eval/test answer perplexity (the metric in the upstream
+  README's `trialrun.png`) = exp(mean CE on the answer token) over the dev (eval) and
+  test sets, with the prompt masked (LESS `tokenize`/`gctrainer` eval loss).
+- `compute_mmlu_accuracy`: few-shot ICL accuracy = next-token argmax over A/B/C/D.
 """
 
+import math
 import os
 from typing import List
 
@@ -12,6 +14,41 @@ import pandas as pd
 import torch
 
 CHOICES = ["A", "B", "C", "D"]
+
+
+@torch.no_grad()
+def _set_perplexity(model, tokenizer, examples, device, batch_size=8):
+    from data_utils import collate
+    if not examples:
+        return float("nan")
+    pad_id = tokenizer.pad_token_id
+    total_loss, total_tok = 0.0, 0
+    for i in range(0, len(examples), batch_size):
+        batch = collate(examples[i:i + batch_size], pad_id, device)
+        out = model(input_ids=batch["input_ids"], attention_mask=batch["attention_mask"],
+                    labels=batch["labels"])
+        ntok = int((batch["labels"][..., 1:] != -100).sum().item())  # HF shifts labels
+        if ntok > 0:
+            total_loss += float(out.loss) * ntok
+            total_tok += ntok
+    return math.exp(total_loss / max(1, total_tok))
+
+
+@torch.no_grad()
+def compute_mmlu_perplexity(model, tokenizer, data_dir, subject, n_val, n_test, device,
+                            max_seq_length=512, batch_size=8):
+    """Return (eval_ppl, test_ppl): answer perplexity on the dev (n_val) and test
+    (n_test) sets. Matches the upstream eval-loss -> exp() metric in trialrun.png."""
+    from data_utils import build_mmlu_examples
+    eval_ex = build_mmlu_examples(data_dir, tokenizer, subject, n_val, max_seq_length, split="dev")
+    test_ex = build_mmlu_examples(data_dir, tokenizer, subject, n_test, max_seq_length, split="test")
+    was_training = model.training
+    model.eval()
+    eval_ppl = _set_perplexity(model, tokenizer, eval_ex, device, batch_size)
+    test_ppl = _set_perplexity(model, tokenizer, test_ex, device, batch_size)
+    if was_training:
+        model.train()
+    return eval_ppl, test_ppl
 
 
 def _format_subject(subject: str) -> str:
