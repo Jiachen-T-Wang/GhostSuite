@@ -12,10 +12,10 @@
 # Reruns the SFT comparison with the up-to-date upstream config (lr 2e-5, label
 # masking, shuffled val mini-batch), reporting MMLU eval/test answer perplexity (the
 # trialrun.png metric) plus accuracy.
-# Usage: sbatch run_compare.sbatch <METHOD> <BATCH_SIZE> <FRACINV> [SELECTION]
-#   Regular:           sbatch run_compare.sbatch Regular 4 1.0
-#   GREATS 1st-order:  sbatch run_compare.sbatch GREATS 2 2.0 first_order
-#   GREATS 2nd-order:  sbatch run_compare.sbatch GREATS 2 2.0 second_order
+# Usage: sbatch experiments/run_compare.sbatch <METHOD> <BATCH_SIZE> <FRACINV> [SELECTION]
+#   Regular:           sbatch experiments/run_compare.sbatch Regular 4 1.0
+#   GREATS 1st-order:  sbatch experiments/run_compare.sbatch GREATS 2 2.0 first_order
+#   GREATS 2nd-order:  sbatch experiments/run_compare.sbatch GREATS 2 2.0 second_order
 set -e
 METHOD=${1:-GREATS}
 BATCH_SIZE=${2:-2}

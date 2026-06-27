@@ -12,9 +12,9 @@
 # GREATS pretraining comparison: GPT2-Small on Pile, online batch selection.
 # Equal update size: Regular trains on k=16 random; GREATS selects the best 16 of a
 # 32-candidate pool. Three arms via args:
-#   sbatch run_compare.sbatch Regular  no    <MAX_STEPS>
-#   sbatch run_compare.sbatch GREATS   excl  <MAX_STEPS>   # --score_exclude_params wte,lm_head
-#   sbatch run_compare.sbatch GREATS   incl  <MAX_STEPS>   # full score (tied wte/lm_head included)
+#   sbatch experiments/run_compare.sbatch Regular  no    <MAX_STEPS>
+#   sbatch experiments/run_compare.sbatch GREATS   excl  <MAX_STEPS>   # --score_exclude_params wte,lm_head
+#   sbatch experiments/run_compare.sbatch GREATS   incl  <MAX_STEPS>   # full score (tied wte/lm_head included)
 set -e
 METHOD=${1:-GREATS}
 EXCL=${2:-excl}
@@ -22,9 +22,10 @@ MAX_STEPS=${3:-10000}
 
 module load proxy/default 2>/dev/null || true
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false
-export PILE_DATA_DIR_TRAIN=/scratch/gpfs/PMITTAL/tianhao/PretrainData/pile/pile-train
-export PILE_DATA_DIR_VAL=/scratch/gpfs/PMITTAL/tianhao/PretrainData/pile/pile-val-gpt2
-export PILE_DATA_DIR_TEST=/scratch/gpfs/PMITTAL/tianhao/PretrainData/pile/pile-test-gpt2
+# Point these at your tokenized Pile splits (already-set env values are respected).
+export PILE_DATA_DIR_TRAIN=${PILE_DATA_DIR_TRAIN:-/path/to/pile/pile-train}
+export PILE_DATA_DIR_VAL=${PILE_DATA_DIR_VAL:-/path/to/pile/pile-val-gpt2}
+export PILE_DATA_DIR_TEST=${PILE_DATA_DIR_TEST:-/path/to/pile/pile-test-gpt2}
 
 # Resolve the repo root (dir containing init.sh) from the submit directory, so this
 # works from any checkout/worktree without a hardcoded path.
