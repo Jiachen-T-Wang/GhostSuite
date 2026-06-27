@@ -2,8 +2,7 @@
 """Entry point for the GREATS online-batch-selection pretraining example.
 
 Reuses the shared/ model + data utilities under examples/lm/ and the GradDotProd
-ghost engine for per-sample scoring. See
-docs/plans/greats_example_implementation_2026-06-25.md.
+ghost engine for per-sample scoring.
 """
 
 import os

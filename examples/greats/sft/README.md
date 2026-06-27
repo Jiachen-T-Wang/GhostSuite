@@ -1,9 +1,9 @@
 # GREATS SFT — Online Selection for LoRA Instruction Tuning
 
-Self-contained **first-order online batch selection** during LoRA instruction tuning,
-mirroring the upstream [GREATS](https://github.com/Jiachen-T-Wang/GREATS) / LESS
-`warmup_train.sh` setup but running in the GhostSuite `.venv` on the `GradDotProd` engine.
-See `docs/plans/greats_sft_phaseB_2026-06-25.md`.
+Self-contained **online batch selection** during LoRA instruction tuning, mirroring the
+upstream [GREATS](https://github.com/Jiachen-T-Wang/GREATS) / LESS `warmup_train.sh` setup
+but running in the GhostSuite `.venv` on the `GradDotProd` engine. Supports both first-order
+and the default second-order (Gram-based greedy) selection — see **Selection modes** below.
 
 ## What it does (per optimizer step)
 1. Draw a candidate pool of `N = round(fracinv * batch_size)` instruction samples.
@@ -18,12 +18,12 @@ See `docs/plans/greats_sft_phaseB_2026-06-25.md`.
 Only the LoRA `nn.Linear` adapters are trainable, so the engine scores exactly those; no
 norm layers are scored.
 
-## Setup (this cluster)
-- Model: Llama-2-7b-hf is cached at a local path (default in `config_file.py`); no HF token
-  needed. Override with `--model_path`.
-- Data: instruction jsonl + MMLU under `--data_dir`
-  (default `/scratch/gpfs/PMITTAL/tongwu/other/GREATS/data`).
-- Env: the GhostSuite `.venv` (`source init.sh`); `peft` is included.
+## Setup
+- Model: a Llama-2-7b-hf checkpoint. Pass `--model_path` (a HF hub id like
+  `meta-llama/Llama-2-7b-hf`, or a local snapshot dir), or set `GREATS_SFT_MODEL_PATH`.
+  A local snapshot needs no HF token.
+- Data: instruction jsonl + MMLU under `--data_dir` (or set `GREATS_SFT_DATA_DIR`).
+- Env: the GhostSuite `.venv` (`uv sync && source .venv/bin/activate`); `peft` is included.
 
 ## Quick start
 
@@ -31,9 +31,9 @@ norm layers are scored.
 Build a tiny Llama that shares the real tokenizer, then run a few steps on a small data
 slice (CPU is slow on shared login nodes — use a GPU node):
 ```bash
-# (one-time) save a tiny Llama to a shared path, then:
+# (one-time) save a tiny Llama to a local path, then:
 python main.py --method GREATS --model_path <tiny-llama-dir> \
-    --data_dir /scratch/gpfs/PMITTAL/tongwu/other/GREATS/data \
+    --data_dir <greats-data-dir> \
     --batch_size 4 --fracinv 2.0 --read_limit_per_file 60 --percentage 1.0 \
     --max_train_samples 48 --num_train_epochs 1 --max_steps 6 \
     --model_dtype float32 --device cuda
@@ -68,3 +68,8 @@ max_seq 512 — matching upstream `base_training_args.sh`.
 ## Scope
 Single-GPU; MMLU few-shot test accuracy as the headline metric (not the full LESS eval
 harness).
+
+## Experiment & results
+A committed GREATS-vs-Regular MMLU answer-perplexity comparison — with the figure, raw run logs,
+the comparison launcher (`run_compare.sbatch`), and the plot script — lives in
+[`experiments/`](experiments/README.md).

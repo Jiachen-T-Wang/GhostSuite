@@ -2,8 +2,7 @@
 
 This mirrors examples/lm/graddotprod_lm/config_file.py (so it can reuse the same
 shared/ model + data utilities) and adds the GREATS-specific knobs: a candidate
-pool size and the selection metric. See
-docs/plans/greats_example_implementation_2026-06-25.md.
+pool size and the selection metric.
 """
 
 import argparse

@@ -1,6 +1,6 @@
 """General attach -> warmup -> compile harness for the decoupled in-graph ghost dot-product path.
 
-This is the model-agnostic Step-3 deliverable of docs/plans/optimize_graddotprod_lm_2026-06-25.md.
+This is the model-agnostic harness for the decoupled in-graph dot-product path.
 It packages the TorchTitan deferred-compile recipe (attach the ghost manager so the supported
 leaves are monkeypatched FIRST, run one eager warmup so the per-layer dot/grad_val buffers are
 allocated OUTSIDE the traced region, THEN regional-compile) behind a single call so each example

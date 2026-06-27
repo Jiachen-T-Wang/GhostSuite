@@ -16,3 +16,5 @@ outputs/
 # Ignore stray init.sh (e.g. examples/torchtitan/init.sh) but track the root one.
 init.sh
 !/init.sh
+# GREATS example experiments: keep the figures/launchers/plots, not raw Slurm run logs.
+examples/greats/*/experiments/logs/

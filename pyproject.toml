@@ -1,5 +1,4 @@
 # GhostSuite root project — uv-managed environment.
-# See docs/archive/v0.35/uv_migration_plan_2026-06-18.md for the migration rationale.
 #
 # torch is pinned to the stable 2.11.0+cu128 release (the finalized version of
 # the previously-used 2.11.0.dev nightly, which was pruned from the nightly
@@ -8,7 +7,7 @@
 
 [project]
 name = "ghostsuite"
-version = "0.41.0"
+version = "0.5.0"
 description = "Ghost engines for per-sample gradient dot-products and projections."
 readme = "README.md"
 requires-python = "==3.12.*"

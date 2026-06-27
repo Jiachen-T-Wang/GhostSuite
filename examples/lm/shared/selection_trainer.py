@@ -8,8 +8,6 @@ One entry point — ``online_selection_step`` — covers the whole family:
 The caller supplies a ``forward_fn(model, X, Y) -> loss`` (so the model's forward signature stays
 out of the engine) and owns data loading / LR schedule / eval / logging. The ghost dance —
 scoring, the eager-vs-fn dot read, recover-vs-reselect, capture toggling — lives here.
-
-See docs/plans/pluggable_update_policy_2026-06-26.md.
 """
 
 import torch

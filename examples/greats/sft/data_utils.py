@@ -2,7 +2,7 @@
 
 Ports the LESS instruction-tuning data pipeline (tulu chat format) and the MMLU
 validation-target construction, so the example mirrors the upstream
-`warmup_train.sh` setup. See docs/plans/greats_sft_phaseB_2026-06-25.md.
+`warmup_train.sh` setup.
 """
 
 import json

@@ -35,7 +35,7 @@ path, same as `examples/lm/graddotprod_lm`). Notes:
 - `--no_decoupled_compile` keeps the in-graph path without compile (slower than eager — not
   recommended); `--decoupled_mem_budget`, `--decoupled_compile_toplevel` are the compile levers
   (note: top-level compile regresses GPT-2; `mem_budget` does not lower the fp32-logits memory
-  floor — see `docs/analysis/greats_pretrain_decoupled_compile_2026-06-26.md`).
+  floor).
 - The fast path requires bf16 training (`--train_dtype bfloat16`, GradScaler disabled).
 
 ### Update rule = a pluggable policy
@@ -44,7 +44,6 @@ shared `examples/lm/shared/selection_trainer.online_selection_step` driver. GREA
 `TopK(batch_size)`; the Regular baseline uses `NoSelection` (no scoring, plain step). The driver
 also backs `examples/lm/graddotprod_lm` (`UpdateAll`), and `BottomK`/`Threshold` are available for
 rejected-arm / online-sel50 ablations — so a new selection experiment is a one-line policy swap.
-See `docs/plans/pluggable_update_policy_2026-06-26.md`.
 
 ## Quick start
 
@@ -92,5 +91,9 @@ update is a plain step on the selected `k`, so it no longer pays the val `m` for
 ghost overhead — a ~25% step-time saving vs a second ghost pass.) Report `tps` honestly and
 follow the GPU/Slurm method in `AGENTS.md` (H200, drop warmup, bench OFF). Measured H200
 steady-state (GREATS `N=32/k=16/m=16`, bf16): GPT2-Small **0.199 s** (compile) / 0.207 s
-(eager); GPT2-Medium 0.463 s / 0.486 s — see
-`docs/analysis/greats_pretrain_decoupled_compile_2026-06-26.md`.
+(eager); GPT2-Medium 0.463 s / 0.486 s.
+
+## Experiment & results
+A committed GREATS-vs-Regular comparison on Pile — with the val/test loss figure, raw run logs,
+the comparison launcher (`run_compare.sbatch`), and the plot script — lives in
+[`experiments/`](experiments/README.md).

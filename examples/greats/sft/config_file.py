@@ -1,24 +1,22 @@
 """Configuration for the GREATS SFT (LoRA instruction tuning) example.
 
-Mirrors the upstream GREATS/LESS `base_training_args.sh` + `warmup_train.sh`. See
-docs/plans/greats_sft_phaseB_2026-06-25.md.
+Mirrors the upstream GREATS/LESS `base_training_args.sh` + `warmup_train.sh`.
 """
 
 import argparse
 import os
 
-# Default local paths (verified available on this cluster).
-DEFAULT_MODEL_PATH = (
-    "/scratch/gpfs/PMITTAL/tongwu/other/llama/models--meta-llama--Llama-2-7b-hf/"
-    "snapshots/6fdf2e60f86ff2481f2241aaee459f85b5b0bbb9"
-)
-DEFAULT_DATA_DIR = "/scratch/gpfs/PMITTAL/tongwu/other/GREATS/data"
+# Model / data locations. Point --model_path at a Llama-2-7b-hf checkpoint (a HF hub id
+# or a local snapshot dir) and --data_dir at the GREATS/LESS instruction + MMLU data dir.
+# The env vars below let you set a machine-local default without editing this file.
+DEFAULT_MODEL_PATH = os.environ.get("GREATS_SFT_MODEL_PATH", "meta-llama/Llama-2-7b-hf")
+DEFAULT_DATA_DIR = os.environ.get("GREATS_SFT_DATA_DIR", "./data")
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 RESULTS_DIR = os.path.join(_THIS_DIR, "results")
 
 
 def parse_arguments():
-    p = argparse.ArgumentParser(description="GREATS SFT online batch selection (first-order).")
+    p = argparse.ArgumentParser(description="GREATS SFT online batch selection.")
 
     # Method.
     p.add_argument("--method", type=str, default="GREATS", choices=["GREATS", "Regular"])

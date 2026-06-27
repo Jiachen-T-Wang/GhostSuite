@@ -38,7 +38,7 @@ source .venv/bin/activate
 
 ## Quick Start
 
-The `examples/` directory holds three groups of runnable demos, one per subfolder.
+The `examples/` directory holds four groups of runnable demos, one per subfolder.
 Each is summarized below; see [`examples/README.md`](examples/README.md) for the full
 walkthrough, all options, and the TorchTitan speed↔memory tuning guide.
 
@@ -85,6 +85,22 @@ CONFIG_FILE="./examples/torchtitan/torchtitan/models/llama3/train_configs/llama3
 The `--ghost.*` flags expose a speed↔memory tradeoff (a compiled fast path plus op-level
 selective activation checkpointing). See [`examples/README.md`](examples/README.md#3-llm-pretraining-with-torchtitan-torchtitan)
 for the levers, benchmarks, and tuning guidance.
+
+### Online batch selection with GREATS (`examples/greats/`)
+[GREATS](https://github.com/Jiachen-T-Wang/GREATS) (Wang et al., NeurIPS 2024) uses the ghost
+dot-products to pick, every step, the candidate subset that best reduces the validation loss —
+online data selection during pretraining (`greats/pretrain/`) and LoRA instruction tuning
+(`greats/sft/`).
+
+```bash
+# Synthetic smoke test (1 GPU, no corpus)
+python examples/greats/pretrain/main.py --method GREATS --train_set synthetic \
+    --architecture GPT2-Tiny --candidate_batch_size 16 --batch_size 8 \
+    --val_batch_size 4 --max_steps 12 --model_dtype float32 --train_dtype float32
+```
+
+See [`examples/greats/README.md`](examples/greats/README.md) for both variants and the
+first-order vs. second-order selection modes.
 
 
 ## How the Ghost Engines Work

@@ -9,8 +9,6 @@ Per optimizer step:
      reattach for the next step. Plain update (not subtract-val) because with
      instruction masking + variable lengths the subtract-val sample-count scaling
      is not exact; this matches upstream's normal training step on selected inputs.
-
-See docs/plans/greats_sft_phaseB_2026-06-25.md.
 """
 
 import json

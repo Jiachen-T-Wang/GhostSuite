@@ -1,12 +1,14 @@
 # Examples Directory
 
 This directory contains runnable examples demonstrating the Ghost Engine framework for
-efficient per-sample gradient computation. It is organized into three subfolders, each
+efficient per-sample gradient computation. It is organized into four subfolders, each
 covered by a section below:
 
 1. [`minimal/`](#1-minimal-examples-minimal) — smallest end-to-end demos, no data prep.
 2. [`lm/`](#2-standalone-language-model-examples-lm) — standalone language-model training.
 3. [`torchtitan/`](#3-llm-pretraining-with-torchtitan-torchtitan) — large-scale LLM pretraining.
+4. [`greats/`](#4-online-batch-selection-with-greats-greats) — online batch selection built
+   on the ghost dot-products.
 
 
 ## 1. Minimal Examples (`minimal/`)
@@ -129,3 +131,28 @@ baseline (the fp32 logits tensor, `batch · seq · vocab · 4` bytes, dominates 
 models). The default op-SAC `mme1` keeps peak memory *below* the eager engine, so it has the most
 headroom — prefer it (or `mode=full`) on an 80 GB A100. To fall back to the pure eager engine, run
 with `--ghost.no-decoupled_fn` (compile is auto-disabled on the eager path).
+
+
+## 4. Online Batch Selection with GREATS (`greats/`)
+
+[GREATS](https://github.com/Jiachen-T-Wang/GREATS) (Wang et al., NeurIPS 2024) selects, at
+**every** training step, the subset of a candidate batch whose gradients best reduce the
+validation loss — using the per-sample gradient dot products the `GradDotProd` engine already
+computes in one backward pass. This is an *online, model-dependent* selector (scores are
+recomputed each step), not a static GradNorm/TracIN baseline.
+
+- **`greats/pretrain/`** — online **first-order** selection during GPT-2 pretraining, reusing
+  the `lm/` shared model + data utilities (synthetic / Pile).
+- **`greats/sft/`** — online selection during LoRA instruction tuning (MMLU target),
+  supporting both first-order and the default **second-order** Gram-based greedy variant.
+
+```bash
+# Synthetic smoke test (1 GPU, no corpus)
+python examples/greats/pretrain/main.py --method GREATS --train_set synthetic \
+    --architecture GPT2-Tiny --candidate_batch_size 16 --batch_size 8 \
+    --val_batch_size 4 --max_steps 12 --eval_interval 4 \
+    --model_dtype float32 --train_dtype float32
+```
+
+See [`greats/README.md`](greats/README.md), [`greats/pretrain/README.md`](greats/pretrain/README.md),
+and [`greats/sft/README.md`](greats/sft/README.md) for details.

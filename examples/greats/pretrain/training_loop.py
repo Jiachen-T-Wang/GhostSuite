@@ -16,9 +16,6 @@ step:
      the update needs neither the val batch nor the dot-product machinery (its dots were
      discarded anyway). Dropping the val (m) forwards + ghost overhead from the update is the
      ~25% per-step speedup vs running a second ghost pass.
-
-See docs/plans/greats_example_implementation_2026-06-25.md and
-docs/analysis/greats_pretrain_decoupled_compile_2026-06-26.md.
 """
 
 import copy

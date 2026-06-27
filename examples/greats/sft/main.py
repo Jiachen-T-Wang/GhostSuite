@@ -2,7 +2,7 @@
 """Entry point for the GREATS SFT (LoRA instruction tuning) example.
 
 Self-contained online batch selection on a HF causal LM + peft LoRA, scored with
-the GradDotProd ghost engine. See docs/plans/greats_sft_phaseB_2026-06-25.md.
+the GradDotProd ghost engine.
 """
 
 import os
