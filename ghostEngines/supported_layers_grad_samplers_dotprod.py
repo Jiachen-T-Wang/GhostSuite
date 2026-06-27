@@ -73,16 +73,23 @@ def stash_tied_contribution(layer, A, B, val_batch_size, log_grad_norms=False,
     else:
         raise TypeError(f"Tied weight on unsupported module type {type(layer).__name__}.")
 
-    prev = getattr(weight, "_ghost_grad_val", None)
-    weight._ghost_grad_val = gval if prev is None else (prev + gval)
-    # Keep a reference for finalize_tied_param: the subtract-val train-grad
-    # recovery (prepare_gradients) deletes _ghost_grad_val before aggregate_and_log
-    # runs, but the tensor survives through this alias.
-    weight._ghost_tied_gval = weight._ghost_grad_val
-    if not hasattr(weight, "_ghost_tied_stash"):
+    # A tied weight is used by >=2 modules in ONE forward, so accumulate their val-grad
+    # contributions WITHIN the pass — but RESET at the first use of each pass. The per-pass marker
+    # is `_ghost_tied_stash` (created below on first use, deleted by finalize_tied_param at pass
+    # end), NOT the prior `_ghost_grad_val`: recovery is what used to delete `_ghost_grad_val`, but
+    # a scoring-only pass (e.g. the GREATS reselect path) never recovers, so keying the reset off a
+    # surviving `_ghost_grad_val` would accumulate it across steps and corrupt the tied score.
+    first_use_this_pass = not hasattr(weight, "_ghost_tied_stash")
+    if first_use_this_pass:
+        weight._ghost_grad_val = gval
         weight._ghost_tied_stash = []
         weight._ghost_tied_train_bs = train_bs
         weight._ghost_tied_log_norms = bool(log_grad_norms)
+    else:
+        weight._ghost_grad_val = weight._ghost_grad_val + gval
+    # finalize_tied_param reads this alias: subtract-val recovery deletes _ghost_grad_val before
+    # aggregate_and_log, but the tensor survives through the alias.
+    weight._ghost_tied_gval = weight._ghost_grad_val
     weight._ghost_tied_stash.append(train_factors)
 
 

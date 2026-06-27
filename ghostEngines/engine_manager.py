@@ -132,10 +132,6 @@ class GhostEngineManager:
         train_bs = self.config.batch_size
         val_bs = self.config.val_batch_size
 
-        # GREATS runs two passes per step at different combined batch sizes (scoring over
-        # candidate_batch_size + val, update over batch_size + val). Prime BOTH shapes so the
-        # per-shape buffers are allocated and torch.compile caches one graph per shape. Single-pass
-        # callers (no candidate_batch_size) keep the one update-size shape.
         # GREATS' only ghost pass is scoring over candidate_batch_size + val (the update is a plain
         # step on the selected subset, taken with capture disabled — no second ghost shape). Prime
         # that one shape; single-pass callers (no candidate_batch_size) keep the update-size shape.
@@ -388,16 +384,24 @@ class GhostEngineManager:
             self.engine.clear_gradients()
 
     def discard_scores(self):
-        """Reselect path: drop the scoring pass's logged dots + transient grad state WITHOUT
-        recovering train grads (the caller then takes a fresh plain backward on the selection)."""
+        """Reselect path: drop the scoring pass's logged dots + per-param transient state WITHOUT
+        recovering train grads (the caller then takes a fresh plain backward on the selection).
+
+        Recovery is what normally deletes the per-param ``_ghost_grad_val`` (and tied stash); on a
+        scoring-only step it is skipped, so clear those here to free the (val-grad-shaped) tensors
+        and avoid stale state leaking into the next step."""
         if self.is_fn_path:
             self.dot_product_log.clear()
             self._last_dot = None
-        else:
-            if self.engine is not None:
-                self.engine.dot_product_log.clear()
-                if hasattr(self.engine, "clear_gradients"):
-                    self.engine.clear_gradients()
+        elif self.engine is not None:
+            self.engine.dot_product_log.clear()
+            if hasattr(self.engine, "clear_gradients"):
+                self.engine.clear_gradients()
+        for p in self.model.parameters():
+            for attr in ("_ghost_grad_val", "grad_dot_prod", "_ghost_tied_gval",
+                         "_ghost_tied_stash", "_ghost_tied_train_bs", "_ghost_tied_log_norms"):
+                if hasattr(p, attr):
+                    delattr(p, attr)
 
     def set_capture_enabled(self, flag):
         """Toggle dot capture so a plain backward can run with the manager attached. Eager is
