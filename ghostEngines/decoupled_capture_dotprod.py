@@ -63,28 +63,34 @@ def _store(buf, val):
 
 
 class _CaptureFn(torch.autograd.Function):
-    """Identity in forward; stores full (A, B) for a post-backward combine.
+    """Identity in forward; reduces this use's tied contribution INLINE in backward.
 
     Used for tied weights (a weight shared by >=2 supported modules, e.g. GPT-2 ``wte``/``lm_head``):
     the per-use in-graph dot would miss the cross-terms of the shared parameter's gradient, so each
-    use captures its full ``(A, B)`` here and ``stash_tied_contribution`` / ``finalize_tied_param``
-    combine them post-backward. These layers are top-level (not in compiled regions).
+    use accumulates its validation aggregate and stashes its (reduced) train factors via
+    ``stash_tied_contribution`` *inside its own backward* — exactly like the eager hook engine —
+    and ``finalize_tied_param`` combines the cross-terms post-backward. Doing the reduction inline
+    (rather than buffering the full ``(A, B)`` for a post-backward combine) avoids holding a
+    persistent vocab-sized ``B`` (the ``lm_head`` logits gradient) across the whole backward, which
+    matches eager's memory. These layers are top-level / never in a compiled region, so arbitrary
+    Python in the backward is safe.
     """
 
     @staticmethod
-    def forward(ctx, output, input_act, a_buf, b_buf):
+    def forward(ctx, output, input_act, layer, val_bs):
         ctx.save_for_backward(input_act)
-        ctx.a_buf = a_buf
-        ctx.b_buf = b_buf
+        ctx.layer = layer
+        ctx.val_bs = val_bs
         return output
 
     @staticmethod
     def backward(ctx, grad_output):
+        from .supported_layers_grad_samplers_dotprod import stash_tied_contribution
         (input_act,) = ctx.saved_tensors
-        m1 = _store(ctx.a_buf, input_act)
-        m2 = _store(ctx.b_buf, grad_output)
-        grad_out = grad_output + (0.0 * (m1 + m2)).to(grad_output.dtype)
-        return grad_out, None, None, None
+        # Reduce immediately: accumulate gval + keep only the small train factors, then let the
+        # captured (A, B) free with this backward node — no persistent vocab-sized buffer.
+        stash_tied_contribution(ctx.layer, input_act, grad_output, ctx.val_bs)
+        return grad_output, None, None, None
 
 
 # =======================================================================================
@@ -313,6 +319,18 @@ class GhostDecoupledManager:
         without detaching. Re-enable before the next scoring pass."""
         self._enabled = bool(flag)
 
+    def clear_tied_pass_state(self) -> None:
+        """Drop any per-pass tied-weight accumulation (stash + val aggregate). Tied uses now stash
+        inline in `_CaptureFn.backward`, so a backward that is not followed by finalize/recover
+        (e.g. the attach-time warmup) would otherwise leak its stash into the next pass and
+        double-count. A complete scoring step cleans itself up via finalize_tied_param + recover."""
+        for _, layer in self._tied_layers:
+            w = layer.weight
+            for attr in ("_ghost_tied_stash", "_ghost_tied_train_bs", "_ghost_tied_log_norms",
+                         "_ghost_grad_val", "_ghost_tied_gval", "grad_dot_prod"):
+                if hasattr(w, attr):
+                    delattr(w, attr)
+
     def prepare_shape(self, total_bs: int) -> None:
         """Point every in-graph layer's active cell at the buffers for this combined batch size.
 
@@ -435,20 +453,18 @@ class GhostDecoupledManager:
     # -- forward wrapper (tied weights: capture full (A, B)) ------------------------------
 
     def _wrap_capture(self, layer, op):
-        cell = [None, None]
-        self._cells[id(layer)] = cell
+        vbs = self.val_batch_size
 
         def forward(x):
             out = op(x)
             if not self._enabled:
                 return out
-            # Tied-capture layers are eager (top-level, never in a compiled region), so resizing
-            # the (A, B) capture buffers when the batch shape changes is safe here — this is what
-            # lets one attached manager serve GREATS' two per-step shapes (N+m scoring, k+m update).
-            if cell[0] is None or cell[0].shape != x.shape or cell[1].shape != out.shape:
-                cell[0] = torch.empty_like(x)
-                cell[1] = torch.empty_like(out)
-            return _CaptureFn.apply(out, x, cell[0], cell[1])
+            # Tied-capture layers are eager (top-level, never in a compiled region): the reduction
+            # happens inside _CaptureFn.backward (stash_tied_contribution), so there is no persistent
+            # (A, B) buffer to size — this naturally serves any batch shape (e.g. GREATS' two
+            # per-step shapes). Record the combined batch for the subtract-val recovery scale.
+            layer._ghost_capture_total_bs = x.shape[0]
+            return _CaptureFn.apply(out, x, layer, vbs)
 
         return forward
 
@@ -561,7 +577,7 @@ class GhostDecoupledManager:
     def run_step_dotprod(self) -> Optional[torch.Tensor]:
         # Non-tied layers: dot + grad_val already in buffers; aggregate dot and publish grad_val.
         from .supported_layers_grad_samplers_dotprod import (
-            _maybe_store_grad_val, stash_tied_contribution, finalize_tied_param,
+            _maybe_store_grad_val, finalize_tied_param,
         )
         total = None
         for name, layer in self._layers:
@@ -575,12 +591,8 @@ class GhostDecoupledManager:
                 continue  # drop from the score only
             total = dot.detach().clone() if total is None else total + dot.detach()
 
-        # Tied weights: combine the captured per-use (A, B) into the exact dot (with cross-terms).
-        for _, layer in self._tied_layers:
-            cell = self._cells.get(id(layer))
-            if cell is None or cell[0] is None:
-                raise RuntimeError(f"GHOST_DECOUPLED_FN: tied '{getattr(layer,'name','?')}' no buffer.")
-            stash_tied_contribution(layer, cell[0], cell[1], self.val_batch_size)
+        # Tied weights: each use already stashed its val aggregate + train factors inline (in
+        # _CaptureFn.backward); just combine the cross-terms per unique shared weight.
         seen = set()
         for name, layer in self._tied_layers:
             w = layer.weight
@@ -627,7 +639,9 @@ class GhostDecoupledManager:
             if id(w) in seen:
                 continue
             seen.add(id(w))
-            total_bs = self._cells[id(layer)][0].shape[0]
+            total_bs = getattr(layer, "_ghost_capture_total_bs", None)
+            if total_bs is None:
+                raise RuntimeError(f"GHOST_DECOUPLED_FN: tied '{name}' missing captured batch size.")
             train_bs = total_bs - self.val_batch_size
             scale = float(total_bs) / float(train_bs)
             grad_val = getattr(w, "_ghost_grad_val", None)

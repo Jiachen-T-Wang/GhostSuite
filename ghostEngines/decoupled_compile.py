@@ -83,6 +83,9 @@ def attach_and_compile_decoupled(
     else:
         warmup_fn()
     model.zero_grad(set_to_none=True)
+    # The warmup ran a backward but no finalize/recover; tied uses stash inline in their backward,
+    # so clear that leftover state before real steps (else step 0 double-counts the tied dot).
+    mgr.clear_tied_pass_state()
 
     if compile_regions is not None:
         kwargs = {"backend": "inductor", "fullgraph": True}
