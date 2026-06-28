@@ -125,8 +125,14 @@ class _NamedSavedTensorManager:
         self._val_batch_size: int = 0
         self._loss_reduction: str = "mean"
 
-        # Book-keeping of tensor ids that have been used for activations (to avoid double usage across layers).
-        self._used_ids: set[int] = set()
+        # Book-keeping of tensor ids that have been used for activations, keyed by
+        # layer scope name. Captures are already attributed per scope, so the dedup
+        # must be per-layer: a tensor consumed by one layer must NOT be hidden from a
+        # different layer that legitimately shares the same input activation (e.g. two
+        # projections that both read a block's input). A single global set wrongly
+        # makes the second resolver find no candidate -> "Failed to capture saved
+        # activations". See docs/issues/closed/shared-input-activation-capture-fails_2026-06-27.md.
+        self._used_ids_by_name: Dict[str, set[int]] = {}
 
         self._debug: bool = os.getenv("GHOST_SAVED_TENSOR_DEBUG", "0") == "1"
 
@@ -143,7 +149,7 @@ class _NamedSavedTensorManager:
             self._enabled = True
             self._captured = {}
             self._tensor_meta = {}
-            self._used_ids = set()
+            self._used_ids_by_name = {}
         self._get_stack().clear()
 
     def disable(self) -> None:
@@ -151,7 +157,7 @@ class _NamedSavedTensorManager:
             self._enabled = False
             self._captured = {}
             self._tensor_meta = {}
-            self._used_ids = set()
+            self._used_ids_by_name = {}
         self._get_stack().clear()
 
     def push(self, name: str) -> None:
@@ -290,9 +296,13 @@ class _NamedSavedTensorManager:
             if not capture_pool:
                 return None
 
+            # Per-layer dedup: only skip tensors THIS layer already consumed, so a
+            # shared input activation stays available to every layer that reads it.
+            used_here = self._used_ids_by_name.setdefault(name, set())
+
             non_param = [
                 t for t in capture_pool
-                if id(t) not in param_ids and not _is_param_view(t) and id(t) not in self._used_ids
+                if id(t) not in param_ids and not _is_param_view(t) and id(t) not in used_here
             ]
             if not non_param:
                 return None
@@ -305,7 +315,7 @@ class _NamedSavedTensorManager:
                 # If there is only one matching tensor, that's the activation we want.
                 if len(matching) == 1:
                     chosen = matching[0]
-                    self._used_ids.add(id(chosen))
+                    used_here.add(id(chosen))
                     return chosen
 
                 # If there are multiple matching tensors, choose the non-leaf one.
@@ -314,13 +324,13 @@ class _NamedSavedTensorManager:
                 if matching:
                     for tensor in matching:
                         if not tensor.is_leaf:
-                            self._used_ids.add(id(tensor))
+                            used_here.add(id(tensor))
                             return tensor
 
                     # If all tensors are leaf, we choose the first one.
                     # For example, the first layer input tensor is a leaf tensor.
                     chosen = matching[0]
-                    self._used_ids.add(id(chosen))
+                    used_here.add(id(chosen))
                     return chosen
 
                 return None
