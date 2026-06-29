@@ -109,11 +109,19 @@ python examples/lm/graddotprod_lm/main.py --method GradDotProd ... --eager
 ```
 
 **Fast-path scope + automatic fallback.** The decoupled fast path applies to GPT-2 token models on a
-single GPU with `gradient_accumulation_steps == 1` and bf16/fp32. For runs that can't use it —
-multi-GPU/DDP, grad-accum > 1, float16 (`GradScaler`), or a non-GPT-2 architecture (e.g. LLaVA) —
-`main.py` prints a notice and falls back to the **eager** engine automatically. Pass `--eager` to
-select eager explicitly. (`--no_decoupled_compile` keeps the decoupled path but skips compile;
-usually slower than `--eager`, for debugging.)
+single GPU with bf16/fp32. For runs that can't use it — multi-GPU/DDP, float16 (`GradScaler`), or a
+non-GPT-2 architecture (e.g. LLaVA) — `main.py` prints a notice and falls back to the **eager** engine
+automatically. Pass `--eager` to select eager explicitly. (`--no_decoupled_compile` keeps the decoupled
+path but skips compile; usually slower than `--eager`, for debugging.)
+
+**Gradient accumulation (`--gradient_accumulation_steps > 1`) is supported** on both the decoupled and
+eager paths. Each microstep draws a distinct train sub-batch of `--batch_size`; the validation batch
+rides in every microstep's combined forward, the per-sample dot-products are collected per microstep,
+and the per-microstep validation gradients are summed for a single subtract-val recovery before the
+optimizer step. The recovered training gradient equals the mean over all `N * batch_size` train samples
+(verified exact vs a single non-accumulated run by `tests/test_decoupled_accum_equiv.py`). Note the
+dot-product scores carry a `1/N^2` loss-rescale factor — consistent within a run (sign / ranking /
+threshold-0 filtering preserved), but not directly comparable in absolute scale across different `N`.
 
 **Tied weights:** the token-embedding ↔ LM-head tie (standard GPT-2) is handled by all paths
 (including the gradient cross-terms). `--no_tie_weights` unties if desired.

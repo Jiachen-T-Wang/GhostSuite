@@ -126,10 +126,20 @@ class GhostDotProdHelper:
         )
         self.fn_manager.warmup(example)
 
+    def begin_step(self) -> None:
+        """Reset per-step dot/grad accumulation before the gradient-accumulation microbatch loop.
+
+        fn-path: clears the decoupled manager's per-step accumulators. Eager: no-op (the engine's
+        accumulator is cleared by its subtract-val recovery)."""
+        if self.use_fn_path and self.fn_manager is not None:
+            self.fn_manager.begin_step()
+
     def collect_step_dot(self) -> None:
-        """After backward: aggregate the per-train-sample dot-product from the in-graph buffers
-        (also publishes _ghost_grad_val for the subtract-val recovery in prepare_gradients_fn)."""
-        dot = self.fn_manager.run_step_dotprod()
+        """After each microbatch's backward: read that microbatch's per-train-sample dot-product
+        from the in-graph buffers and fold its val grad into the per-step accumulator (for the single
+        subtract-val recovery in prepare_gradients_fn). Must run before the next backward overwrites
+        the buffers."""
+        dot = self.fn_manager.collect_microbatch_dot()
         if dot is not None:
             self.dot_products.append(dot.detach())
 

@@ -28,11 +28,13 @@ def _set_ddp_sync(model, ddp, micro, grad_accum):
 
 
 def _plain_update(model, optimizer, scaler, ctx, forward_fn, X, Y, grad_clip,
-                  manager=None, grad_accum=1, ddp=False):
-    """Plain forward/backward + optimizer step on (X, Y): no val concat, dot capture off.
+                  manager=None, grad_accum=1, ddp=False, draw_microbatch=None):
+    """Plain forward/backward + optimizer step: no val concat, dot capture off.
 
-    Used by the Regular baseline (whole batch) and the subset update of selection policies.
-    Scaler calls are no-ops when the scaler is disabled (bf16 / fn-path)."""
+    Used by the Regular baseline (whole batch) and the subset update of selection policies. When
+    ``draw_microbatch`` is given each microstep draws a DISTINCT (X, Y) sub-batch (so accumulation
+    spans real data); otherwise every microstep reuses (X, Y). Scaler calls are no-ops when the
+    scaler is disabled (bf16 / fn-path)."""
     fn = manager is not None and getattr(manager, "is_fn_path", False)
     if fn:
         manager.set_capture_enabled(False)
@@ -41,8 +43,9 @@ def _plain_update(model, optimizer, scaler, ctx, forward_fn, X, Y, grad_clip,
         loss = None
         for micro in range(grad_accum):
             _set_ddp_sync(model, ddp, micro, grad_accum)
+            Xm, Ym = (X, Y) if draw_microbatch is None else draw_microbatch(micro)[:2]
             with ctx:
-                l = forward_fn(model, X, Y)
+                l = forward_fn(model, Xm, Ym)
                 if grad_accum > 1:
                     l = l / grad_accum
             scaler.scale(l).backward()
@@ -56,36 +59,58 @@ def _plain_update(model, optimizer, scaler, ctx, forward_fn, X, Y, grad_clip,
 
 
 def online_selection_step(*, manager, model, optimizer, scaler, ctx, forward_fn,
-                          X, Y, policy, iter_num, grad_clip,
+                          X=None, Y=None, policy, iter_num, grad_clip,
                           grad_accum=1, save_dots=False, score_metric="dot",
-                          batch_idx=None, ddp=False):
+                          batch_idx=None, ddp=False, draw_microbatch=None):
     """Run one online-selection step. Returns ``(scores, idx, loss)``.
 
     ``scores`` / ``idx`` are ``None`` for the no-selection baseline (and ``idx`` is ``None`` for
     a reuse-recovery policy, which updates on every scored sample). ``batch_idx`` is recorded in
-    the logged dot entry (for offline selection replay)."""
-    # --- No-selection baseline: a plain step on the whole drawn batch (no ghost). ---
+    the logged dot entry (for offline selection replay).
+
+    Gradient accumulation (``grad_accum > 1``): pass ``draw_microbatch(micro) -> (X, Y, batch_idx)``
+    so each microstep draws a DISTINCT sub-batch — replaying one batch with ``1/N`` loss scaling is
+    numerically identical to ``grad_accum == 1``. The scoring pass concatenates the per-microstep
+    per-sample dots into a pooled ``[N*train_bs]`` score vector; selection policies select across the
+    whole pool and update on the gathered subset, while UpdateAll recovers over all via subtract-val.
+    When ``draw_microbatch`` is None every microstep uses ``(X, Y, batch_idx)`` (back-compat; correct
+    only at ``grad_accum == 1``)."""
+    if draw_microbatch is None:
+        if X is None or Y is None:
+            raise ValueError("online_selection_step needs either (X, Y) or draw_microbatch.")
+
+        def draw_microbatch(micro):
+            return X, Y, batch_idx
+
+    # --- No-selection baseline: a plain step on the drawn batch(es) (no ghost). ---
     if not policy.scores_needed:
-        loss = _plain_update(model, optimizer, scaler, ctx, forward_fn, X, Y, grad_clip,
-                             manager=manager, grad_accum=grad_accum, ddp=ddp)
+        X0, Y0, _ = draw_microbatch(0)
+        loss = _plain_update(model, optimizer, scaler, ctx, forward_fn, X0, Y0, grad_clip,
+                             manager=manager, grad_accum=grad_accum, ddp=ddp,
+                             draw_microbatch=draw_microbatch)
         return None, None, loss
 
     if manager is None:
         raise ValueError("online_selection_step requires a ghost manager when scores are needed.")
 
-    # --- Scoring pass: the single ghost forward/backward over [batch ++ val]. ---
-    manager.attach_train_batch(X, Y, iter_num, batch_idx)
-    manager.prepare_decoupled_shape(X.shape[0] + manager.val_batch_size)
+    # --- Scoring pass: one ghost forward/backward over [batch ++ val] per microstep. ---
+    manager.begin_step()
+    microbatches = []   # (X, Y) per microstep, kept for the subset gather of selection policies
     loss = None
     for micro in range(grad_accum):
+        Xm, Ym, bidx = draw_microbatch(micro)
+        microbatches.append((Xm, Ym))
+        manager.attach_train_batch(Xm, Ym, iter_num, bidx)
+        manager.prepare_decoupled_shape(Xm.shape[0] + manager.val_batch_size)
         _set_ddp_sync(model, ddp, micro, grad_accum)
         with manager.saved_tensors_context():
             with ctx:
-                Xf, Yf = manager.prepare_forward_input(X, Y)
+                Xf, Yf = manager.prepare_forward_input(Xm, Ym)
                 l = forward_fn(model, Xf, Yf)
                 if grad_accum > 1:
                     l = l / grad_accum
             scaler.scale(l).backward()
+        manager.collect_microbatch()
         loss = l
     scores = manager.read_scores(metric=score_metric)
     idx = policy.select(scores)
@@ -103,12 +128,20 @@ def online_selection_step(*, manager, model, optimizer, scaler, ctx, forward_fn,
         manager.finish_step()
         optimizer.zero_grad(set_to_none=True)
     else:
-        # Discard the scoring grads/dots; fresh plain backward on the selected subset.
+        # Discard the scoring grads/dots; fresh plain backward on the selected subset, gathered from
+        # the (possibly several) drawn microbatches — pooled global index i maps to microstep
+        # i // train_bs, local i % train_bs, so concatenating the microbatches in order indexes
+        # directly by the pooled score index.
         manager.discard_scores()
         optimizer.zero_grad(set_to_none=True)
-        dev_idx = idx.to(X.device)
-        Xs = X.index_select(0, dev_idx)
-        Ys = Y.index_select(0, dev_idx)
+        if len(microbatches) == 1:
+            Xcat, Ycat = microbatches[0]
+        else:
+            Xcat = torch.cat([mb[0] for mb in microbatches], dim=0)
+            Ycat = torch.cat([mb[1] for mb in microbatches], dim=0)
+        dev_idx = idx.to(Xcat.device)
+        Xs = Xcat.index_select(0, dev_idx)
+        Ys = Ycat.index_select(0, dev_idx)
         loss = _plain_update(model, optimizer, scaler, ctx, forward_fn, Xs, Ys, grad_clip,
                              manager=manager, grad_accum=1)
     return scores, idx, loss

@@ -195,16 +195,23 @@ class GradDotProdEngine:
             for name, param in self.module.named_parameters():
                 if not param.initially_requires_grad or "dummy_bias" in name:
                     continue
-                grad_val = getattr(param, "_ghost_grad_val", None)
+                # Under gradient accumulation the per-microbatch val grads are summed into
+                # _ghost_grad_val_accum by accumulate_microbatch(); a single-microbatch caller that
+                # never folds keeps only the per-microbatch _ghost_grad_val scratch (back-compat).
+                grad_val = getattr(param, "_ghost_grad_val_accum", None)
+                if grad_val is None:
+                    grad_val = getattr(param, "_ghost_grad_val", None)
                 if grad_val is None:
                     raise ValueError(
-                        f"subtract-val: parameter {name} has no _ghost_grad_val; "
+                        f"subtract-val: parameter {name} has no _ghost_grad_val(_accum); "
                         "every grad-requiring param must be handled by a supported layer."
                     )
                 if param.grad is None:
                     raise ValueError(f"subtract-val: parameter {name} has no autograd .grad.")
                 param.grad = (scale * (param.grad.float() - grad_val)).to(param.grad.dtype)
-                del param._ghost_grad_val
+                for attr in ("_ghost_grad_val_accum", "_ghost_grad_val"):
+                    if hasattr(param, attr):
+                        delattr(param, attr)
             self._lock_grad_creation()
             return
 
@@ -247,6 +254,24 @@ class GradDotProdEngine:
         # Unlock to allow the next backward pass to create new gradients.
         self._unlock_grad_creation()
 
+
+    def accumulate_microbatch(self):
+        """Fold this microbatch's validation gradient into the per-step accumulator (subtract-val).
+
+        Call once after each microbatch's ``aggregate_and_log`` (so the tied finalizer has already
+        consumed ``_ghost_tied_gval``) and before the next backward. Sums each param's per-microbatch
+        ``_ghost_grad_val`` into ``_ghost_grad_val_accum`` and clears the scratch so the next
+        microbatch — and the tied stash — starts fresh. ``prepare_gradients`` then subtracts the
+        accumulated val grad once. Not needed for single-microbatch steps (recovery falls back to the
+        lone ``_ghost_grad_val``)."""
+        for param in self.module.parameters():
+            gv = getattr(param, "_ghost_grad_val", None)
+            if gv is None:
+                continue
+            gv = gv.detach().to(torch.float32)
+            acc = getattr(param, "_ghost_grad_val_accum", None)
+            param._ghost_grad_val_accum = gv.clone() if acc is None else acc.add_(gv)
+            del param._ghost_grad_val
 
     def prepare_gradients(self):
         """Move accumulated training gradients to ``.grad`` for optimizer."""

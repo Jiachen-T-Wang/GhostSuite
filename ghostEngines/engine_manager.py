@@ -122,11 +122,8 @@ class GhostEngineManager:
             )
         if self.ddp_info.get("ddp", False):
             raise RuntimeError("Ghost decoupled fn-path is single-GPU only (no DDP).")
-        if getattr(self.config, "gradient_accumulation_steps", 1) != 1:
-            raise RuntimeError(
-                "Ghost decoupled fn-path requires gradient_accumulation_steps == 1 "
-                "(per-layer buffers hold only the last microbatch's grad_val)."
-            )
+        # gradient_accumulation_steps > 1 IS supported: begin_step / collect_microbatch sum the
+        # per-microstep val grads for a single subtract-val recovery (see GhostDecoupledManager).
 
         device = self.ddp_info["device"]
         train_bs = self.config.batch_size
@@ -355,35 +352,83 @@ class GhostEngineManager:
     def val_batch_size(self):
         return self.config.val_batch_size
 
-    def read_scores(self, metric="dot"):
-        """One unified per-sample score read after a ghost scoring backward, hiding the eager-vs-fn
-        split. Returns the per-train-sample score tensor on CPU (or None). Also appends the dot to
-        the log so a caller can persist it (save_metrics). On the fn-path this publishes grad_val,
-        so a subsequent ``recover_train_grads`` is valid; it does NOT recover or step.
+    def begin_step(self):
+        """Reset per-step dot/grad accumulation before the gradient-accumulation microbatch loop.
 
-        ``metric``: 'dot' (raw <g_i, g_val>) or 'cosine' (needs per-sample grad norms, eager only;
-        the fast path has no norms and raises)."""
-        if self.is_fn_path:
-            self._last_dot = self.decoupled_run_step()  # also publishes grad_val for a later recover
+        Required for ``gradient_accumulation_steps > 1``: each microbatch's dot is collected by
+        ``collect_microbatch`` and its val grad summed for the single end-of-step subtract-val
+        recovery. At ``N == 1`` this is a harmless reset. Also clears the pooled score buffers that
+        ``read_scores`` concatenates."""
+        self._pooled_dots = []      # per-microbatch [train_bs] dots; read_scores concatenates them
+        self._pooled_norms = []     # (train_grad_norm, val_grad_norm) per microbatch; eager cosine only
+        if self.is_fn_path and self.decoupled_mgr is not None:
+            self.decoupled_mgr.begin_step()
+            return
+        # eager: the per-param accumulator is normally cleared by subtract-val recovery; clear any
+        # stale accum so a scoring-only (reselect) step that never recovers starts clean.
+        if self.engine is not None:
+            for p in self.model.parameters():
+                if hasattr(p, "_ghost_grad_val_accum"):
+                    del p._ghost_grad_val_accum
+
+    def collect_microbatch(self):
+        """Collect one microbatch's per-sample dot-products and fold its val grad into the per-step
+        accumulator. Call after each microbatch's ``backward()``, inside the gradient-accumulation
+        loop, before the next backward overwrites the reused per-layer buffers. Appends this
+        microbatch's dots to the pooled score vector and a per-microbatch persistence log entry."""
+        if self.is_fn_path and self.decoupled_mgr is not None:
+            self._last_dot = self.decoupled_mgr.collect_microbatch_dot()
             if self._fn_train_batch is not None:
                 X_train, Y_train, iter_num, batch_idx = self._fn_train_batch
                 self._fn_append_log(iter_num, batch_idx, X_train, Y_train)
-            if metric != "dot":
-                raise ValueError(
-                    f"read_scores(metric={metric!r}) needs per-sample grad norms, which the "
-                    "decoupled fast path does not produce. Use --eager for cosine ranking.")
-            return None if self._last_dot is None else self._last_dot.detach().to("cpu")
-        self.engine.aggregate_and_log()
-        log = self.engine.dot_product_log
-        entry = log[-1] if log else None
-        if entry is None:
+            if self._last_dot is not None:
+                self._pooled_dots.append(self._last_dot.detach().float())
+            return
+        if self.engine is not None:
+            # eager GradDotProd: append this microbatch's per-sample dots, then fold its val grad
+            # for the single end-of-step subtract-val recovery. Guarded with hasattr so a non-
+            # GradDotProd engine (e.g. GradProjLora, which has no accumulate_microbatch) routed
+            # through this lifecycle degrades gracefully instead of crashing.
+            if hasattr(self.engine, 'aggregate_and_log'):
+                self.engine.aggregate_and_log()
+                log = getattr(self.engine, "dot_product_log", None)
+                entry = log[-1] if log else None
+                if entry is not None:
+                    self._pooled_dots.append(entry["dot_product"].float())
+                    if "train_grad_norm" in entry:
+                        self._pooled_norms.append(
+                            (entry["train_grad_norm"].float(),
+                             float(entry.get("val_grad_norm", 1.0)) or 1.0))
+            if hasattr(self.engine, 'accumulate_microbatch'):
+                self.engine.accumulate_microbatch()
+
+    def read_scores(self, metric="dot"):
+        """Return the pooled per-train-sample score vector collected across this step's microbatches
+        (concatenated ``[N*train_bs]``). Call after ``begin_step`` + a ``collect_microbatch`` per
+        microbatch; the dot computation and persistence logging happen in ``collect_microbatch``, so
+        this only reads. On the fn-path grad_val is already accumulated, so a subsequent
+        ``recover_train_grads`` is valid; this does NOT recover or step.
+
+        ``metric``: 'dot' (raw <g_i, g_val>) or 'cosine' (needs per-sample grad norms, eager only;
+        the fast path has no norms and raises)."""
+        pooled = getattr(self, "_pooled_dots", None)
+        if not pooled:
             return None
-        scores = entry["dot_product"].float()
-        if metric == "cosine":
-            tn = entry["train_grad_norm"].float()
-            vn = float(entry.get("val_grad_norm", 1.0)) or 1.0
-            scores = scores / (tn * vn + 1e-12)
-        return scores
+        scores = (pooled[0] if len(pooled) == 1 else torch.cat(pooled, dim=0)).float()
+        if metric == "dot":
+            return scores.detach().to("cpu")
+        if metric != "cosine":
+            raise ValueError(f"read_scores: unknown metric {metric!r}.")
+        if self.is_fn_path:
+            raise ValueError(
+                "read_scores(metric='cosine') needs per-sample grad norms, which the decoupled "
+                "fast path does not produce. Use --eager for cosine ranking.")
+        norms = getattr(self, "_pooled_norms", None)
+        if not norms:
+            raise ValueError("read_scores(metric='cosine'): no per-sample grad norms were collected.")
+        tn = norms[0][0] if len(norms) == 1 else torch.cat([n[0] for n in norms], dim=0)
+        vn = norms[0][1] or 1.0   # val grad norm of the first microbatch (the shared val batch)
+        return (scores / (tn * vn + 1e-12)).detach().to("cpu")
 
     def recover_train_grads(self):
         """Reuse path: recover the train-only grad into ``.grad`` via subtract-val. Assumes
@@ -416,8 +461,9 @@ class GhostEngineManager:
             if hasattr(self.engine, "clear_gradients"):
                 self.engine.clear_gradients()
         for p in self.model.parameters():
-            for attr in ("_ghost_grad_val", "grad_dot_prod", "_ghost_tied_gval",
-                         "_ghost_tied_stash", "_ghost_tied_train_bs", "_ghost_tied_log_norms"):
+            for attr in ("_ghost_grad_val", "_ghost_grad_val_accum", "grad_dot_prod",
+                         "_ghost_tied_gval", "_ghost_tied_stash", "_ghost_tied_train_bs",
+                         "_ghost_tied_log_norms"):
                 if hasattr(p, attr):
                     delattr(p, attr)
 

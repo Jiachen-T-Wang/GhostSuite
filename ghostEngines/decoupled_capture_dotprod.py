@@ -579,43 +579,114 @@ class GhostDecoupledManager:
 
     # -- post-backward --------------------------------------------------------------------
 
-    def run_step_dotprod(self) -> Optional[torch.Tensor]:
-        # Non-tied layers: dot + grad_val already in buffers; aggregate dot and publish grad_val.
-        from .supported_layers_grad_samplers_dotprod import (
-            _maybe_store_grad_val, finalize_tied_param,
-        )
+    @staticmethod
+    def _accumulate_grad_val(param, gv) -> None:
+        """Sum the per-microbatch validation gradient into ``param._ghost_grad_val_accum``.
+
+        Under gradient accumulation the autograd ``.grad`` accumulates every microbatch's combined
+        (train+val) gradient, so the subtract-val recovery must subtract the *sum* of the
+        per-microbatch val grads. ``gv`` is a reused per-layer buffer, hence the clone on first use.
+        At ``N == 1`` this stores exactly one microbatch's val grad (identical to the old path)."""
+        acc = getattr(param, "_ghost_grad_val_accum", None)
+        gv = gv.detach().to(ACCUM_DTYPE)
+        param._ghost_grad_val_accum = gv.clone() if acc is None else acc.add_(gv)
+
+    def begin_step(self) -> None:
+        """Reset per-step accumulation state before the microbatch loop.
+
+        Clears any leftover ``_ghost_grad_val_accum`` / tied stash / ``grad_dot_prod`` so a step's
+        accumulation starts clean. Required before the first ``collect_microbatch_dot`` of a step."""
+        for _, layer in self._layers:
+            for p in layer.parameters(recurse=False):
+                for attr in ("_ghost_grad_val_accum", "_ghost_grad_val", "grad_dot_prod"):
+                    if hasattr(p, attr):
+                        delattr(p, attr)
+        for _, layer in self._tied_layers:
+            w = layer.weight
+            for attr in ("_ghost_grad_val_accum", "_ghost_grad_val", "grad_dot_prod",
+                         "_ghost_tied_stash", "_ghost_tied_train_bs", "_ghost_tied_log_norms",
+                         "_ghost_tied_gval"):
+                if hasattr(w, attr):
+                    delattr(w, attr)
+
+    def collect_microbatch_dot(self) -> Optional[torch.Tensor]:
+        """Read this microbatch's per-layer buffers: return its ``[train_bs]`` dot and fold its
+        validation gradient into the per-step accumulator.
+
+        Must be called once after each microbatch's ``backward()`` — before the next backward
+        overwrites the reused per-layer buffers. The returned per-microbatch dots are concatenated
+        by the caller into the step's ``[N*train_bs]`` score vector. ``recover_train_grads`` then
+        consumes the accumulated val grad once, after the loop."""
+        from .supported_layers_grad_samplers_dotprod import finalize_tied_param
         total = None
+        # Non-tied layers: dot + grad_val already in buffers; accumulate grad_val, sum the dot.
         for name, layer in self._layers:
             cell = self._cells.get(id(layer))
             if cell is None or cell[0] is None:
                 raise RuntimeError(f"GHOST_DECOUPLED_FN: '{getattr(layer,'name','?')}' no buffer.")
             dot, gvs = cell[0]
             for param, gv in gvs:
-                _maybe_store_grad_val(param, gv)  # always publish grad_val (training unaffected)
+                self._accumulate_grad_val(param, gv)  # publish for recover (training unaffected)
             if self._excluded(name):
                 continue  # drop from the score only
             total = dot.detach().clone() if total is None else total + dot.detach()
 
-        # Tied weights: each use already stashed its val aggregate + train factors inline (in
-        # _CaptureFn.backward); just combine the cross-terms per unique shared weight.
+        # Tied weights: each use already stashed its val aggregate + train factors INLINE (in
+        # _CaptureFn.backward). Finalize this microbatch's cross-term dot per unique shared weight,
+        # fold its val grad into the accumulator, then clear _ghost_grad_val so the next microbatch's
+        # inline stash starts from prev=None (first_use_this_pass keys off the deleted
+        # _ghost_tied_stash, which finalize_tied_param removed).
         seen = set()
         for name, layer in self._tied_layers:
             w = layer.weight
-            if id(w) not in seen and hasattr(w, "_ghost_tied_stash"):
-                finalize_tied_param(w)  # publishes _ghost_grad_val (for recover) + grad_dot_prod
-                if self._excluded(name):
-                    if hasattr(w, "grad_dot_prod"):
-                        del w.grad_dot_prod  # excluded from the score; drop the leftover attr
-                else:
-                    dp = w.grad_dot_prod
-                    total = dp.detach().clone() if total is None else total + dp.detach()
-                seen.add(id(w))
+            if id(w) in seen or not hasattr(w, "_ghost_tied_stash"):
+                continue
+            seen.add(id(w))
+            finalize_tied_param(w)            # sets w.grad_dot_prod, leaves _ghost_grad_val for the fold
+            if not self._excluded(name):
+                dp = w.grad_dot_prod
+                total = dp.detach().clone() if total is None else total + dp.detach()
+            if hasattr(w, "_ghost_grad_val"):
+                self._accumulate_grad_val(w, w._ghost_grad_val)
+                del w._ghost_grad_val
+            if hasattr(w, "grad_dot_prod"):
+                del w.grad_dot_prod
         return total
+
+    def _reset_accumulators(self) -> None:
+        """Clear ONLY the per-step val-grad accumulator (+ transient ``grad_dot_prod``), preserving
+        any inline tied stash / ``_ghost_grad_val`` that the just-finished backward produced. Used by
+        the single-shot ``run_step_dotprod`` (called AFTER a backward, unlike ``begin_step`` which
+        runs before the loop and may safely wipe everything)."""
+        for _, layer in self._layers:
+            for p in layer.parameters(recurse=False):
+                for attr in ("_ghost_grad_val_accum", "grad_dot_prod"):
+                    if hasattr(p, attr):
+                        delattr(p, attr)
+        for _, layer in self._tied_layers:
+            w = layer.weight
+            for attr in ("_ghost_grad_val_accum", "grad_dot_prod"):
+                if hasattr(w, attr):
+                    delattr(w, attr)
+
+    def run_step_dotprod(self) -> Optional[torch.Tensor]:
+        """Single-microbatch convenience (``gradient_accumulation_steps == 1``): collect once.
+
+        Called AFTER one backward, so it must NOT ``begin_step`` (that would wipe this backward's
+        inline tied stash before ``collect_microbatch_dot`` reads it). Resets only the accumulator so
+        the lone microbatch's val grad lands fresh in ``_ghost_grad_val_accum``."""
+        self._reset_accumulators()
+        return self.collect_microbatch_dot()
 
     def _excluded(self, name: str) -> bool:
         return any(pat in name for pat in self.score_exclude_params)
 
     def recover_train_grads(self) -> None:
+        """subtract-val recovery, once per optimizer step, from the accumulated val grad.
+
+        ``mean_train_grad = (total/train) * (autograd.grad - sum_m grad_val_m)``, with per-microbatch
+        ``total = train + val``. The ``sum_m grad_val_m`` lives in ``_ghost_grad_val_accum`` (one term
+        at ``N == 1``)."""
         for name, layer in self._layers:
             # train_bs from the dot buffer length; the parameters to recover are the layer's
             # trainable params (weight + optional bias for LayerNorm).
@@ -625,19 +696,18 @@ class GhostDecoupledManager:
             train_bs = total_bs - self.val_batch_size
             scale = float(total_bs) / float(train_bs)
             for param in params:
-                grad_val = getattr(param, "_ghost_grad_val", None)
+                grad_val = getattr(param, "_ghost_grad_val_accum", None)
                 if grad_val is None:
-                    raise RuntimeError(f"GHOST_DECOUPLED_FN: '{name}' has no _ghost_grad_val.")
+                    raise RuntimeError(f"GHOST_DECOUPLED_FN: '{name}' has no _ghost_grad_val_accum.")
                 if param.grad is None:
                     raise RuntimeError(f"GHOST_DECOUPLED_FN: '{name}' param has no autograd .grad.")
                 param.grad = (scale * (param.grad.float() - grad_val)).to(param.grad.dtype)
-                if hasattr(param, "_ghost_grad_val"):
-                    del param._ghost_grad_val
+                del param._ghost_grad_val_accum
                 if hasattr(param, "grad_dot_prod"):
                     del param.grad_dot_prod
 
-        # Tied weights: recover once per unique shared weight (stash_tied_contribution already
-        # accumulated the full validation aggregate in _ghost_grad_val).
+        # Tied weights: recover once per unique shared weight (collect_microbatch_dot accumulated the
+        # full validation aggregate across microbatches in _ghost_grad_val_accum).
         seen = set()
         for name, layer in self._tied_layers:
             w = layer.weight
@@ -649,15 +719,16 @@ class GhostDecoupledManager:
                 raise RuntimeError(f"GHOST_DECOUPLED_FN: tied '{name}' missing captured batch size.")
             train_bs = total_bs - self.val_batch_size
             scale = float(total_bs) / float(train_bs)
-            grad_val = getattr(w, "_ghost_grad_val", None)
+            grad_val = getattr(w, "_ghost_grad_val_accum", None)
             if grad_val is None:
-                raise RuntimeError(f"GHOST_DECOUPLED_FN: tied '{name}' has no _ghost_grad_val.")
+                raise RuntimeError(f"GHOST_DECOUPLED_FN: tied '{name}' has no _ghost_grad_val_accum.")
             if w.grad is None:
                 raise RuntimeError(f"GHOST_DECOUPLED_FN: tied '{name}' weight has no autograd .grad.")
             w.grad = (scale * (w.grad.float() - grad_val)).to(w.grad.dtype)
-            if hasattr(w, "_ghost_grad_val"):
-                del w._ghost_grad_val
+            del w._ghost_grad_val_accum
             if hasattr(w, "grad_dot_prod"):
                 del w.grad_dot_prod
+            if hasattr(w, "_ghost_grad_val"):
+                del w._ghost_grad_val
             if hasattr(w, "_ghost_tied_gval"):
                 del w._ghost_tied_gval

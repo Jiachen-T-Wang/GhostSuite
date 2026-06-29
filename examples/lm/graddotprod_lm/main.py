@@ -53,15 +53,14 @@ def main():
     )
 
     # The decoupled in-graph + torch.compile fast path is the default for GradDotProd, but it only
-    # supports GPT-2 token models on a single GPU with grad-accum 1 and bf16/fp32. Fall back to the
-    # eager engine (with a clear notice) for runs that can't use it, rather than erroring. Pass
-    # --eager to select the eager engine explicitly.
+    # supports GPT-2 token models on a single GPU with bf16/fp32 (gradient accumulation IS supported:
+    # the per-microstep val grads are summed for one subtract-val recovery). Fall back to the eager
+    # engine (with a clear notice) for runs that can't use it, rather than erroring. Pass --eager to
+    # select the eager engine explicitly.
     if config.method == 'GradDotProd' and config.decoupled_fn:
         reason = None
         if ddp_info.get('ddp', False):
             reason = "multi-GPU / DDP"
-        elif getattr(config, 'gradient_accumulation_steps', 1) != 1:
-            reason = "gradient_accumulation_steps != 1"
         elif scaler.is_enabled():
             reason = "float16 GradScaler (use --train_dtype bfloat16 or float32)"
         elif not str(config.architecture).startswith('GPT2'):

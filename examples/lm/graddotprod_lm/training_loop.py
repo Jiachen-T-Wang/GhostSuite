@@ -131,13 +131,6 @@ class Trainer:
         if self.dynamic_val_batch:
             self._refresh_validation_batch()
 
-        # Get training batch
-        X, Y, batch_idx = self.get_batch(
-            'train',
-            batch_size=self.config.batch_size,
-            return_idx=True
-        )
-
         # Update learning rate
         lr = get_learning_rate(iter_num, self.config) if self.config.decay_lr else self.config.learning_rate
         update_learning_rate(self.optimizer, lr)
@@ -147,14 +140,19 @@ class Trainer:
             if self.ghost_engine.should_save_metrics(iter_num):
                 self.ghost_engine.save_metrics(iter_num)
 
-        # The shared driver runs the scoring pass (logging the dots), then updates on the whole
+        # Each microstep draws a DISTINCT training sub-batch so gradient accumulation spans real
+        # data (replaying one batch with 1/N scaling would be identical to grad_accum=1). The shared
+        # driver runs the scoring pass (logging the per-microstep dots), then updates on the whole
         # batch via subtract-val recovery (UpdateAll) — or a plain step (Regular).
+        def draw_microbatch(_micro):
+            return self.get_batch('train', batch_size=self.config.batch_size, return_idx=True)
+
         _scores, _idx, loss = online_selection_step(
             manager=self.ghost_engine, model=self.model, optimizer=self.optimizer,
-            scaler=self.scaler, ctx=self.ctx, forward_fn=self.forward_fn, X=X, Y=Y,
+            scaler=self.scaler, ctx=self.ctx, forward_fn=self.forward_fn,
             policy=self.policy, iter_num=iter_num, grad_clip=self.config.grad_clip,
             grad_accum=self.config.gradient_accumulation_steps,
-            batch_idx=batch_idx, ddp=self.ddp_info['ddp'],
+            draw_microbatch=draw_microbatch, ddp=self.ddp_info['ddp'],
         )
 
         print(f"Step {iter_num}, Loss: {loss.item() if loss is not None else 'N/A'}, LR: {lr:.6f}")

@@ -61,6 +61,11 @@ def parse_arguments():
 
     # Training parameters
     parser.add_argument('--batch_size', type=int, default=16, help='Training batch size')
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=1,
+                        help='Number of microsteps to accumulate before the optimizer step. Each '
+                             'microstep draws a distinct train sub-batch of --batch_size; the ghost '
+                             'dot-products are collected per microstep and the per-microstep val '
+                             'gradients are summed for a single subtract-val recovery.')
     parser.add_argument('--val_batch_size', type=int, default=1)
     parser.add_argument('--warmup_step', type=int, default=2000)
     parser.add_argument('--learning_rate', type=float, default=3e-4)
@@ -193,8 +198,8 @@ class TrainingConfig:
         self.train_dtype = args.train_dtype
 
         # Gradient accumulation
-        self.full_batch_size = args.batch_size
-        self.gradient_accumulation_steps = 1
+        self.gradient_accumulation_steps = args.gradient_accumulation_steps
+        self.full_batch_size = args.batch_size * args.gradient_accumulation_steps
         
         # Evaluation settings
         self.eval_iters = args.eval_iter

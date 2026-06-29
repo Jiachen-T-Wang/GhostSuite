@@ -235,8 +235,10 @@ class GhostTrainer(Trainer):
                 del pred
                 loss.backward()
 
-        # Aggregate dot products per microbatch before the next backward pass.
+        # Aggregate this microbatch's dot products, then fold its val grad into the per-step
+        # accumulator (subtract-val) before the next backward overwrites the buffers.
         self.ghost_helper.engine.aggregate_and_log()
+        self.ghost_helper.engine.accumulate_microbatch()
         return loss
 
     def train_step(
@@ -244,6 +246,9 @@ class GhostTrainer(Trainer):
     ):
         self.optimizers.zero_grad()
         lr = self.lr_schedulers.schedulers[0].get_last_lr()[0]
+
+        # Reset per-step dot/grad accumulation before the gradient-accumulation microbatch loop.
+        self.ghost_helper.begin_step()
 
         accumulated_losses = []
         for microbatch_idx in range(self.gradient_accumulation_steps):
@@ -254,14 +259,8 @@ class GhostTrainer(Trainer):
             loss = self.forward_backward_step(input_dict, labels, microbatch_idx=microbatch_idx)
             accumulated_losses.append(loss.detach())
 
-        # Move accumulated train grads into .grad for optimizer step.
+        # Recover train grads once via subtract-val from the accumulated per-microbatch val grads.
         if self.ghost_helper.use_fn_path:
-            if self.gradient_accumulation_steps != 1:
-                raise RuntimeError(
-                    "Ghost Function paths currently require gradient_accumulation_steps == 1 "
-                    "(buffers hold only the last microbatch's grad_val). "
-                    f"Got {self.gradient_accumulation_steps}."
-                )
             self.ghost_helper.prepare_gradients_fn()
         else:
             self.ghost_helper.engine.prepare_gradients()
