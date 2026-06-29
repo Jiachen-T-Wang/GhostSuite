@@ -365,11 +365,16 @@ class GhostEngineManager:
             self.decoupled_mgr.begin_step()
             return
         # eager: the per-param accumulator is normally cleared by subtract-val recovery; clear any
-        # stale accum so a scoring-only (reselect) step that never recovers starts clean.
+        # stale accum (and per-microbatch scratch / tied stash) so a scoring-only (reselect) step
+        # that never recovers — or a step whose microbatch loop aborted mid-accumulation — starts
+        # clean. Mirrors the decoupled manager's begin_step attr set.
         if self.engine is not None:
             for p in self.model.parameters():
-                if hasattr(p, "_ghost_grad_val_accum"):
-                    del p._ghost_grad_val_accum
+                for attr in ("_ghost_grad_val_accum", "_ghost_grad_val", "grad_dot_prod",
+                             "_ghost_tied_stash", "_ghost_tied_train_bs", "_ghost_tied_log_norms",
+                             "_ghost_tied_gval"):
+                    if hasattr(p, attr):
+                        delattr(p, attr)
 
     def collect_microbatch(self):
         """Collect one microbatch's per-sample dot-products and fold its val grad into the per-step
@@ -390,9 +395,14 @@ class GhostEngineManager:
             # GradDotProd engine (e.g. GradProjLora, which has no accumulate_microbatch) routed
             # through this lifecycle degrades gracefully instead of crashing.
             if hasattr(self.engine, 'aggregate_and_log'):
-                self.engine.aggregate_and_log()
                 log = getattr(self.engine, "dot_product_log", None)
-                entry = log[-1] if log else None
+                n_before = len(log) if log is not None else 0
+                self.engine.aggregate_and_log()
+                # Pool this microbatch's dot ONLY if aggregate_and_log appended a FRESH entry —
+                # it skips the append when no scored layer fired (degenerate config), and reading
+                # log[-1] unconditionally would re-pool the previous microbatch's dot and desync the
+                # pooled [N*train_bs] score from the gather order.
+                entry = log[-1] if (log is not None and len(log) > n_before) else None
                 if entry is not None:
                     self._pooled_dots.append(entry["dot_product"].float())
                     if "train_grad_norm" in entry:
