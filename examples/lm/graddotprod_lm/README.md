@@ -118,10 +118,10 @@ path but skips compile; usually slower than `--eager`, for debugging.)
 eager paths. Each microstep draws a distinct train sub-batch of `--batch_size`; the validation batch
 rides in every microstep's combined forward, the per-sample dot-products are collected per microstep,
 and the per-microstep validation gradients are summed for a single subtract-val recovery before the
-optimizer step. The recovered training gradient equals the mean over all `N * batch_size` train samples
-(verified exact vs a single non-accumulated run by `tests/test_decoupled_accum_equiv.py`). Note the
-dot-product scores carry a `1/N^2` loss-rescale factor — consistent within a run (sign / ranking /
-threshold-0 filtering preserved), but not directly comparable in absolute scale across different `N`.
+optimizer step. The recovered training gradient equals the mean over all `N * batch_size` train samples.
+Note the dot-product scores carry a `1/N^2` loss-rescale factor — consistent within a run (sign /
+ranking / threshold-0 filtering preserved), but not directly comparable in absolute scale across
+different `N`.
 
 **Tied weights:** the token-embedding ↔ LM-head tie (standard GPT-2) is handled by all paths
 (including the gradient cross-terms). `--no_tie_weights` unties if desired.
