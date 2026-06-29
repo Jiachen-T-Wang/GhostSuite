@@ -145,6 +145,23 @@ class GhostEngineManager:
         xv = self.X_val
         model = self.model
 
+        # Run the warmup forward under the SAME autocast as real training. Without this the warmup
+        # executes in full fp32 (model_dtype) while training runs bf16, so its forward/backward —
+        # in particular the fp32 cross-entropy over the full vocab — peaks ~2x higher than any real
+        # step and sets the process memory high-water mark. Matching the dtype keeps the warmup at
+        # the steady-state footprint.
+        from contextlib import nullcontext
+        _md = getattr(self.config, "model_dtype", None)
+        _td = getattr(self.config, "train_dtype", None)
+        if _td is not None and _td != _md:
+            _ptdtype = {
+                "float32": torch.float32, "bfloat16": torch.bfloat16, "float16": torch.float16,
+            }.get(_td)
+            warmup_ctx = (torch.amp.autocast(device_type="cuda", dtype=_ptdtype)
+                          if _ptdtype is not None else nullcontext())
+        else:
+            warmup_ctx = nullcontext()
+
         def warmup_fn(total_bs=None):
             # Shape-faithful warmup batch: tile the stored validation tokens up to the combined
             # batch size (valid indices without needing the vocab size; seq matches the val batch).
@@ -153,7 +170,8 @@ class GhostEngineManager:
             idx = xv.repeat(reps, 1)[:tb].to(device)
             was_training = model.training
             model.train()
-            out = model(idx, idx)
+            with warmup_ctx:
+                out = model(idx, idx)
             out.loss.backward()
             model.train(was_training)
 
