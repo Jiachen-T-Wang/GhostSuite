@@ -109,9 +109,12 @@ def finalize_tied_param(weight, accum_dtype: torch.dtype = torch.float32) -> Non
         dot = torch.zeros(train_bs, dtype=accum_dtype, device=device)
         for kind, A_tr, B_tr in stash:
             if kind == "embedding":
-                # A_tr [train, seq] indices; B_tr [train, seq, embed]. Gather gval rows at the
-                # token ids and dot with B: <G_emb, gval> = sum_t B[t] . gval[idx_t].
-                contrib = (B_tr * gval[A_tr]).sum(dim=(1, 2))
+                # A_tr [train, ...] indices; B_tr [train, ..., embed]. Gather gval rows at the
+                # token ids and dot with B: <G_emb, gval> = sum_t B[t] . gval[idx_t]. Reduce over
+                # every dim except the batch dim so a 1-D [train] index (one id per sample) works
+                # as well as [train, seq]; see _compute_embedding_dot_product.
+                prod = B_tr * gval[A_tr]
+                contrib = prod.sum(dim=tuple(range(1, prod.dim())))
             else:  # linear: A_tr [train, seq, embed], B_tr [train, seq, vocab]
                 # <B^T A, gval> = sum_t B[t] . (gval^T B[t] folded) = sum_t (B[t] @ gval) . A[t].
                 proj = torch.matmul(B_tr, gval)                # [train, seq, embed] (contract vocab)

@@ -116,10 +116,12 @@ class _IGLinearFn(torch.autograd.Function):
         train_bs = ctx.train_bs
         d_in = A.shape[-1]
         d_out = B.shape[-1]
-        seq = A.shape[1]
         compute_dtype = B.dtype if B.is_floating_point() else A.dtype
         A_flat = A.to(compute_dtype).reshape(-1, d_in)
         B_flat = B.to(compute_dtype).reshape(-1, d_out)
+        # tokens-per-sample inferred from the flattened batch: rank-generic, so this handles
+        # 2-D [batch, d_in] (seq=1) and >3-D inputs, matching the eager linear path.
+        seq = A_flat.size(0) // A.size(0)
         split = train_bs * seq
         A_train, A_val = A_flat[:split], A_flat[split:]
         B_train, B_val = B_flat[:split], B_flat[split:]
@@ -157,7 +159,10 @@ class _IGEmbeddingFn(torch.autograd.Function):
         vocab, d_f = ctx.weight_shape
         grad_val = torch.zeros((vocab, d_f), dtype=compute_dtype, device=B.device)
         grad_val.index_add_(0, idx_val.reshape(-1), B_val.reshape(-1, d_f))
-        dot = (B_train * grad_val[idx_train]).to(ACCUM_DTYPE).sum(dim=[1, 2])
+        # Reduce over every dim except the per-sample batch dim, so a 1-D [batch] index
+        # (one id per sample) works as well as [batch, seq]; see _compute_embedding_dot_product.
+        prod = (B_train * grad_val[idx_train]).to(ACCUM_DTYPE)
+        dot = prod.sum(dim=tuple(range(1, prod.dim())))
         m1 = _store(ctx.dot_buf, dot)
         m2 = _store(ctx.gradval_buf, grad_val.to(ACCUM_DTYPE))
         grad_out = grad_output + (0.0 * (m1 + m2)).to(grad_output.dtype)
