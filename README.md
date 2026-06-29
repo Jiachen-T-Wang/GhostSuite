@@ -171,9 +171,53 @@ for iteration in range(max_steps):
         ghost_engine.save_metrics(iteration)
 ```
 
+The loop above is the single-microbatch (`gradient_accumulation_steps == 1`) skeleton.
+
+### Gradient accumulation
+
+`GradDotProd` supports `gradient_accumulation_steps > 1` on both the eager and decoupled paths.
+Because the fixed validation batch rides in **every** microbatch's combined forward, the per-microbatch
+validation gradients must be **summed** for a single end-of-step subtract-val recovery — so the
+accumulation window has its own lifecycle: `begin_step()` once before the loop, `collect_microbatch()`
+after each microbatch's backward (it reads that microbatch's per-sample dots and folds its val grad),
+and a single `prepare_gradients()` after the loop. Each microstep must draw a **distinct** train
+sub-batch and scale its loss by `1/N` (replaying one batch with `1/N` scaling is identical to
+`grad_accum == 1`).
+
+```python
+N = config.gradient_accumulation_steps
+
+for iteration in range(max_steps):
+    optimizer.zero_grad(set_to_none=True)
+    ghost_engine.begin_step()                     # reset per-step dot/grad accumulation
+
+    for micro in range(N):
+        X_train, Y_train, batch_idx = get_batch()  # DISTINCT sub-batch per microstep
+        ghost_engine.attach_train_batch(X_train, Y_train, iteration, batch_idx)
+        X_forward, Y_forward = ghost_engine.prepare_forward_input(X_train, Y_train)
+        with ghost_engine.saved_tensors_context():
+            loss = model(input_ids=X_forward, labels=Y_forward).loss / N
+            loss.backward()
+        ghost_engine.collect_microbatch()          # this microstep's dots + fold its val grad
+
+    ghost_engine.prepare_gradients()               # ONE subtract-val recovery from the summed val grad
+    optimizer.step()
+    ghost_engine.clear_gradients()
+    if ghost_engine.should_save_metrics(iteration):
+        ghost_engine.save_metrics(iteration)
+```
+
+The per-microstep dots are pooled into a single `[N * batch_size]` score vector; read them with
+`ghost_engine.read_scores()`. Note the dots carry a `1/N^2` loss-rescale factor — consistent within a
+run (sign / ranking preserved), but not comparable in absolute scale across different `N`. For
+selection workflows, the higher-level `examples/lm/shared/selection_trainer.online_selection_step`
+driver wraps this whole lifecycle (scoring, selection, recovery) — pass it a `draw_microbatch`
+callable and `grad_accum=N`.
+
 Notes:
 - `saved_tensors_context()` is required for `GradDotProd` and is a no-op for other methods.
-- With gradient accumulation, call `aggregate_and_log()` after each microbatch and move `prepare_gradients()`/`optimizer.step()` to the end of the accumulation window.
+- At `N == 1` the accumulation lifecycle reduces to the simple loop above; `collect_microbatch()`
+  then `prepare_gradients()` is equivalent to the single `prepare_gradients()` shown there.
 - For no-grad evaluation, use `ghost_engine.detach_for_evaluation()` and `ghost_engine.reattach_after_evaluation()`.
 
 
