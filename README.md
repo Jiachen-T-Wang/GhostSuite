@@ -125,6 +125,15 @@ See individual example directories for detailed documentation and configuration 
 
 The `GhostEngineManager` provides a convenient interface for integrating gradient computation engines into your training loop. This is the **generic eager API** for custom loops; the TorchTitan integration above wraps the same engines but adds the compiled fast path (`decoupled_fn` + `torch.compile`), which bypasses the `saved_tensors_context()` hook shown here. Here's an overview of how to modify your training loop:
 
+The loop has a per-step lifecycle that also covers gradient accumulation: `begin_step()` once
+before the microbatch loop, `collect_microbatch()` after each microbatch's backward (it reads that
+microbatch's per-sample dots and folds its validation gradient), and a single `prepare_gradients()`
+after the loop. The fixed validation batch rides in **every** microbatch's combined forward, so the
+per-microbatch val gradients must be **summed** for one end-of-step subtract-val recovery — that is
+what `collect_microbatch()` accumulates. Set `N = gradient_accumulation_steps` (use `N = 1` for a
+plain single-microbatch step); when `N > 1`, each microstep must draw a **distinct** train sub-batch
+and scale its loss by `1/N`.
+
 ```python
 from ghostEngines import GhostEngineManager
 
@@ -138,55 +147,7 @@ ghost_engine = GhostEngineManager(
 )
 
 # 2. Training loop with Ghost Engine integration
-for iteration in range(max_steps):
-    # Get training batch
-    X_train, Y_train, batch_idx = get_batch()
-
-    optimizer.zero_grad(set_to_none=True)
-
-    # Attach batch information to engine
-    ghost_engine.attach_train_batch(X_train, Y_train, iteration, batch_idx)
-
-    # Prepare input (concatenates val data for GradDotProd method)
-    X_forward, Y_forward = ghost_engine.prepare_forward_input(X_train, Y_train)
-    
-    # Forward and backward pass (capture saved tensors for GradDotProd)
-    with ghost_engine.saved_tensors_context():
-        outputs = model(input_ids=X_forward, labels=Y_forward)
-        loss = outputs.loss
-        loss.backward()
-
-    # Ghost engine gradient processing
-    ghost_engine.prepare_gradients()    # Move accumulated gradients to .grad
-
-    # Optimizer step
-    optimizer.step()
-
-    # Ghost engine post-processing
-    ghost_engine.aggregate_and_log()    # Compute and log gradient metrics
-    ghost_engine.clear_gradients()      # Clean up stored gradients
-    
-    # Periodic metric saving
-    if ghost_engine.should_save_metrics(iteration):
-        ghost_engine.save_metrics(iteration)
-```
-
-The loop above is the single-microbatch (`gradient_accumulation_steps == 1`) skeleton.
-
-### Gradient accumulation
-
-`GradDotProd` supports `gradient_accumulation_steps > 1` on both the eager and decoupled paths.
-Because the fixed validation batch rides in **every** microbatch's combined forward, the per-microbatch
-validation gradients must be **summed** for a single end-of-step subtract-val recovery — so the
-accumulation window has its own lifecycle: `begin_step()` once before the loop, `collect_microbatch()`
-after each microbatch's backward (it reads that microbatch's per-sample dots and folds its val grad),
-and a single `prepare_gradients()` after the loop. Each microstep must draw a **distinct** train
-sub-batch and scale its loss by `1/N` (replaying one batch with `1/N` scaling is identical to
-`grad_accum == 1`).
-
-```python
-N = config.gradient_accumulation_steps
-
+N = config.gradient_accumulation_steps            # 1 for a plain single-microbatch step
 for iteration in range(max_steps):
     optimizer.zero_grad(set_to_none=True)
     ghost_engine.begin_step()                     # reset per-step dot/grad accumulation
@@ -194,7 +155,9 @@ for iteration in range(max_steps):
     for micro in range(N):
         X_train, Y_train, batch_idx = get_batch()  # DISTINCT sub-batch per microstep
         ghost_engine.attach_train_batch(X_train, Y_train, iteration, batch_idx)
+        # prepare_forward_input concatenates the val batch for GradDotProd (no-op otherwise)
         X_forward, Y_forward = ghost_engine.prepare_forward_input(X_train, Y_train)
+        # saved_tensors_context captures per-sample activations for GradDotProd (no-op otherwise)
         with ghost_engine.saved_tensors_context():
             loss = model(input_ids=X_forward, labels=Y_forward).loss / N
             loss.backward()
@@ -202,7 +165,7 @@ for iteration in range(max_steps):
 
     ghost_engine.prepare_gradients()               # ONE subtract-val recovery from the summed val grad
     optimizer.step()
-    ghost_engine.clear_gradients()
+    ghost_engine.clear_gradients()                 # clean up stored gradients
     if ghost_engine.should_save_metrics(iteration):
         ghost_engine.save_metrics(iteration)
 ```
@@ -216,8 +179,6 @@ callable and `grad_accum=N`.
 
 Notes:
 - `saved_tensors_context()` is required for `GradDotProd` and is a no-op for other methods.
-- At `N == 1` the accumulation lifecycle reduces to the simple loop above; `collect_microbatch()`
-  then `prepare_gradients()` is equivalent to the single `prepare_gradients()` shown there.
 - For no-grad evaluation, use `ghost_engine.detach_for_evaluation()` and `ghost_engine.reattach_after_evaluation()`.
 
 
