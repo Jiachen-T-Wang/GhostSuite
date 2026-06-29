@@ -382,7 +382,12 @@ def _compute_embedding_dot_product(
         B_val_c.reshape(-1, d_f)                    # vectors  [val_batch * seq, d_f]
     )
 
-    dot_products = (B_train_c * grad_val[A_train_long]).to(accum_dtype).sum(dim=[1, 2])
+    # Reduce over every dimension except the per-sample batch dim (dim 0). The
+    # embedding input may be 1-D [batch] (one index per sample), 2-D [batch, seq]
+    # (token sequences), or higher rank; the per-token product carries one extra
+    # trailing dim (d_f), so summing dims 1.. always yields one score per sample.
+    per_token = (B_train_c * grad_val[A_train_long]).to(accum_dtype)
+    dot_products = per_token.sum(dim=tuple(range(1, per_token.dim())))
     layer.weight.grad_dot_prod = dot_products
     _maybe_store_grad_val(layer.weight, grad_val)
 
@@ -390,6 +395,10 @@ def _compute_embedding_dot_product(
         # Compute per-sample train grad norm using unique tokens per sample
         train_norms = []
         for sample_tokens, sample_B in zip(A_train_long, B_train_c):
+            # Flatten trailing dims so this works for 1-D [batch] inputs (scalar
+            # per sample) as well as [batch, seq, ...] token grids.
+            sample_tokens = sample_tokens.reshape(-1)
+            sample_B = sample_B.reshape(-1, sample_B.size(-1))
             unique_tok, inverse = torch.unique(sample_tokens, return_inverse=True)
             agg = torch.zeros((unique_tok.numel(), sample_B.size(-1)), device=sample_B.device, dtype=sample_B.dtype)
             agg.index_add_(0, inverse, sample_B)
