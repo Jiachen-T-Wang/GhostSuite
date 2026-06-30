@@ -34,7 +34,8 @@ def greedy_selection(scores: np.ndarray, interaction: np.ndarray, K: int):
     as ``select(scores)`` — this needs a candidate-candidate ``interaction`` (Gram) matrix, which is
     produced by the second-order GREATS scorer. It therefore lives here as a standalone function;
     wrapping it as a driver-pluggable redundancy-aware policy is deferred to the GramScorer
-    absorption (see docs/issues/open/absorb-greats-second-order-gramscorer-into-engine)."""
+    absorption (see
+    docs/issues/open/absorb-greats-second-order-and-generalize-driver_2026-06-29.md)."""
     scores = scores.copy().astype(np.float64)
     selected = []
     for _ in range(K):
