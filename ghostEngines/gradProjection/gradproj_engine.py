@@ -12,7 +12,7 @@ from typing import Dict, List, Optional, Union, Tuple
 from collections import OrderedDict
 
 from .projection_utils import (
-    choose_ki_ko, 
+    choose_ki_ko,
     get_projection_initializer,
     compute_projection_metadata
 )
@@ -29,13 +29,13 @@ from .supported_layers_gradproj import (
 class GradProjLoraEngine:
     """
     Gradient Projection Engine using LoRA-style side branches.
-    
+
     This engine computes per-sample projected gradients without modifying
     the model's forward pass or training dynamics. It uses low-rank projections
     to reduce gradient dimensionality while preserving similarity structure.
     """
-    
-    def __init__(self, 
+
+    def __init__(self,
                  module: nn.Module,
                  proj_layers: Union[str, List[str]],
                  proj_rank_total: int,
@@ -50,7 +50,7 @@ class GradProjLoraEngine:
                  **kwargs):
         """
         Initialize the gradient projection engine.
-        
+
         Args:
             module: The model to attach projections to
             proj_layers: Comma-separated patterns for layers to project
@@ -72,7 +72,7 @@ class GradProjLoraEngine:
         self.proj_seed = proj_seed
         self.proj_dir = Path(proj_dir)
         self.proj_save_interval = proj_save_interval
-        
+
         # Parse dtype
         dtype_map = {
             'float16': torch.float16,
@@ -82,14 +82,14 @@ class GradProjLoraEngine:
         if proj_dtype not in dtype_map:
             raise ValueError(f"proj_dtype must be one of {list(dtype_map.keys())}, got {proj_dtype}")
         self.proj_dtype = dtype_map[proj_dtype]
-        
+
         # Projection method
         self.proj_method = 'orthonormal' if proj_row_orthonormal else 'gaussian'
-        
+
         # Options
         self.include_embeddings = include_embeddings
         self.include_conv2d = include_conv2d
-        
+
         # State
         self.matched_layers = OrderedDict()
         self.projection_matrices = {}
@@ -100,7 +100,7 @@ class GradProjLoraEngine:
         self.total_proj_dim = 0
         self.metadata = {}
         self.is_attached = False
-        
+
         # Counters
         self.iteration = 0
         self.batch_count = 0
@@ -112,23 +112,23 @@ class GradProjLoraEngine:
 
         # Initialize projections
         self._initialize_projections()
-        
+
     def _initialize_projections(self):
         """Initialize projection matrices for selected layers."""
         # Find matching layers
         self.matched_layers = find_matching_layers(
-            self.module, 
+            self.module,
             self.proj_layers,
             self.include_embeddings,
             self.include_conv2d
         )
-        
+
         # Validate selection
         validate_layer_selection(self.matched_layers, self.proj_layers)
-        
+
         # Get device from first parameter
         device = next(self.module.parameters()).device
-        
+
         # Create projection matrices for each layer
         init_fn = get_projection_initializer(self.proj_method)
 
@@ -156,16 +156,16 @@ class GradProjLoraEngine:
             self.projection_matrices[layer_name] = (P_i, P_o)
 
             print(f"  Projection dims: k_i={k_i}, k_o={k_o} (k_total={k_i*k_o})")
-            
+
         # Compute slice ranges for concatenation
         self.slice_ranges = get_layer_slice_ranges(self.matched_layers, self.projection_dims)
         self.total_proj_dim = compute_total_projection_size(self.matched_layers, self.projection_dims)
-        
-        print(f"Total projection dimension: {self.total_proj_dim}")
-        
+
+        print(f"[INFO] Total projection dimension: {self.total_proj_dim}")
+
         # Prepare metadata
         self._prepare_metadata()
-        
+
     def _prepare_metadata(self):
         """Prepare metadata for saving."""
         self.metadata = {
@@ -178,13 +178,13 @@ class GradProjLoraEngine:
             'total_proj_dim': self.total_proj_dim,
             'layers': []
         }
-        
+
         # Add per-layer metadata
         for layer_name in sorted(self.matched_layers.keys()):
             layer = self.matched_layers[layer_name]
             k_i, k_o = self.projection_dims[layer_name]
             start, end = self.slice_ranges[layer_name]
-            
+
             layer_meta = compute_projection_metadata(layer_name, layer, k_i, k_o)
             layer_meta['slice_start'] = start
             layer_meta['slice_end'] = end
@@ -195,43 +195,47 @@ class GradProjLoraEngine:
             layer_meta['seed_o'] = seed_o
 
             self.metadata['layers'].append(layer_meta)
-            
-    def attach(self):
-        """Attach hooks to selected layers."""
+
+    def attach(self, optimizer=None):
+        """Attach hooks to selected layers.
+
+        ``optimizer`` is accepted (and ignored) so the signature matches the GhostEngine
+        protocol — GradProjLora only observes gradients, it does not update them.
+        """
         if self.is_attached:
             return
-            
+
         for layer_name, layer in self.matched_layers.items():
             P_i, P_o = self.projection_matrices[layer_name]
-            
+
             # Create and attach hooks
             hooks = create_projection_hooks(layer, layer_name, P_i, P_o)
             hooks.attach(layer)
             self.hooks[layer_name] = hooks
-            
+
         self.is_attached = True
-        print(f"Attached projection hooks to {len(self.matched_layers)} layers")
-        
+        print(f"[INFO] Attached projection hooks to {len(self.matched_layers)} layers")
+
     def detach(self):
         """Remove hooks from layers and clean up."""
         if not self.is_attached:
             return
-            
+
         # Remove hooks
         for layer_name, hooks in self.hooks.items():
             hooks.detach()
-            
+
             # Clean up any cached data
             layer = self.matched_layers[layer_name]
             if hasattr(layer, '_ghost_A_raw'):
                 delattr(layer, '_ghost_A_raw')
             if hasattr(layer, '_ghost_grad_proj'):
                 delattr(layer, '_ghost_grad_proj')
-                
+
         self.hooks.clear()
         self.is_attached = False
-        print(f"Detached projection hooks from {len(self.matched_layers)} layers")
-        
+        print(f"[INFO] Detached projection hooks from {len(self.matched_layers)} layers")
+
     def begin_step(self):
         """Begin a gradient-accumulation step: reset the per-layer microbatch buffers.
 
@@ -352,64 +356,55 @@ class GradProjLoraEngine:
             self._micro_buffers = None
 
         return full_projection
-        
+
     def _save_projection(self, projection: torch.Tensor, batch_indices: Optional[List[int]] = None):
         """Save projection to disk."""
         # Create directory if needed
         self.proj_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Save metadata on first save
         metadata_path = self.proj_dir / 'metadata.json'
         if not metadata_path.exists():
             with open(metadata_path, 'w') as f:
                 json.dump(self.metadata, f, indent=2)
-            print(f"Saved metadata to {metadata_path}")
-            
+            print(f"[INFO] Saved metadata to {metadata_path}")
+
         # Prepare save dict
         save_dict = {
             'proj': projection.cpu(),
             'iter': self.iteration,
             'batch_size': projection.shape[0],
         }
-        
+
         if batch_indices is not None:
             save_dict['batch_idx'] = batch_indices
-            
+
         # Save projection
         filename = f'proj_iter_{self.iteration:06d}.pt'
         save_path = self.proj_dir / filename
         torch.save(save_dict, save_path)
-        
-        print(f"Saved projection [{projection.shape}] to {save_path}")
-        
+
+        print(f"[INFO] Saved projection [{projection.shape}] to {save_path}")
+
     def get_projection_metadata(self) -> dict:
         """Get metadata about the projection configuration."""
         return self.metadata.copy()
-        
-    # === Compatibility methods for engine_manager integration ===
-    
+
+    # === GhostEngine protocol methods (see ghostEngines/engine_protocol.py) ===
+
     def attach_train_batch(self, X_train, Y_train, iter_num, batch_idx=None):
-        """
-        Store training batch information (compatibility method).
-        
-        For GradProjLora, we track iteration number for saving purposes.
-        """
+        """Store the current training iteration / batch indices for saving purposes."""
         self.current_iter_num = iter_num
         self.current_batch_idx = batch_idx
-        
+
     def prepare_gradients(self):
-        """
-        Prepare gradients after backward pass (compatibility method).
-        
-        For GradProjLora, projections are computed during backward hooks,
-        so this is a no-op.
-        """
+        """No-op for GradProjLora: projections are computed during the backward hooks."""
         pass
-        
+
     def aggregate_and_log(self):
         """
         Aggregate and log metrics after optimizer step (compatibility method).
-        
+
         This calls collect_batch() to compute and save projections.
         """
         if hasattr(self, 'current_batch_idx') and self.current_batch_idx is not None:
@@ -418,11 +413,11 @@ class GradProjLoraEngine:
         else:
             # Collect without batch indices
             self.collect_batch()
-            
+
     def clear_gradients(self):
         """
         Clear gradients and cached data after optimizer step (compatibility method).
-        
+
         This cleans up any cached activations or gradients.
         """
         # Clean up cached data in layers
@@ -431,28 +426,19 @@ class GradProjLoraEngine:
                 delattr(layer, '_ghost_A_raw')
             if hasattr(layer, '_ghost_grad_proj'):
                 delattr(layer, '_ghost_grad_proj')
-                
-    def attach_with_optimizer(self, optimizer):
-        """
-        Attach to optimizer (compatibility method for engine_manager).
-        
-        For GradProjLora, we don't need the optimizer, so this just
-        calls the regular attach() method.
-        """
-        self.attach()
-            
+
     def detach_for_evaluation(self):
         """
         Detach during evaluation (compatibility method).
-        
+
         Alias for the existing detach() method.
         """
         self.detach()
-        
+
     def reattach_after_evaluation(self):
         """
         Reattach after evaluation (compatibility method).
-        
+
         Re-attaches projection hooks after evaluation.
         """
         # attach() is idempotent (no-ops if already attached) and rebuilds the
@@ -468,14 +454,14 @@ class GradProjLoraEngine:
         """
         # Detach all hooks
         self.detach()
-        
+
         # Clear projection matrices to free memory
         self.projection_matrices.clear()
-        
+
     def save_projections(self, iter_num: int):
         """
         Save projections at the given iteration (compatibility method).
-        
+
         This is called by engine_manager's save_metrics().
         For GradProjLora, projections are saved in collect_batch(),
         so this can be a no-op or trigger a forced save.
@@ -483,7 +469,7 @@ class GradProjLoraEngine:
         # Projections are saved automatically in collect_batch()
         # This method exists for compatibility
         pass
-        
+
     def __repr__(self):
         return (f"GradProjLoraEngine(layers={len(self.matched_layers)}, "
                 f"total_dim={self.total_proj_dim}, "
@@ -493,11 +479,11 @@ class GradProjLoraEngine:
 def create_gradproj_engine(model: nn.Module, config: dict) -> GradProjLoraEngine:
     """
     Factory function to create engine from config dict.
-    
+
     Args:
         model: Model to attach engine to
         config: Configuration dictionary
-        
+
     Returns:
         Configured GradProjLoraEngine instance
     """
@@ -506,9 +492,9 @@ def create_gradproj_engine(model: nn.Module, config: dict) -> GradProjLoraEngine
         'proj_layers', 'proj_rank_total', 'proj_rank_min',
         'proj_seed', 'proj_dtype', 'proj_dir'
     ]
-    
+
     for param in required_params:
         if param not in config:
             raise ValueError(f"Missing required parameter: {param}")
-            
+
     return GradProjLoraEngine(model, **config)

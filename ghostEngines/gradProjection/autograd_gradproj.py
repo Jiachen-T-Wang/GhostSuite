@@ -11,29 +11,29 @@ from typing import Optional, Tuple, Any
 def _flatten_tokens(x: torch.Tensor) -> torch.Tensor:
     """
     Flatten middle dimensions to get [batch, tokens, features] shape.
-    
+
     Args:
         x: Input tensor of shape [B, ...] or [B, ..., D]
-        
+
     Returns:
         Tensor of shape [B, T, D] where T is the product of middle dimensions
     """
     if x.dim() <= 2:
         # [B, D] -> [B, 1, D]
         return x.unsqueeze(1)
-    
+
     B = x.shape[0]
     *mid, D = x.shape[1:]
-    
+
     if len(mid) == 0:
         # Already [B, D]
         return x.unsqueeze(1)
-    
+
     # Compute total tokens
     T = 1
     for dim in mid:
         T *= dim
-    
+
     return x.reshape(B, T, D)
 
 
@@ -42,12 +42,12 @@ class GradProjHooks:
     Container for forward and backward hooks used in gradient projection.
     Stores projection matrices and provides hook functions.
     """
-    
-    def __init__(self, P_i: torch.Tensor, P_o: torch.Tensor, 
+
+    def __init__(self, P_i: torch.Tensor, P_o: torch.Tensor,
                  layer_name: str, layer_type: str):
         """
         Initialize hooks with projection matrices.
-        
+
         Args:
             P_i: Input projection matrix [k_i, n_i]
             P_o: Output projection matrix [k_o, n_o]
@@ -60,12 +60,12 @@ class GradProjHooks:
         self.layer_type = layer_type
         self._handle_forward = None
         self._handle_backward = None
-        
-    def forward_hook_store_inputs(self, module: nn.Module, inputs: Tuple[torch.Tensor, ...], 
+
+    def forward_hook_store_inputs(self, module: nn.Module, inputs: Tuple[torch.Tensor, ...],
                                  output: torch.Tensor) -> None:
         """
         Forward hook to store input activations.
-        
+
         Args:
             module: The layer being hooked
             inputs: Input tuple (typically contains single tensor)
@@ -77,12 +77,12 @@ class GradProjHooks:
         # retains the last call's activations. The engine targets distinct
         # Linear/Embedding/Conv1D layers, which are each called once per step.
         module._ghost_A_raw = inputs[0].detach()
-        
+
     def backward_hook_compute_proj(self, module: nn.Module, grad_input: Tuple[Optional[torch.Tensor], ...],
                                   grad_output: Tuple[torch.Tensor, ...]) -> None:
         """
         Backward hook to compute projected gradients.
-        
+
         Args:
             module: The layer being hooked
             grad_input: Gradients w.r.t. inputs (unused)
@@ -92,7 +92,7 @@ class GradProjHooks:
         A_raw = getattr(module, '_ghost_A_raw', None)
         if A_raw is None:
             raise RuntimeError(f'Missing cached activations for GradProjection in {self.layer_name}')
-        
+
         # Get output gradients
         B_out = grad_output[0]
         if B_out is None:
@@ -100,9 +100,9 @@ class GradProjHooks:
             module._ghost_grad_proj = None
             delattr(module, '_ghost_A_raw')
             return
-        
+
         B_out = B_out.detach()
-        
+
         # Handle different layer types
         if self.layer_type == 'Embedding':
             # For embedding, we need special handling
@@ -110,11 +110,11 @@ class GradProjHooks:
         else:
             # For Linear/Conv1D layers
             self._compute_dense_proj(module, A_raw, B_out)
-        
+
         # Clean up cached activations
         delattr(module, '_ghost_A_raw')
-        
-    def _compute_dense_proj(self, module: nn.Module, A_raw: torch.Tensor, 
+
+    def _compute_dense_proj(self, module: nn.Module, A_raw: torch.Tensor,
                            B_out: torch.Tensor) -> None:
         """
         Compute projected gradients for dense layers (Linear, Conv1D).
@@ -151,15 +151,15 @@ class GradProjHooks:
         # Note: grad_output from CrossEntropyLoss(mean) carries a 1/B factor;
         # multiply by batch_size to match reduction='sum' naive computation.
         gradG = gradG * batch_size
-        
+
         # Store in float32 for precision
         module._ghost_grad_proj = gradG.to(torch.float32)
-        
+
     def _compute_embedding_proj(self, module: nn.Module, indices: torch.Tensor,
                                grad_output: torch.Tensor) -> None:
         """
         Compute projected gradients for embedding layers.
-        
+
         Memory-efficient implementation that accumulates directly in projected space.
         For each token index j with gradient g_t, we compute:
         - P_o @ g_t (k_o-dimensional)
@@ -168,7 +168,7 @@ class GradProjHooks:
         """
         # indices: [B, T] or [B, ..., T]
         # grad_output: [B, T, embedding_dim] or [B, ..., T, embedding_dim]
-        
+
         # Flatten inputs
         if indices.dim() > 2:
             batch_size = indices.shape[0]
@@ -199,12 +199,12 @@ class GradProjHooks:
         gradG = gradG * batch_size
 
         module._ghost_grad_proj = gradG.to(torch.float32)
-        
+
     def attach(self, module: nn.Module) -> None:
         """Attach hooks to the module."""
         self._handle_forward = module.register_forward_hook(self.forward_hook_store_inputs)
         self._handle_backward = module.register_full_backward_hook(self.backward_hook_compute_proj)
-        
+
     def detach(self) -> None:
         """Remove hooks from the module."""
         if self._handle_forward is not None:
@@ -215,23 +215,23 @@ class GradProjHooks:
             self._handle_backward = None
 
 
-def create_projection_hooks(module: nn.Module, layer_name: str, 
+def create_projection_hooks(module: nn.Module, layer_name: str,
                           P_i: torch.Tensor, P_o: torch.Tensor) -> GradProjHooks:
     """
     Create and return hooks for a specific layer.
-    
+
     Args:
         module: The layer to hook
         layer_name: Name of the layer
         P_i: Input projection matrix
         P_o: Output projection matrix
-        
+
     Returns:
         GradProjHooks instance (not yet attached)
     """
     # Determine layer type
     layer_type = module.__class__.__name__
-    
+
     # Handle special cases
     if layer_type == 'Conv1D':
         # Transformers Conv1D is like Linear with transposed weight
@@ -258,5 +258,5 @@ def create_projection_hooks(module: nn.Module, layer_name: str,
         layer_type = 'Embedding'
     else:
         raise ValueError(f"Unsupported layer type: {layer_type}")
-    
+
     return GradProjHooks(P_i, P_o, layer_name, layer_type)

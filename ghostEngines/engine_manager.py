@@ -17,6 +17,7 @@ from .graddotprod_engine import GradDotProdEngine
 from .gradProjection.gradproj_engine import GradProjLoraEngine
 from .decoupled_capture_dotprod import GhostDecoupledManager
 from .decoupled_compile import attach_and_compile_decoupled
+from .engine_protocol import GhostEngine
 
 
 class GhostEngineManager:
@@ -42,8 +43,9 @@ class GhostEngineManager:
         self.optimizer = optimizer
         self.ddp_info = ddp_info
         
-        # Initialize engine based on method
-        self.engine = None
+        # Initialize engine based on method. When set, the engine satisfies the GhostEngine
+        # protocol (ghostEngines/engine_protocol.py); engine-specific extras are hasattr-guarded.
+        self.engine: Optional[GhostEngine] = None
         # Decoupled in-graph + compile path (fn-path): hosts a GhostDecoupledManager instead of the
         # eager GradDotProdEngine; dot-products land in per-layer buffers during backward and train
         # grads are recovered via subtract-val before the optimizer step.
@@ -596,16 +598,15 @@ class GhostEngineManager:
             # ghost-wrapped leaves at compile time and cannot be un-ghosted without recompiling.
             return
         if self.engine:
-            if hasattr(self.engine, 'detach'):
-                self.engine.detach()
+            self.engine.detach()
 
     def reattach_after_evaluation(self):
         """Reattach engines after evaluation."""
         if self.is_fn_path:
             return  # fn-path never detached for eval (see detach_for_evaluation).
         if self.engine:
-            if hasattr(self.engine, 'attach'):
-                self.engine.attach(self.optimizer)
+            # attach() takes an optional optimizer (GhostEngine protocol); GradProjLora ignores it.
+            self.engine.attach(self.optimizer)
     
     def cleanup(self):
         """Cleanup and save any remaining data during training termination."""
@@ -644,7 +645,6 @@ class GhostEngineManager:
         
         # Detach the engine
         try:
-            if hasattr(self.engine, 'detach'):
-                self.engine.detach()
+            self.engine.detach()
         except Exception as e:
             print(f"Error detaching ghost engine during cleanup: {e}")

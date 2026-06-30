@@ -6,12 +6,15 @@ such as gradient dot products, with minimal integration overhead.
 """
 
 from .graddotprod_engine import GradDotProdEngine
+from .gradProjection.gradproj_engine import GradProjLoraEngine, create_gradproj_engine
 from .engine_manager import GhostEngineManager
+from .engine_protocol import GhostEngine
 from .selection import (
     SelectionPolicy, UpdateAll, TopK, BottomK, Threshold, NoSelection,
 )
 
 __all__ = [
-    'GradDotProdEngine', 'GhostEngineManager',
+    'GhostEngine', 'GradDotProdEngine', 'GradProjLoraEngine', 'create_gradproj_engine',
+    'GhostEngineManager',
     'SelectionPolicy', 'UpdateAll', 'TopK', 'BottomK', 'Threshold', 'NoSelection',
 ]
