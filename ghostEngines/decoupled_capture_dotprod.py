@@ -12,8 +12,9 @@ intermediates (``grad_val_projected``) are transient in the backward, not stored
 eager-hook engine untouched and lets ``torch.compile`` regional-compile each block (no hooks /
 lock / setattr in the traced region). Train grads are recovered via subtract-val.
 
-Supported leaves: ``nn.Linear`` (no bias), ``nn.Embedding``, ``nn.RMSNorm``, and
-``nn.LayerNorm`` (weight + optional bias; ``_IGLayerNormFn``). **Tied weights** — a weight shared by
+Supported leaves: ``nn.Linear`` (weight + optional bias; ``_IGLinearFn``), ``nn.Embedding``,
+``nn.RMSNorm``, and ``nn.LayerNorm`` (weight + optional bias; ``_IGLayerNormFn``). A **tied** weight
+whose module also has a per-module bias is the one exception (fail-loud at attach). **Tied weights** — a weight shared by
 two supported modules (e.g. GPT-2 ``wte`` ↔ ``lm_head``) — take a separate route: those (top-level,
 not in compiled regions) capture their ``(A, B)`` and are combined post-backward by
 ``stash_tied_contribution`` / ``finalize_tied_param`` (the eager tied finalizer), so the shared
@@ -104,13 +105,21 @@ class _IGLinearFn(torch.autograd.Function):
     The wrapped ``nn.Linear`` keeps its native (cuBLAS-fused) backward; this Function only reads
     the layer input ``A`` and output grad ``B`` to emit ``dot`` [train_bs] and ``grad_val``
     [d_out, d_in], mirroring ``_compute_linear_dot_product`` / the 1b ghost formula.
+
+    With a bias, the bias gradient is ``B`` summed over tokens (it does NOT depend on ``A``), so the
+    bias dot is folded into the same per-train-sample ``dot`` and its validation aggregate stored in
+    ``gb_buf``. Because the bias term reads only ``B`` (the incoming backward grad, always live), it
+    needs no extra ``save_for_backward`` and is unaffected by the min-cut partitioner's recompute of
+    ``A`` (activation checkpointing).
     """
 
     @staticmethod
-    def forward(ctx, output, input_act, dot_buf, gradval_buf, train_bs, val_bs):
+    def forward(ctx, output, input_act, dot_buf, gradval_buf, gb_buf, has_bias, train_bs, val_bs):
         ctx.save_for_backward(input_act)
         ctx.dot_buf = dot_buf
         ctx.gradval_buf = gradval_buf
+        ctx.gb_buf = gb_buf
+        ctx.has_bias = has_bias
         ctx.train_bs = train_bs
         ctx.val_bs = val_bs
         return output
@@ -134,11 +143,20 @@ class _IGLinearFn(torch.autograd.Function):
         grad_val = torch.matmul(B_val.t(), A_val)                 # [d_out, d_in]
         grad_val_projected = torch.matmul(B_train, grad_val)      # [train*seq, d_in] (transient)
         token_scores = (A_train * grad_val_projected).sum(dim=1)  # [train*seq]
-        dot = token_scores.view(train_bs, seq).sum(dim=1)         # [train_bs]
-        m1 = _store(ctx.dot_buf, dot)
-        m2 = _store(ctx.gradval_buf, grad_val.to(ACCUM_DTYPE))
-        grad_out = grad_output + (0.0 * (m1 + m2)).to(grad_output.dtype)
-        return grad_out, None, None, None, None, None
+        dot = token_scores.view(train_bs, seq).sum(dim=1)         # [train_bs] (weight contribution)
+
+        # --- bias: grad = B summed over tokens (no dependence on A) ---
+        m = _store(ctx.gradval_buf, grad_val.to(ACCUM_DTYPE))
+        if ctx.has_bias:
+            per_sample_b = B_train.view(train_bs, seq, d_out).sum(dim=1)  # [train_bs, d_out]
+            total_b = B_val.sum(dim=0)                                    # [d_out]
+            dot = dot + torch.einsum("bf,f->b", per_sample_b, total_b)
+            m = m + _store(ctx.gb_buf, total_b.to(ACCUM_DTYPE))
+        m = m + _store(ctx.dot_buf, dot)                           # store the full (weight+bias) dot once
+
+        grad_out = grad_output + (0.0 * m).to(grad_output.dtype)
+        # grads for (output, input_act, dot_buf, gradval_buf, gb_buf, has_bias, train_bs, val_bs)
+        return grad_out, None, None, None, None, None, None, None
 
 
 class _IGEmbeddingFn(torch.autograd.Function):
@@ -350,14 +368,16 @@ class GhostDecoupledManager:
 
     def _alloc_ingraph(self, layer, total_bs, dev):
         """Allocate the per-layer buffers: one shared ``dot`` [train_bs] plus a ``grad_val`` buffer
-        per trainable parameter. Returns ``[dot, [(param, grad_val_buf), ...]]``. All layer types
-        except ``nn.LayerNorm`` (weight + optional bias) have a single weight parameter."""
+        per trainable parameter. Returns ``[dot, [(param, grad_val_buf), ...]]``. ``nn.Linear`` and
+        ``nn.LayerNorm`` carry weight + optional bias; the other layer types have a single weight."""
         train_bs = total_bs - self.val_batch_size
         dot = torch.zeros((train_bs,), dtype=ACCUM_DTYPE, device=dev)
         gvs = []
         if isinstance(layer, nn.Linear):
             d_out, d_in = layer.weight.shape
             gvs.append((layer.weight, torch.zeros((d_out, d_in), dtype=ACCUM_DTYPE, device=dev)))
+            if layer.bias is not None:
+                gvs.append((layer.bias, torch.zeros((d_out,), dtype=ACCUM_DTYPE, device=dev)))
         elif isinstance(layer, nn.Embedding):
             vocab, d = layer.weight.shape
             gvs.append((layer.weight, torch.zeros((vocab, d), dtype=ACCUM_DTYPE, device=dev)))
@@ -375,17 +395,22 @@ class GhostDecoupledManager:
         cell = [None]
         self._cells[id(layer)] = cell
         weight = layer.weight
+        bias = layer.bias
+        has_bias = bias is not None
         vbs = self.val_batch_size
 
         def forward(x):
-            out = F.linear(x, weight)
+            out = F.linear(x, weight, bias)
             if not self._enabled:
                 return out
             if cell[0] is None:
                 cell[0] = self._ensure_bufs_ingraph(layer, x.shape[0], x.device)
             dot_buf = cell[0][0]
             gv_buf = cell[0][1][0][1]
-            return _IGLinearFn.apply(out, x, dot_buf, gv_buf, x.shape[0] - vbs, vbs)
+            gb_buf = cell[0][1][1][1] if has_bias else None
+            return _IGLinearFn.apply(
+                out, x, dot_buf, gv_buf, gb_buf, has_bias, x.shape[0] - vbs, vbs
+            )
 
         return forward
 
@@ -497,9 +522,15 @@ class GhostDecoupledManager:
             if isinstance(layer, _SUPPORTED):
                 if any(p.requires_grad for p in layer.parameters(recurse=False)):
                     tied = getattr(layer.weight, "_ghost_tied", False)
-                    if isinstance(layer, nn.Linear) and layer.bias is not None:
+                    # Non-tied biased Linear is handled by _IGLinearFn (bias dot folded in-graph).
+                    # A tied weight whose module also has a per-module bias stays unsupported: the
+                    # tied capture path (_CaptureFn / stash_tied_contribution) handles only the
+                    # shared weight, and a bias on a tied Linear is rare (tied lm_head is ~always
+                    # bias=False). Fail loud rather than silently drop the bias.
+                    if isinstance(layer, nn.Linear) and layer.bias is not None and tied:
                         raise RuntimeError(
-                            f"GHOST_DECOUPLED_FN: Linear '{name}' has a bias; not supported."
+                            f"GHOST_DECOUPLED_FN: tied Linear '{name}' has a bias; not supported "
+                            "(tied weight + per-module bias)."
                         )
                     if id(layer) not in self._name_restore:
                         self._name_restore[id(layer)] = getattr(layer, "name", _MISSING)
