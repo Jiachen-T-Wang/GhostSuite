@@ -110,9 +110,14 @@ def main():
         num_samples = min(config.max_samples, total_samples)
     else:
         num_samples = total_samples
-    num_iterations = (num_samples + config.batch_size - 1) // config.batch_size
-    
-    print(f"Will process {num_samples} samples in {num_iterations} iterations")
+    # Each iteration (optimizer step) consumes gradient_accumulation_steps microbatches of
+    # batch_size, pooled into one saved [n_accum*batch_size, dim] projection.
+    n_accum = max(1, int(getattr(config, 'gradient_accumulation_steps', 1)))
+    samples_per_iter = config.batch_size * n_accum
+    num_iterations = (num_samples + samples_per_iter - 1) // samples_per_iter
+
+    print(f"Will process {num_samples} samples in {num_iterations} iterations "
+          f"({config.batch_size} x {n_accum} accum = {samples_per_iter} samples/iter)")
     
     # Create projection engine
     print("\n" + "=" * 40)

@@ -104,7 +104,12 @@ class GradProjLoraEngine:
         # Counters
         self.iteration = 0
         self.batch_count = 0
-        
+
+        # Gradient-accumulation state. None when no accumulation step is in
+        # progress (the legacy single-microbatch path). begin_step() sets it to a
+        # per-layer list of microbatch projections that collect_batch() concatenates.
+        self._micro_buffers = None
+
         # Initialize projections
         self._initialize_projections()
         
@@ -227,58 +232,125 @@ class GradProjLoraEngine:
         self.is_attached = False
         print(f"Detached projection hooks from {len(self.matched_layers)} layers")
         
+    def begin_step(self):
+        """Begin a gradient-accumulation step: reset the per-layer microbatch buffers.
+
+        Call once before the microbatch loop. Each microbatch's per-sample projections
+        are then appended by ``collect_microbatch``; the end-of-step ``collect_batch``
+        concatenates them over the batch dimension into ``[N*microbatch, ...]`` and saves
+        once per optimizer step. A single-microbatch step
+        (``gradient_accumulation_steps == 1``) does not need this — the legacy
+        ``backward -> collect_batch`` path still works unchanged.
+        """
+        self._micro_buffers = {name: [] for name in self.matched_layers}
+
+    def collect_microbatch(self):
+        """Append this microbatch's per-sample projections to the per-step buffers.
+
+        Call after each microbatch's ``backward()``, inside the accumulation loop, before
+        the next backward overwrites the per-layer ``_ghost_grad_proj`` slot. Reads each
+        matched layer's projection, stashes it, and clears the per-layer scratch so the
+        next microbatch starts clean.
+
+        Scaling: the projection magnitude follows the loss reduction of *this*
+        microbatch's backward. To make the pooled result identical to a single
+        ``gradient_accumulation_steps == 1`` pass over the concatenated batch, do **not**
+        pre-divide the per-microbatch loss by the number of accumulation steps — each
+        microbatch carries its own mean reduction, which the ``* batch_size`` factor in
+        the hooks already undoes with the local microbatch size.
+        """
+        if self._micro_buffers is None:
+            raise RuntimeError(
+                "collect_microbatch() called without begin_step(). Call begin_step() once "
+                "before the gradient-accumulation microbatch loop.")
+        for layer_name in sorted(self.matched_layers.keys()):
+            layer = self.matched_layers[layer_name]
+            grad_proj = getattr(layer, '_ghost_grad_proj', None)
+            if grad_proj is None:
+                raise RuntimeError(f"No projected gradient found for layer {layer_name}")
+            self._micro_buffers[layer_name].append(grad_proj)
+            # Clear the single-slot scratch so the next microbatch's backward starts
+            # clean (the data now lives in the per-step buffer, not the layer).
+            if hasattr(layer, '_ghost_grad_proj'):
+                delattr(layer, '_ghost_grad_proj')
+            if hasattr(layer, '_ghost_A_raw'):
+                delattr(layer, '_ghost_A_raw')
+
     def collect_batch(self, batch_indices: Optional[List[int]] = None) -> torch.Tensor:
         """
         Collect projected gradients from all layers and optionally save.
-        
+
+        Two modes:
+        - Single-microbatch (legacy): reads each layer's current ``_ghost_grad_proj``
+          slot (set by the most recent backward).
+        - Gradient accumulation: if ``begin_step()`` opened a step, concatenates each
+          layer's per-microbatch buffers over the batch dimension into ``[N*mb, ...]``
+          (so every microbatch's samples are captured, not just the last), then resets
+          the buffers for the next step.
+
         Args:
-            batch_indices: Optional list of sample indices in the batch
-            
+            batch_indices: Optional list of sample indices in the (possibly pooled) batch
+
         Returns:
             Concatenated projection tensor of shape [B, total_proj_dim]
-            
+
         Raises:
             RuntimeError: If no gradients are available
         """
         if not self.is_attached:
             raise RuntimeError("Engine is not attached. Call attach() first.")
-            
+
+        accumulating = self._micro_buffers is not None
+
         # Collect per-layer projections
         layer_projections = []
         batch_size = None
-        
+
         for layer_name in sorted(self.matched_layers.keys()):
             layer = self.matched_layers[layer_name]
-            
-            # Get projected gradient
-            grad_proj = getattr(layer, '_ghost_grad_proj', None)
-            if grad_proj is None:
-                raise RuntimeError(f"No projected gradient found for layer {layer_name}")
-                
+
+            if accumulating:
+                # Concatenate this layer's microbatch projections over the batch dim.
+                micro = self._micro_buffers.get(layer_name)
+                if not micro:
+                    raise RuntimeError(
+                        f"No accumulated projections for layer {layer_name}; call "
+                        f"collect_microbatch() after each microbatch backward.")
+                grad_proj = torch.cat(micro, dim=0)  # [N*mb, k_o, k_i]
+            else:
+                # Get projected gradient from the single-slot scratch.
+                grad_proj = getattr(layer, '_ghost_grad_proj', None)
+                if grad_proj is None:
+                    raise RuntimeError(f"No projected gradient found for layer {layer_name}")
+
             # Flatten to [B, k_i * k_o]
             B, k_o, k_i = grad_proj.shape
             grad_flat = grad_proj.reshape(B, k_i * k_o)
-            
+
             if batch_size is None:
                 batch_size = B
             elif B != batch_size:
                 raise RuntimeError(f"Batch size mismatch: expected {batch_size}, got {B} for {layer_name}")
-                
+
             layer_projections.append(grad_flat)
-            
+
         # Concatenate all layers
         full_projection = torch.cat(layer_projections, dim=1)  # [B, total_proj_dim]
-        
+
         # Convert to storage dtype
         full_projection = full_projection.to(self.proj_dtype)
-        
+
         # Save if needed
         if self.iteration % self.proj_save_interval == 0:
             self._save_projection(full_projection, batch_indices)
-            
+
         self.iteration += 1
         self.batch_count += batch_size
-        
+
+        # Close the accumulation step so the next begin_step() starts fresh.
+        if accumulating:
+            self._micro_buffers = None
+
         return full_projection
         
     def _save_projection(self, projection: torch.Tensor, batch_indices: Optional[List[int]] = None):

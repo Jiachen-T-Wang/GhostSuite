@@ -43,7 +43,12 @@ def parse_arguments():
     
     # Processing parameters
     parser.add_argument('--batch_size', type=int, default=2,
-                       help='Batch size for processing (small due to GPU memory)')
+                       help='Per-microbatch batch size for processing (small due to GPU memory)')
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=1,
+                       help='Number of microbatches pooled per saved projection. The engine '
+                            'buffers each microbatch and concatenates into a [N*batch_size, dim] '
+                            'projection so all samples are captured, not just the last microbatch. '
+                            'Do not pre-divide the loss by N (see GradProjLoraEngine.collect_microbatch).')
     parser.add_argument('--max_samples', type=int, default=None,
                        help='Maximum number of samples to process (None for all)')
     parser.add_argument('--block_size', type=int, default=1024,
@@ -103,6 +108,7 @@ class ProjectionConfig:
 
         # Processing configuration
         self.batch_size = args.batch_size
+        self.gradient_accumulation_steps = args.gradient_accumulation_steps
         self.max_samples = args.max_samples
         # Cap the sampling window to the model's block size (e.g. GPT2-Tiny=64)
         # so synthetic/real windows never exceed what the model can forward.

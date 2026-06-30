@@ -364,6 +364,11 @@ class GhostEngineManager:
         if self.is_fn_path and self.decoupled_mgr is not None:
             self.decoupled_mgr.begin_step()
             return
+        # Engines with their own accumulation lifecycle (e.g. GradProjLora) reset their
+        # per-step microbatch buffers here; collect_microbatch then routes to the engine.
+        if self.engine is not None and hasattr(self.engine, 'begin_step'):
+            self.engine.begin_step()
+            return
         # eager: the per-param accumulator is normally cleared by subtract-val recovery; clear any
         # stale accum (and per-microbatch scratch / tied stash) so a scoring-only (reselect) step
         # that never recovers — or a step whose microbatch loop aborted mid-accumulation — starts
@@ -388,6 +393,13 @@ class GhostEngineManager:
                 self._fn_append_log(iter_num, batch_idx, X_train, Y_train)
             if self._last_dot is not None:
                 self._pooled_dots.append(self._last_dot.detach().float())
+            return
+        # Engines with their own accumulation lifecycle (e.g. GradProjLora) buffer this
+        # microbatch's per-sample projections; the end-of-step collect_batch/save_metrics
+        # concatenates and saves once. Routed here (not the per-microbatch aggregate_and_log
+        # path below) so projections are pooled instead of saved-and-overwritten per microbatch.
+        if self.engine is not None and hasattr(self.engine, 'collect_microbatch'):
+            self.engine.collect_microbatch()
             return
         if self.engine is not None:
             # eager GradDotProd: append this microbatch's per-sample dots, then fold its val grad
