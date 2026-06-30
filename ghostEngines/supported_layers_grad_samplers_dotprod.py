@@ -307,6 +307,25 @@ def _compute_linear_dot_product(
             layer.weight.grad_train_norm = (grad_train.to(accum_dtype) ** 2).sum(dim=[1, 2])
             layer.weight.grad_val_norm_sq = (grad_val.to(accum_dtype) ** 2).sum()
 
+    # --- Bias dot product ---
+    # The bias gradient is just the backprop B summed over the token dim. The per-sample
+    # train grad sums each train sample's tokens -> [train_bs, d_out]; the val aggregate
+    # sums all val tokens -> [d_out]. Mirrors the LayerNorm/Conv bias paths so the engine's
+    # subtract-val recovery finds the bias val grad (without this, an nn.Linear(bias=True)
+    # raises "parameter ...bias has no _ghost_grad_val" in _prepare_and_apply_train_grad).
+    if layer.bias is not None:
+        per_sample_grad_bias = (
+            B_train.to(accum_dtype).view(train_batch_size, seq_len, d_out).sum(dim=1)
+        )
+        total_grad_bias_val = B_val.to(accum_dtype).sum(dim=0)
+        layer.bias.grad_dot_prod = torch.einsum(
+            "bf,f->b", per_sample_grad_bias, total_grad_bias_val
+        )
+        _maybe_store_grad_val(layer.bias, total_grad_bias_val)
+        if log_grad_norms:
+            layer.bias.grad_train_norm = (per_sample_grad_bias ** 2).sum(dim=1)
+            layer.bias.grad_val_norm_sq = (total_grad_bias_val ** 2).sum()
+
 
 def _compute_linear_train_grad(
     layer: nn.Linear,
