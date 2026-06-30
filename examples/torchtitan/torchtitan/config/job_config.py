@@ -1000,7 +1000,10 @@ class Ghost:
     # decoupled-Function path under torch.compile, plus output-layer top-level compile
     # (docs/investigations/ghost_outemb_plus_ac_2026-06-19.md, +23-25% tps over eager, loss-identical).
     subtract_val: bool = True
-    """subtract-val fast path: recover train grad post-backward instead of masking activations."""
+    """subtract-val fast path: recover train grad post-backward instead of masking activations.
+    Keep this true for training. Setting it false selects the legacy masking path, which is retained
+    only as the exact per-sample-grad oracle for the equivalence tests and is KNOWN-INCORRECT for
+    residual-free models (the engine warns once when it is disabled)."""
 
     decoupled_fn: bool = True
     """Default fast path: graph-clean decoupled-Function manager (native backward + in-backward

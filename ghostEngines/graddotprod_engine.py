@@ -215,6 +215,11 @@ class GradDotProdEngine:
             self._lock_grad_creation()
             return
 
+        # Legacy masking path (GHOST_SUBTRACT_VAL=0). Retained only as the exact per-sample-grad
+        # oracle for the equivalence tests; KNOWN-INCORRECT for residual-free training (add_hooks()
+        # warns once). Here the masked backward already wrote train-only grads into .grad (linear/
+        # embedding) or into param.train_grad (norm layers, via norm_backward_hook); move the latter
+        # onto .grad.
         for name, param in self.module.named_parameters():
 
             if not param.initially_requires_grad:
@@ -432,7 +437,6 @@ class GradDotProdEngine:
         self.batch_idx = batch_idx
 
 
-# TODO: move this to a utility file
 def to_device(data, device):
     """Move data to device, handling both tensors and dicts of tensors."""
     if isinstance(data, dict):

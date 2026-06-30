@@ -598,8 +598,6 @@ class GhostEngineManager:
         if self.engine:
             if hasattr(self.engine, 'detach'):
                 self.engine.detach()
-            elif hasattr(self.engine, 'disable_hooks'):
-                self.engine.disable_hooks()
 
     def reattach_after_evaluation(self):
         """Reattach engines after evaluation."""
@@ -608,8 +606,6 @@ class GhostEngineManager:
         if self.engine:
             if hasattr(self.engine, 'attach'):
                 self.engine.attach(self.optimizer)
-            elif hasattr(self.engine, 'enable_hooks'):
-                self.engine.enable_hooks()
     
     def cleanup(self):
         """Cleanup and save any remaining data during training termination."""
@@ -650,7 +646,5 @@ class GhostEngineManager:
         try:
             if hasattr(self.engine, 'detach'):
                 self.engine.detach()
-            elif hasattr(self.engine, 'disable_hooks'):
-                self.engine.disable_hooks()
         except Exception as e:
             print(f"Error detaching ghost engine during cleanup: {e}")
