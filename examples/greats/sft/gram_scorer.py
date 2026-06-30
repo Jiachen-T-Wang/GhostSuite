@@ -17,18 +17,9 @@ import numpy as np
 import torch
 from torch import nn
 
-
-def greedy_selection(scores: np.ndarray, interaction: np.ndarray, K: int):
-    """Greedily pick K indices, subtracting each pick's interaction row from the
-    remaining scores (redundancy penalty). Port of upstream `greedy_selection`."""
-    scores = scores.copy().astype(np.float64)
-    selected = []
-    for _ in range(K):
-        i = int(np.argmax(scores))
-        selected.append(i)
-        scores = scores - interaction[i, :]
-        scores[i] = -np.inf
-    return selected
+# greedy_selection moved to the engine (ghostEngines.selection); re-exported here so existing
+# `from gram_scorer import GramScorer, greedy_selection` imports keep working.
+from ghostEngines.selection import greedy_selection
 
 
 class GramScorer:

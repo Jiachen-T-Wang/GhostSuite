@@ -22,7 +22,27 @@ Built-ins map onto the existing examples:
 
 from typing import Optional
 
+import numpy as np
 import torch
+
+
+def greedy_selection(scores: np.ndarray, interaction: np.ndarray, K: int):
+    """Greedily pick ``K`` indices, subtracting each pick's interaction row from the remaining
+    scores (the second-order GREATS redundancy penalty). Port of upstream ``greedy_selection``.
+
+    Unlike the ``SelectionPolicy`` classes below — which the ``online_selection_step`` driver calls
+    as ``select(scores)`` — this needs a candidate-candidate ``interaction`` (Gram) matrix, which is
+    produced by the second-order GREATS scorer. It therefore lives here as a standalone function;
+    wrapping it as a driver-pluggable redundancy-aware policy is deferred to the GramScorer
+    absorption (see docs/issues/open/absorb-greats-second-order-gramscorer-into-engine)."""
+    scores = scores.copy().astype(np.float64)
+    selected = []
+    for _ in range(K):
+        i = int(np.argmax(scores))
+        selected.append(i)
+        scores = scores - interaction[i, :]
+        scores[i] = -np.inf
+    return selected
 
 
 class SelectionPolicy:

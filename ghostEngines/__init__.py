@@ -10,11 +10,13 @@ from .gradProjection.gradproj_engine import GradProjLoraEngine, create_gradproj_
 from .engine_manager import GhostEngineManager
 from .engine_protocol import GhostEngine
 from .selection import (
-    SelectionPolicy, UpdateAll, TopK, BottomK, Threshold, NoSelection,
+    SelectionPolicy, UpdateAll, TopK, BottomK, Threshold, NoSelection, greedy_selection,
 )
+from .selection_driver import online_selection_step
 
 __all__ = [
     'GhostEngine', 'GradDotProdEngine', 'GradProjLoraEngine', 'create_gradproj_engine',
     'GhostEngineManager',
     'SelectionPolicy', 'UpdateAll', 'TopK', 'BottomK', 'Threshold', 'NoSelection',
+    'greedy_selection', 'online_selection_step',
 ]
