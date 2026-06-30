@@ -18,9 +18,8 @@ Let `N` = candidate pool size (`--candidate_batch_size`), `k` = trained subset s
 4. **Update** — a **plain** forward/backward + optimizer step on the selected `k` only (no
    val, no ghost). This is exact: subtract-val over `[selected ++ val]` recovers the mean
    train gradient over the selected `k`, which equals a plain mean-loss backward over those
-   `k` (verified in `tests/test_greats_plain_update_equiv.py`). Dropping the val (`m`)
-   forwards + ghost overhead from the update is a **~25% per-step speedup** vs a second
-   ghost pass.
+   `k`. Dropping the val (`m`) forwards + ghost overhead from the update is a **~25% per-step
+   speedup** vs a second ghost pass.
 
 This is first-order selection: there is **no** pairwise train–train Gram matrix and **no**
 greedy second-order redundancy term. Adding them is future work (see the plan).
