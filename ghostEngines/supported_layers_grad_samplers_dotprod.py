@@ -230,8 +230,10 @@ def _compute_linear_dot_product(
         accum_dtype = torch.float32
 
     total_bs = A.size(0)
-    train_bs = total_bs - val_batch_size
-    
+    train_batch_size = total_bs - val_batch_size
+    if train_batch_size <= 0:
+        raise ValueError("No training samples to compute dot product, check batch sizes.")
+
     # Setup Dimensions
     d_in = A.size(-1)
     d_out = B.size(-1)
@@ -242,11 +244,11 @@ def _compute_linear_dot_product(
     # 3D (B, T, C) LM activations (seq_len = T) and 2D (B, C) MLP activations
     # (seq_len = 1), as well as any higher-rank input.
     seq_len = A_flat.size(0) // total_bs
-    split_idx = train_bs * seq_len
+    split_idx = train_batch_size * seq_len
 
-    A_train = A_flat[:split_idx]  # [train_bs*seq_len, d_in]
+    A_train = A_flat[:split_idx]  # [train_batch_size*seq_len, d_in]
     A_val = A_flat[split_idx:]    # [val_bs*seq_len, d_in]
-    B_train = B_flat[:split_idx]  # [train_bs*seq_len, d_out]
+    B_train = B_flat[:split_idx]  # [train_batch_size*seq_len, d_out]
     B_val = B_flat[split_idx:]    # [val_bs*seq_len, d_out]
 
     # Pre-declare variables for logging reuse
@@ -262,22 +264,22 @@ def _compute_linear_dot_product(
         grad_val = torch.matmul(B_val.T, A_val)
 
         # project grad_val by B_train to remove the d_out dimension 
-        # [train_bs*seq_len, d_out] @ [d_out, d_in] = [train_bs*seq_len, d_in]
+        # [train_batch_size*seq_len, d_out] @ [d_out, d_in] = [train_batch_size*seq_len, d_in]
         grad_val_projected = torch.matmul(B_train, grad_val)
 
         # element-wise product and sum over the d_in dimension
-        # [ train_bs*seq_len ]
+        # [ train_batch_size*seq_len ]
         token_scores = torch.sum(A_train * grad_val_projected, dim=1)
 
-        # [ train_bs*seq_len ] -> [ train_bs ]
-        layer.weight.grad_dot_prod = token_scores.view(train_bs, seq_len).sum(dim=1)
+        # [ train_batch_size*seq_len ] -> [ train_batch_size ]
+        layer.weight.grad_dot_prod = token_scores.view(train_batch_size, seq_len).sum(dim=1)
         _maybe_store_grad_val(layer.weight, grad_val)
 
         if log_grad_norms:
             # Per-sample ||G_train_i||^2 via the Gram trick (no materialization):
             # ||sum_t b_t a_t^T||^2 = sum_{t,t'} <a_t,a_t'> <b_t,b_t'>.
-            A_tr3 = A_train.view(train_bs, seq_len, d_in)
-            B_tr3 = B_train.view(train_bs, seq_len, d_out)
+            A_tr3 = A_train.view(train_batch_size, seq_len, d_in)
+            B_tr3 = B_train.view(train_batch_size, seq_len, d_out)
             AA = torch.bmm(A_tr3, A_tr3.transpose(1, 2))
             BB = torch.bmm(B_tr3, B_tr3.transpose(1, 2))
             layer.weight.grad_train_norm = (AA * BB).to(accum_dtype).sum(dim=[1, 2])
@@ -290,15 +292,15 @@ def _compute_linear_dot_product(
         grad_val = torch.matmul(B_val.T, A_val)
 
         # Reshape for sum-over-T contraction
-        A_train_3d = A_train.view(train_bs, seq_len, d_in)
-        B_train_3d = B_train.view(train_bs, seq_len, d_out)
+        A_train_3d = A_train.view(train_batch_size, seq_len, d_in)
+        B_train_3d = B_train.view(train_batch_size, seq_len, d_out)
 
         B_train_T = B_train_3d.transpose(1, 2).contiguous()
 
-        # grad_train: collection of per-sample train gradients [train_bs, d_out, d_in]
+        # grad_train: collection of per-sample train gradients [train_batch_size, d_out, d_in]
         grad_train = torch.bmm(B_train_T, A_train_3d)
 
-        layer.weight.grad_dot_prod = torch.matmul(grad_train.view(train_bs, -1), grad_val.view(-1))
+        layer.weight.grad_dot_prod = torch.matmul(grad_train.view(train_batch_size, -1), grad_val.view(-1))
         _maybe_store_grad_val(layer.weight, grad_val)
 
         if log_grad_norms:
@@ -471,7 +473,7 @@ def _compute_layernorm_dot_product(
 
     train_batch_size = A.size(0) - val_batch_size
     if train_batch_size <= 0:
-        return
+        raise ValueError("No training samples to compute dot product, check batch sizes.")
 
     A_train, A_val = torch.split(A.to(compute_dtype), [train_batch_size, val_batch_size], dim=0)
     B_train, B_val = torch.split(B.to(compute_dtype), [train_batch_size, val_batch_size], dim=0)
@@ -577,12 +579,6 @@ def _compute_layernorm_train_grad(
     train_batch_size = A.size(0) - val_batch_size
     if train_batch_size <= 0:
         raise ValueError("No training samples to compute gradients, check batch sizes.")
-    
-    # debug: print out the shapes of A and B & the first few elements
-    # print(f"[Grad] Layer Name: {layer.__class__.__name__}")
-    # print(f"[Grad] A shape: {A.shape}, B shape: {B.shape}, val_batch_size: {val_batch_size}")
-    # print(f"[Grad] A (first 5): {A[:5]}")
-    # print(f"B (first 5): {B[:5]}")
 
     A_train, _ = torch.split(A, [train_batch_size, val_batch_size], dim=0)
     B_train, _ = torch.split(B, [train_batch_size, val_batch_size], dim=0)
@@ -621,10 +617,9 @@ def _compute_rmsnorm_dot_product(
     compute_dtype: Optional[torch.dtype] = None,
     accum_dtype: torch.dtype = torch.float32,
 ):
-    """Compute gradient dot-product for nn.RMSNorm (weight-only)."""
-    """
-    A: [batch, seq, dim] (normalized by RMSNorm)
-    B: [batch, seq, dim] (backpropagated gradients)
+    """Compute gradient dot-product for nn.RMSNorm (weight-only).
+
+    A: [batch, seq, dim] (normalized by RMSNorm); B: [batch, seq, dim] (backpropagated gradients).
     """
 
     A = A.detach()
@@ -639,6 +634,8 @@ def _compute_rmsnorm_dot_product(
     B = B.to(compute_dtype)
 
     train_batch_size = A.size(0) - val_batch_size
+    if train_batch_size <= 0:
+        raise ValueError("No training samples to compute dot product, check batch sizes.")
 
     A_train, A_val = torch.split(A, [train_batch_size, val_batch_size], dim=0)
     B_train, B_val = torch.split(B, [train_batch_size, val_batch_size], dim=0)
@@ -695,8 +692,8 @@ def _compute_rmsnorm_train_grad(
     return grad_weight
 
 
-def _compute_Conv1D_dot_product(
-    layer: nn.Linear,
+def _compute_conv1d_dot_product(
+    layer: transformers.pytorch_utils.Conv1D,
     A: Float[torch.Tensor, "batch seq in_features"],
     B: Float[torch.Tensor, "batch seq out_features"],
     val_batch_size: int,
@@ -815,7 +812,7 @@ def _compute_Conv1D_dot_product(
         layer.weight.grad_val_norm_sq = weight_val_norm_sq
 
 
-def _compute_Conv1D_train_grad(
+def _compute_conv1d_train_grad(
     layer: transformers.pytorch_utils.Conv1D,
     A: Float[torch.Tensor, "batch seq in_features"],
     B: Float[torch.Tensor, "batch seq out_features"],
@@ -992,6 +989,6 @@ _supported_layers_dotprod = {
     nn.Embedding: (_compute_embedding_dot_product, _compute_embedding_train_grad),
     nn.LayerNorm: (_compute_layernorm_dot_product, _compute_layernorm_train_grad),
     nn.RMSNorm: (_compute_rmsnorm_dot_product, _compute_rmsnorm_train_grad),
-    transformers.pytorch_utils.Conv1D: (_compute_Conv1D_dot_product, _compute_Conv1D_train_grad),
+    transformers.pytorch_utils.Conv1D: (_compute_conv1d_dot_product, _compute_conv1d_train_grad),
     nn.Conv2d: (_compute_conv2d_dot_product, _compute_conv2d_train_grad),
 }
