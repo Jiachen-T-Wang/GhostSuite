@@ -91,6 +91,12 @@ python validate_dve_model.py  # direct-on-model checks (GPT2 + MLP)
   Pearson(DVE, −influence) **0.994** vs grad-dot baseline **0.979** — the reverse recursion adds
   real signal.
 
+## Experiments
+
+- [`experiments/`](experiments/README.md) — reproduction of **Figure 1(a)** of the DVE paper
+  (signed, lr-normalized per-batch temporal influence; GPT2-Small on Pile, 60k steps). Holds the
+  figure, diagnostic, binned CSV, the `plot_fig1a.py` plotter, and the launch commands.
+
 ## Notes / caveats
 
 - **SGD vs AdamW.** The unrolling is derived for SGD; `--optimizer adamw` applies the same

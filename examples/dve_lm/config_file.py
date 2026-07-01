@@ -10,11 +10,15 @@ import argparse
 import os
 import sys
 
-parent_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-sys.path.insert(0, parent_dir)
+# examples/lm/ provides `shared`; the repo root provides `ghostEngines`.
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_EXAMPLES_DIR = os.path.dirname(_THIS_DIR)
+for _p in (os.path.join(_EXAMPLES_DIR, "lm"), os.path.dirname(_EXAMPLES_DIR)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 # Anchored to this file's directory so each git worktree writes to its own results tree.
-RESULTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'results')
+RESULTS_DIR = os.path.join(_THIS_DIR, 'results')
 
 
 def parse_arguments():

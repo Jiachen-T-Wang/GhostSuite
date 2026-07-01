@@ -22,8 +22,14 @@ from datetime import datetime
 import numpy as np
 import torch
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+# examples/lm/ provides `shared`; the repo root provides `ghostEngines`; this dir provides
+# the local config_file / dve_train_loop modules.
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+_EXAMPLES_DIR = os.path.dirname(_THIS_DIR)
+_REPO_ROOT = os.path.dirname(_EXAMPLES_DIR)
+for _p in (_THIS_DIR, os.path.join(_EXAMPLES_DIR, "lm"), _REPO_ROOT):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from config_file import parse_arguments, DVEConfig
 from shared.dataloader import load_all_data, make_synthetic_dataset, get_batch_from_dataset

@@ -21,7 +21,10 @@ import sys
 
 import torch
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+# Repo root provides `ghostEngines` (this file lives at examples/dve_lm/).
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _REPO_ROOT not in sys.path:
+    sys.path.insert(0, _REPO_ROOT)
 from ghostEngines.gradProjection.dve_embedding import dve_recursion
 
 

@@ -27,8 +27,11 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
+# examples/lm/ provides `shared`; the repo root provides `ghostEngines`.
+_EXAMPLES_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+for _p in (os.path.join(_EXAMPLES_DIR, "lm"), os.path.dirname(_EXAMPLES_DIR)):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 
 from ghostEngines.gradProjection.gradproj_engine import GradProjLoraEngine
 from ghostEngines.gradProjection.dve_embedding import dve_recursion

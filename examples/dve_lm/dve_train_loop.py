@@ -16,7 +16,10 @@ import time
 import torch
 from tqdm import tqdm
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# examples/lm/ provides `shared` (this file lives at examples/dve_lm/).
+_LM_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lm")
+if _LM_DIR not in sys.path:
+    sys.path.insert(0, _LM_DIR)
 from shared.dataloader import get_batch_from_dataset
 
 
