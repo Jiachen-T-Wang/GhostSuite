@@ -106,8 +106,28 @@ def stage_train(config, device, ctx, dataset):
     model = _build_model(config, device)
     print(f"Model dtype: {next(model.parameters()).dtype}")
 
-    engine = GradProjLoraEngine(model, **_engine_config(config, config.capture_dir))
-    engine.attach()
+    if config.decoupled_compile:
+        # In-graph decoupled capture + regional block compile (fast path; numerically matches the
+        # hook engine). The manager exposes the same collect_batch/clear_gradients/detach interface
+        # as GradProjLoraEngine, so train_and_capture is unchanged.
+        from ghostEngines.gradProjection.decoupled_capture_gradproj import attach_and_compile_gradproj
+        warmup_gen = torch.Generator(); warmup_gen.manual_seed(config.seed + 999)
+        Xw, Yw, _ = get_batch_from_dataset(
+            split='train', batch_size=config.batch_size, dataset=dataset,
+            block_size=config.block_size, device=device, device_type=device.type,
+            generator=warmup_gen, return_idx=True)
+
+        def warmup_fn():
+            with ctx:
+                model(Xw, Yw).loss.backward()
+
+        ac = config.ac_budget if config.ac_budget and config.ac_budget > 0 else None
+        engine = attach_and_compile_gradproj(
+            model, warmup_fn, engine_kwargs=_engine_config(config, config.capture_dir),
+            compile_regions=list(model.transformer.h), activation_memory_budget=ac)
+    else:
+        engine = GradProjLoraEngine(model, **_engine_config(config, config.capture_dir))
+        engine.attach()
 
     optimizer = build_optimizer(model, config)
     stats = train_and_capture(model, engine, optimizer, dataset, config, device, ctx)

@@ -83,6 +83,17 @@ def parse_arguments():
     parser.add_argument('--test_batch_size', type=int, default=8)
     parser.add_argument('--seed', type=int, default=42)
 
+    # --- Capture fast path (decoupled in-graph + torch.compile) ---
+    parser.add_argument('--decoupled_compile', action='store_true',
+                        help='Capture projected gradients via the in-graph decoupled manager and '
+                             'regional-compile the transformer blocks (torch.compile). Numerically '
+                             'matches the hook engine; a large speedup under bf16 autocast '
+                             '(train_dtype=bfloat16). Default off (hook engine).')
+    parser.add_argument('--ac_budget', type=float, default=-1.0,
+                        help='With --decoupled_compile, Inductor min-cut activation-memory budget in '
+                             '(0,1] (compile-native activation checkpointing): lower recomputes more '
+                             'in backward to save peak memory. -1 disables (save everything).')
+
     # --- Precision / system ---
     parser.add_argument('--model_dtype', type=str, default='float32',
                         choices=['float32', 'float16', 'bfloat16'])
@@ -154,6 +165,10 @@ class DVEConfig:
             self.block_size = min(self.block_size, model_block)
         except (ImportError, ValueError, KeyError):
             pass
+
+        # Capture fast path
+        self.decoupled_compile = args.decoupled_compile
+        self.ac_budget = args.ac_budget
 
         # Precision / system
         self.model_dtype = args.model_dtype
