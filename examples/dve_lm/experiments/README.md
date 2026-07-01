@@ -92,9 +92,9 @@ recovers the intrinsic three-phase structure.
 The Pile loader reads per-domain GPT-2 `.bin` files via env vars (see `examples/dve_lm/README.md`):
 
 ```bash
-export PILE_DATA_DIR_TRAIN=/scratch/gpfs/PMITTAL/tianhao/PretrainData/pile/pile-train
-export PILE_DATA_DIR_VAL=/scratch/gpfs/PMITTAL/tianhao/PretrainData/pile/pile-val-gpt2
-export PILE_DATA_DIR_TEST=/scratch/gpfs/PMITTAL/tianhao/PretrainData/pile/pile-test-gpt2
+export PILE_DATA_DIR_TRAIN=/path/to/pile/pile-train
+export PILE_DATA_DIR_VAL=/path/to/pile/pile-val-gpt2
+export PILE_DATA_DIR_TEST=/path/to/pile/pile-test-gpt2
 
 # Stages 1–3: train + capture per-step projected grads → reverse-recursion embeddings →
 # value matrix (test grads · embeddings). ≈ 1 h on an H200; writes to

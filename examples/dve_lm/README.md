@@ -55,9 +55,9 @@ python main.py --data_source synthetic --architecture GPT2-Tiny --device cpu \
 The Pile loader (`shared/dataloader.py`) reads per-domain GPT-2 `.bin` files via env vars:
 
 ```bash
-export PILE_DATA_DIR_TRAIN=/scratch/gpfs/PMITTAL/tianhao/PretrainData/pile/pile-train
-export PILE_DATA_DIR_VAL=/scratch/gpfs/PMITTAL/tianhao/PretrainData/pile/pile-val-gpt2
-export PILE_DATA_DIR_TEST=/scratch/gpfs/PMITTAL/tianhao/PretrainData/pile/pile-test-gpt2
+export PILE_DATA_DIR_TRAIN=/path/to/pile/pile-train
+export PILE_DATA_DIR_VAL=/path/to/pile/pile-val-gpt2
+export PILE_DATA_DIR_TEST=/path/to/pile/pile-test-gpt2
 
 python main.py --data_source pile --architecture GPT2-Small --device cuda \
     --optimizer adamw --learning_rate 3e-4 --max_steps 500 --batch_size 8 \
