@@ -106,7 +106,17 @@ def stage_train(config, device, ctx, dataset):
     model = _build_model(config, device)
     print(f"Model dtype: {next(model.parameters()).dtype}")
 
-    if config.decoupled_compile:
+    # The decoupled fast path's win is torch.compile on the transformer blocks, which is only
+    # worthwhile on CUDA (CPU compile of a GPT-2 is impractically slow and autocast is CUDA-only).
+    # Fall back to the eager hook engine on non-CUDA, loudly, rather than compiling on CPU.
+    use_decoupled = config.decoupled_compile
+    if use_decoupled and device.type != 'cuda':
+        print(f"[Stage 1] decoupled_compile requested but device is {device.type}; falling back to "
+              "the eager hook engine (compile is CUDA-only here). Pass --no_decoupled_compile to "
+              "silence this.")
+        use_decoupled = False
+
+    if use_decoupled:
         # In-graph decoupled capture + regional block compile (fast path; numerically matches the
         # hook engine). The manager exposes the same collect_batch/clear_gradients/detach interface
         # as GradProjLoraEngine, so train_and_capture is unchanged.

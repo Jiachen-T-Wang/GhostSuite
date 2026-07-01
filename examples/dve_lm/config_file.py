@@ -83,21 +83,31 @@ def parse_arguments():
     parser.add_argument('--test_batch_size', type=int, default=8)
     parser.add_argument('--seed', type=int, default=42)
 
-    # --- Capture fast path (decoupled in-graph + torch.compile) ---
-    parser.add_argument('--decoupled_compile', action='store_true',
-                        help='Capture projected gradients via the in-graph decoupled manager and '
-                             'regional-compile the transformer blocks (torch.compile). Numerically '
-                             'matches the hook engine; a large speedup under bf16 autocast '
-                             '(train_dtype=bfloat16). Default off (hook engine).')
+    # --- Capture fast path (decoupled in-graph + torch.compile) — DEFAULT ON ---
+    # The in-graph decoupled manager + regional block compile is the default capture path: it
+    # numerically matches the hook engine and, at the default bf16 train_dtype, is ~25% faster
+    # (H200, GPT2-Small; see docs/analysis/gradproj_decoupled_compile_bf16_2026-07-01.md). Use
+    # --no_decoupled_compile to fall back to the eager hook engine (e.g. Conv1D models, which the
+    # decoupled path does not support, or CPU debugging).
+    parser.add_argument('--decoupled_compile', dest='decoupled_compile', action='store_true',
+                        help='Capture via the in-graph decoupled manager + regional block compile '
+                             '(default on). Numerically matches the hook engine; ~25%% faster under '
+                             'bf16 autocast.')
+    parser.add_argument('--no_decoupled_compile', dest='decoupled_compile', action='store_false',
+                        help='Fall back to the eager hook engine (GradProjLoraEngine). Required for '
+                             'Conv1D-based models (unsupported by the decoupled path).')
+    parser.set_defaults(decoupled_compile=True)
     parser.add_argument('--ac_budget', type=float, default=-1.0,
-                        help='With --decoupled_compile, Inductor min-cut activation-memory budget in '
+                        help='With decoupled_compile, Inductor min-cut activation-memory budget in '
                              '(0,1] (compile-native activation checkpointing): lower recomputes more '
                              'in backward to save peak memory. -1 disables (save everything).')
 
     # --- Precision / system ---
+    # Default mixed precision: fp32 master weights + bf16 autocast compute (the common LM setting,
+    # and the regime where decoupled_compile wins). proj_dtype stays fp32 for projection fidelity.
     parser.add_argument('--model_dtype', type=str, default='float32',
                         choices=['float32', 'float16', 'bfloat16'])
-    parser.add_argument('--train_dtype', type=str, default='float32',
+    parser.add_argument('--train_dtype', type=str, default='bfloat16',
                         choices=['float32', 'float16', 'bfloat16'])
     parser.add_argument('--device', type=str, default='cuda')
     parser.add_argument('--verbose', action='store_true')
@@ -192,11 +202,15 @@ class DVEConfig:
         # lr_decay_steps only affects the trajectory (not P); encode it when it decouples the
         # decay horizon from the run length so a frozen-tail run does not collide with a plain one.
         decay_tag = f"_decay_{self.lr_decay_steps}" if self.lr_decay_steps > 0 else ""
+        # train_dtype changes the training trajectory (bf16 diverges from fp32) and thus the captured
+        # gradients, though not P. Tag non-fp32 so a bf16 run (now the default) does not silently
+        # overwrite / read a stale fp32 capture at the same path. fp32 stays untagged (back-compat).
+        dtype_tag = f"_tdt_{self.train_dtype}" if self.train_dtype != 'float32' else ""
         run_name = (f"arch_{self.architecture}_layers_{self.proj_layers}"
                     f"_{proj_id}"
                     f"_opt_{self.optimizer}_lr_{self.learning_rate}"
                     f"_steps_{self.max_steps}{decay_tag}_bs_{self.batch_size}"
-                    f"_lrmode_{self.lr_mode}_data_{self.data_source}")
+                    f"_lrmode_{self.lr_mode}_data_{self.data_source}{dtype_tag}")
         self.run_dir = os.path.join(args.output_dir, run_name)
         self.capture_dir = os.path.join(self.run_dir, 'capture')
         self.embed_dir = os.path.join(self.run_dir, 'embedding')

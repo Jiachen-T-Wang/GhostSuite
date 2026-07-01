@@ -29,12 +29,28 @@ i.e. `e_s` is the training gradient `g_s` after being transformed by the unrolle
 - `none`: reproduces the released reference exactly (`η = 1`, sum reduction). Only well-behaved
   for short runs / tiny gradients, since it drops the lr damping.
 
+## Capture path & precision defaults
+
+Stage-1 capture defaults to the **decoupled in-graph + `torch.compile`** fast path
+(`--decoupled_compile`, on by default) at **`--train_dtype bfloat16`** (fp32 master weights, bf16
+autocast; `--proj_dtype float32` for projection fidelity). On an H200 this is **~25% faster** than
+the eager hook engine (GPT2-Small, bs 8, block 1024; see
+[`docs/analysis/gradproj_decoupled_compile_bf16_2026-07-01.md`](../../docs/analysis/gradproj_decoupled_compile_bf16_2026-07-01.md)),
+and the resulting DVE values match the fp32 hook reference to **Pearson r = 1.0 / identical top-k
+rankings** (~1% L2 magnitude difference from bf16 rounding).
+
+- `--no_decoupled_compile` — fall back to the eager hook engine (`GradProjLoraEngine`). Required for
+  **Conv1D**-based models (the decoupled path only supports `nn.Linear`/`nn.Embedding`). On a
+  non-CUDA device the fast path auto-falls-back to the hook engine (compile is CUDA-only).
+- `--ac_budget b` (in (0,1]) — compile-native activation checkpointing (Inductor min-cut): lower
+  recomputes more in backward to cut peak memory (e.g. `0.5` ≈ −26% peak at ~+7% step time).
+
 ## Pipeline (4 stages)
 
 Stages share config-derived paths, so they can run in one command or separately.
 
 ```bash
-# All four stages, synthetic smoke (CPU-friendly, GPT2-Tiny):
+# All four stages, synthetic smoke (CPU-friendly, GPT2-Tiny; explicit fp32 for the CPU path):
 python main.py --data_source synthetic --architecture GPT2-Tiny --device cpu \
     --optimizer sgd --learning_rate 0.05 --max_steps 8 --batch_size 4 \
     --n_test 8 --test_batch_size 4 --proj_rank_total 64 \
@@ -107,3 +123,7 @@ python validate_dve_model.py  # direct-on-model checks (GPT2 + MLP)
 - **`none`-mode stability.** See `--lr_mode` above; prefer `scaled` for real runs.
 - **Scale.** Capture writes one file per step (`n_steps × B × total_proj_dim`); per-layer `M` is
   `Σ_layer (k_i·k_o)²`. Fine for GPT2-Tiny/Small; very long runs may want memmap capture.
+- **Precision / reproducibility.** The default `bf16` trajectory diverges slightly from `fp32`; the
+  DVE values are effectively unchanged (r = 1.0, identical top-k, ~1% magnitude). `bf16` and `fp32`
+  runs write to **different** result dirs (`_tdt_bfloat16` suffix), so they never overwrite each
+  other. For a bit-for-bit fp32 reference reproduction, pass `--train_dtype float32`.
