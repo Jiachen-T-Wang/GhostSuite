@@ -26,8 +26,8 @@ series), or re-plot quickly from an existing per-step CSV with ``--from_csv PREF
 
 Usage:
   python plot_fig1a.py --values RUN/value/values.pt --out RUN/fig1a \
-      --lr_mode scaled --learning_rate 3e-4 --warmup_steps 2000 --max_steps 60000 \
-      --lr_schedule linear --bins 200
+      --lr_mode scaled --learning_rate 3e-4 --warmup_steps 2000 \
+      --max_steps 10000 --lr_decay_steps 10000 --lr_schedule linear --bins 60
 """
 
 import argparse
@@ -124,7 +124,7 @@ def main():
     ap.add_argument('--lr_mode', default='scaled', choices=['none', 'scaled'])
     ap.add_argument('--learning_rate', type=float, default=3e-4)
     ap.add_argument('--warmup_steps', type=int, default=2000)
-    ap.add_argument('--max_steps', type=int, default=60000)
+    ap.add_argument('--max_steps', type=int, default=10000)
     ap.add_argument('--lr_decay_steps', type=int, default=-1,
                     help='LR-decay horizon; -1 uses max_steps. Must match the training run.')
     ap.add_argument('--lr_schedule', default='linear', choices=['constant', 'linear', 'cosine'])

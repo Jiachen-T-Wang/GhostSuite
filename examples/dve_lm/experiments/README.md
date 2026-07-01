@@ -6,11 +6,9 @@
 
 ![DVE Figure 1(a) reproduction](dve_fig1a_2026-06-30.png)
 
-This run **matches the released reference code's training trajectory** (`data-inf-embedding/
-train_gpt2_long.sh` + `config/config_pile.yaml`). An earlier 60k-step attempt (2026-06-26) used a
-much slower LR decay and off-reference AdamW settings and did **not** cleanly show the paper's
-three phases; the full config comparison and root cause are in
-[`docs/investigations/dve_fig1a_reproduction_fidelity_2026-06-30.md`](../../../docs/investigations/dve_fig1a_reproduction_fidelity_2026-06-30.md).
+This run **matches the released reference code's training trajectory** (`train_gpt2_long.sh` +
+`config/config_pile.yaml` in the reference implementation): GPT-2, warmup 2000, linear LR decay to
+0 at step 10000, AdamW (weight decay 0.01), MLP-only per-sample gradients.
 
 ## What Figure 1(a) is
 
@@ -70,9 +68,7 @@ Binned mean of the signed, lr-normalized per-batch influence (60 bins over 10k s
 All three phases are present and well separated: the warmup spike is ~100× the basin, and the
 post-basin influence rises monotonically (1.1e-6 → 5.7e-6 → 1.6e-5, a ~14× ascent), matching the
 paper's finding and its mechanistic explanation (early data's influence decays under many future
-steps; late data retains influence). This is a markedly cleaner match than the superseded 60k run
-(warmup only ~10× the basin), confirming that the LR-decay horizon and AdamW settings — not the
-DVE math — drove the earlier mismatch.
+steps; late data retains influence).
 
 The companion diagnostic (`dve_fig1a_2026-06-30_diagnostic.png`) shows why the lr normalization
 matters: the **raw (lr-weighted)** curve is dominated by the schedule envelope (grows then decays
