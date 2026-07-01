@@ -7,15 +7,22 @@ make the wrapped blocks incompatible with ``torch.compile`` (measured: compiling
 the backward hook entirely, so nothing is captured). This module keeps the capture but moves it
 *in-graph*:
 
-  * Each supported dense leaf's ``forward`` is monkeypatched to wrap its **output** in a transparent
-    identity ``autograd.Function`` (``_IGProjDenseFn``). The wrapped ``nn.Linear`` keeps its native
-    fused backward; the Function only reads the layer input ``A`` and output grad ``B`` and computes
-    the projected per-sample gradient ``P_o @ (Σ_t B_t A_tᵀ) @ P_iᵀ`` → ``[B, k_o, k_i]`` **inside
-    its backward**, storing it into a preallocated per-layer buffer via an opaque custom op
-    (``ghost::gradproj_store``, ``mutates_args`` so functionalization keeps the write).
+  * Each supported leaf's ``forward`` is monkeypatched to wrap its **output** in a transparent
+    identity ``autograd.Function`` (``_IGProjDenseFn`` for ``nn.Linear``, ``_IGProjEmbeddingFn`` for
+    ``nn.Embedding``). The wrapped layer keeps its native fused backward; the Function only reads the
+    layer input ``A`` and output grad ``B`` and computes the projected per-sample gradient
+    ``P_o @ (Σ_t B_t A_tᵀ) @ P_iᵀ`` → ``[B, k_o, k_i]`` **inside its backward**, storing it into a
+    preallocated per-layer buffer via an opaque custom op (``ghost::gradproj_store``,
+    ``mutates_args`` so functionalization keeps the write).
   * No hooks / lock / ``setattr`` in the traced region ⇒ each transformer block can be
     regional-compiled (and composed with the Inductor min-cut partitioner for activation
     checkpointing).
+
+**Supported leaves:** ``nn.Linear`` and ``nn.Embedding`` only. Unlike the eager
+``GradProjLoraEngine`` (which never replaces ``forward``), this path monkeypatches ``forward`` to
+``F.linear``, so transformers ``Conv1D`` (weight ``[in, out]``, forward ``x @ W + b``) is **not**
+supported and is rejected at ``attach()`` — Conv1D models must use the eager engine. DVE's
+``shared/gpt2.py`` is all ``nn.Linear``.
 
 Unlike the dot-product decoupled path this is **much simpler**: the projection engine only *observes*
 gradients (no subtract-val / no ``.grad`` rewrite) and treats each matched module as an independent
@@ -154,6 +161,10 @@ class GradProjDecoupledManager:
 
         self._orig_forward: Dict[int, object] = {}
         self._cells: Dict[int, list] = {}          # id(layer) -> [buffer or None]
+        # (region, original_forward) pairs that a compile harness swapped to torch.compile; detach()
+        # restores them so the model object is left clean (no stale compiled graphs) for reuse.
+        self._compiled_regions: List[Tuple[nn.Module, object]] = []
+        self._warmup_bs: Optional[int] = None      # batch size the buffers/graph were built for
         self._enabled = True
         self.is_attached = False
 
@@ -161,6 +172,14 @@ class GradProjDecoupledManager:
 
     def _ensure_buf(self, layer, batch_size, device):
         """Preallocate this layer's ``[B, k_o, k_i]`` fp32 projection buffer (once, outside graph)."""
+        # Once warmup has locked the shape, a compiled block's traced graph writes the warmup-time
+        # buffer tensor; reallocating for a different batch here would desync that write from what
+        # collect_batch reads. Fail loud (DVE uses a fixed batch, so this never triggers there).
+        if self._warmup_bs is not None and batch_size != self._warmup_bs:
+            raise RuntimeError(
+                f"GradProjDecoupledManager: batch size {batch_size} != warmup batch "
+                f"{self._warmup_bs}. The decoupled/compiled path is bound to the warmup batch shape; "
+                "re-attach + re-warm up for a different shape.")
         cell = self._cells[id(layer)]
         if cell[0] is None or cell[0].shape[0] != batch_size:
             name = self._name_of(layer)
@@ -192,11 +211,17 @@ class GradProjDecoupledManager:
         cell = [None]
         self._cells[id(layer)] = cell
         weight = layer.weight
+        # Preserve every nn.Embedding forward arg (not just padding_idx), so the base op is exact
+        # for non-default embeddings (max_norm / scale_grad_by_freq / sparse ...).
         padding_idx = layer.padding_idx
+        max_norm = layer.max_norm
+        norm_type = layer.norm_type
+        scale_grad = layer.scale_grad_by_freq
+        sparse = layer.sparse
         P_i, P_o = self.projection_matrices[name]
 
         def forward(idx):
-            out = F.embedding(idx, weight, padding_idx)
+            out = F.embedding(idx, weight, padding_idx, max_norm, norm_type, scale_grad, sparse)
             if not self._enabled:
                 return out
             if cell[0] is None or cell[0].shape[0] != idx.shape[0]:
@@ -212,11 +237,23 @@ class GradProjDecoupledManager:
             return
         self._layer_names = {id(layer): name for name, layer in self.matched_layers.items()}
         for name, layer in self.matched_layers.items():
-            self._orig_forward[id(layer)] = layer.forward
             if isinstance(layer, nn.Embedding):
+                self._orig_forward[id(layer)] = layer.forward
                 layer.forward = self._wrap_embedding(layer, name)
-            else:  # nn.Linear / transformers Conv1D (dense: same projection math)
+            elif isinstance(layer, nn.Linear):
+                self._orig_forward[id(layer)] = layer.forward
                 layer.forward = self._wrap_dense(layer, name)
+            else:
+                # transformers Conv1D (weight [in,out], forward x@W+b) would need a different base
+                # op than F.linear (x@Wᵀ). The eager hook engine supports it because it never
+                # replaces forward; this in-graph path does, so wrapping it with F.linear would
+                # corrupt BOTH the forward and the projection. Fail loud rather than silently wrong;
+                # use the eager GradProjLoraEngine for Conv1D models. (DVE's shared/gpt2.py is all
+                # nn.Linear, so this is not hit there.)
+                raise NotImplementedError(
+                    f"GradProjDecoupledManager: layer '{name}' ({type(layer).__name__}) is not "
+                    "supported by the decoupled path (only nn.Linear and nn.Embedding). "
+                    "Conv1D-based models must use the eager GradProjLoraEngine.")
         # Mark the borrowed engine ready to collect (we manage attachment via wrappers, not hooks).
         self.engine.is_attached = True
         self.is_attached = True
@@ -232,8 +269,14 @@ class GradProjDecoupledManager:
             for attr in ("_ghost_grad_proj", "_ghost_A_raw"):
                 if hasattr(layer, attr):
                     delattr(layer, attr)
+        # Restore any block/top-level forwards a compile harness swapped to torch.compile, so the
+        # model object is left clean (no stale compiled graphs) if it is reused after detach.
+        for region, orig in self._compiled_regions:
+            region.forward = orig
+        self._compiled_regions.clear()
         self._orig_forward.clear()
         self._cells.clear()
+        self._warmup_bs = None
         self.engine.is_attached = False
         self.is_attached = False
         print(f"[INFO] Detached decoupled projection wrappers from {len(self.matched_layers)} layers")
@@ -252,6 +295,10 @@ class GradProjDecoupledManager:
         warmup_fn()
         self.module.zero_grad(set_to_none=True)
         self.module.train(was_training)
+        # Lock the batch shape: buffers are now allocated, and once compiled the traced graph binds
+        # them. _ensure_buf rejects a later different batch (would desync graph write vs collect read).
+        bufs = [c[0] for c in self._cells.values() if c[0] is not None]
+        self._warmup_bs = bufs[0].shape[0] if bufs else None
 
     # -- collect --------------------------------------------------------------------------
 
@@ -302,9 +349,13 @@ def attach_and_compile_gradproj(module, warmup_fn, *, engine_kwargs,
             proj_dir, ...).
         compile_regions: iterable of submodules to ``torch.compile`` in place (e.g. transformer
             blocks). ``None`` => attach + warmup only (decoupled-eager; correct, for equivalence).
+            Regions are restored on ``mgr.detach()``.
         compile_kwargs: forwarded to ``torch.compile`` (default backend='inductor', fullgraph=True).
         activation_memory_budget: if in (0, 1], set the Inductor min-cut partitioner budget
             (compile-native activation checkpointing) before compiling; lower => recompute more.
+            NOTE: this sets a *process-global* (``torch._functorch.config.activation_memory_budget``)
+            that persists after this call (matches ``decoupled_compile``); it is not restored, so a
+            later compile in the same process inherits it unless reset.
 
     Returns:
         The attached ``GradProjDecoupledManager``.
@@ -324,10 +375,12 @@ def attach_and_compile_gradproj(module, warmup_fn, *, engine_kwargs,
             kwargs.update(compile_kwargs)
         n = 0
         for region in compile_regions:
+            mgr._compiled_regions.append((region, region.forward))
             region.forward = torch.compile(region.forward, **kwargs)
             n += 1
         ne = 0
         for region in (extra_regions or []):
+            mgr._compiled_regions.append((region, region.forward))
             region.forward = torch.compile(region.forward, **kwargs)
             ne += 1
         msg = f"[INFO] GradProj decoupled: regional-compiled {n} block(s)"
