@@ -4,7 +4,7 @@ Average per-batch data-value-embedding influence on the final model's validation
 against training iteration (GPT2-Small, 1% of Pile, 10k steps, MLP-only projected gradients,
 `lr_mode=scaled`, 256 val windows). The influence is normalized by each batch's learning rate.
 
-![DVE temporal influence](dve_fig1a_2026-06-30.png)
+![DVE temporal influence](dve_temporal_influence_2026-06-30.png)
 
 ## Launch
 
@@ -25,8 +25,8 @@ python examples/dve_lm/main.py --data_source pile --architecture GPT2-Small --de
     --train_and_store_grad --compute_embedding --compute_value
 
 # plot from the value matrix (re-plot cheaply with --from_csv <prefix>_perstep.csv)
-python examples/dve_lm/experiments/plot_fig1a.py \
-    --values examples/dve_lm/results/<run>/value/values.pt --out dve_fig1a_2026-06-30 \
+python examples/dve_lm/experiments/plot_temporal_influence.py \
+    --values examples/dve_lm/results/<run>/value/values.pt --out dve_temporal_influence_2026-06-30 \
     --lr_mode scaled --learning_rate 3e-4 --warmup_steps 2000 \
     --max_steps 10000 --lr_decay_steps 10000 --lr_schedule linear --bins 60
 ```

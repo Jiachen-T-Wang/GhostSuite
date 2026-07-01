@@ -1,6 +1,6 @@
-"""Reproduce Figure 1(a) of Data Value Embedding (arXiv:2412.09538).
+"""Plot per-batch data-value-embedding temporal influence vs training iteration.
 
-Figure 1(a): average DVE influence per training batch vs training iteration, measured
+Average DVE influence per training batch vs training iteration, measured
 against the (final) model's loss on the validation set. The DVE value matrix
 ``values.pt`` (from stage 3, ``compute_values``) holds ``values[n_test, n_train]`` =
 ``<g_val_j, e_s>`` for every (val example j, training sample s), with ``train_order``
@@ -10,11 +10,11 @@ samples within each training step to get one scalar per step, and plot it vs the
 With ``--lr_mode scaled`` (the recommended long-run setting) the stored embedding already
 folds the per-step learning rate (``e_hat = lr_s * e_s``), so the raw per-step average is
 the *lr-weighted* influence. Dividing by the per-step lr recovers the *intrinsic*
-(schedule-independent) influence. The paper normalizes by the per-batch lr, so the
-lr-normalized curve is the faithful match; we emit both plus CSVs.
+(schedule-independent) influence. Normalizing by the per-batch lr is the standard
+convention; we emit both the lr-weighted and lr-normalized curves plus CSVs.
 
 Outputs (``--out PREFIX``):
-  PREFIX.png            clean paper-style panel: binned lr-normalized influence +
+  PREFIX.png            clean panel: binned lr-normalized influence +
                         inter-quartile band, symlog-y so the warmup spike and the
                         post-warmup basin/ascent are both legible.
   PREFIX_diagnostic.png two raw panels (lr-weighted + lr-normalized), lightly smoothed.
@@ -25,7 +25,7 @@ Read the value matrix with ``--values RUN/value/values.pt`` (recomputes the per-
 series), or re-plot quickly from an existing per-step CSV with ``--from_csv PREFIX.csv``.
 
 Usage:
-  python plot_fig1a.py --values RUN/value/values.pt --out RUN/fig1a \
+  python plot_temporal_influence.py --values RUN/value/values.pt --out RUN/dve_temporal_influence \
       --lr_mode scaled --learning_rate 3e-4 --warmup_steps 2000 \
       --max_steps 10000 --lr_decay_steps 10000 --lr_schedule linear --bins 60
 """
@@ -155,7 +155,7 @@ def main():
     ax.set_xlabel('training iteration')
     ax.set_ylabel('avg influence per batch  (/ lr)')
     steps_lbl = f'{args.max_steps // 1000}k' if args.max_steps >= 1000 else str(args.max_steps)
-    ax.set_title(f'DVE Figure 1(a) reproduction — GPT2-Small / Pile (1% subset, {steps_lbl} steps)')
+    ax.set_title(f'DVE temporal influence — GPT2-Small / Pile (1% subset, {steps_lbl} steps)')
     ax.legend(loc='upper right', fontsize=8)
     fig.tight_layout()
     fig.savefig(args.out + '.png', dpi=150)
@@ -169,7 +169,7 @@ def main():
     axes[1].set_title('lr-normalized'); axes[1].axhline(0, color='k', lw=0.5, alpha=0.4)
     for a in axes:
         a.set_xlabel('training iteration'); a.set_ylabel('influence')
-    fig2.suptitle(f'DVE Fig 1(a) diagnostic — GPT2-Small / Pile (MA{args.smooth})')
+    fig2.suptitle(f'DVE temporal influence diagnostic — GPT2-Small / Pile (MA{args.smooth})')
     fig2.tight_layout()
     fig2.savefig(args.out + '_diagnostic.png', dpi=140)
     print(f"wrote {args.out}_diagnostic.png")
