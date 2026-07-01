@@ -34,10 +34,9 @@ i.e. `e_s` is the training gradient `g_s` after being transformed by the unrolle
 Stage-1 capture defaults to the **decoupled in-graph + `torch.compile`** fast path
 (`--decoupled_compile`, on by default) at **`--train_dtype bfloat16`** (fp32 master weights, bf16
 autocast; `--proj_dtype float32` for projection fidelity). On an H200 this is **~25% faster** than
-the eager hook engine (GPT2-Small, bs 8, block 1024; see
-[`docs/analysis/gradproj_decoupled_compile_bf16_2026-07-01.md`](../../docs/analysis/gradproj_decoupled_compile_bf16_2026-07-01.md)),
-and the resulting DVE values match the fp32 hook reference to **Pearson r = 1.0 / identical top-k
-rankings** (~1% L2 magnitude difference from bf16 rounding).
+the eager hook engine (GPT2-Small, bs 8, block 1024), and the resulting DVE values match the fp32
+hook reference to **Pearson r = 1.0 / identical top-k rankings** (~1% L2 magnitude difference from
+bf16 rounding).
 
 - `--no_decoupled_compile` — fall back to the eager hook engine (`GradProjLoraEngine`). Required for
   **Conv1D**-based models (the decoupled path only supports `nn.Linear`/`nn.Embedding`). On a
