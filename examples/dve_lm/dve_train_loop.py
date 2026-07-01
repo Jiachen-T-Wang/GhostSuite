@@ -24,19 +24,28 @@ from shared.dataloader import get_batch_from_dataset
 
 
 def compute_lr(step, config):
-    """Per-step learning rate: constant, linear, or cosine -- each with linear warmup."""
+    """Per-step learning rate: constant, linear, or cosine -- each with linear warmup.
+
+    The decay horizon is ``config.lr_decay_steps`` (falling back to ``max_steps`` when it is
+    <= 0), decoupled from the run length so the schedule can match the reference DVE code,
+    which hardcodes ``get_linear_schedule_with_warmup(num_training_steps=10000)`` regardless
+    of the actual epoch length. ``progress`` clamps to [0, 1], so steps past the horizon hold
+    LR at 0 (linear) / ``min_lr`` (cosine), mirroring HF's post-horizon behavior.
+    """
+    decay_steps = config.lr_decay_steps if getattr(config, 'lr_decay_steps', -1) > 0 else config.max_steps
+
     # Linear warmup from 0 to learning_rate over the first warmup_steps.
     if step < config.warmup_steps:
         return config.learning_rate * (step + 1) / max(1, config.warmup_steps)
 
-    progress = (step - config.warmup_steps) / max(1, config.max_steps - config.warmup_steps)
+    progress = (step - config.warmup_steps) / max(1, decay_steps - config.warmup_steps)
     progress = min(1.0, max(0.0, progress))
 
     if config.lr_schedule == 'constant':
         return config.learning_rate
 
     if config.lr_schedule == 'linear':
-        # Linear decay to 0 at max_steps (matches HF get_linear_schedule_with_warmup,
+        # Linear decay to 0 at lr_decay_steps (matches HF get_linear_schedule_with_warmup,
         # the reference DVE pretraining schedule).
         return config.learning_rate * (1.0 - progress)
 

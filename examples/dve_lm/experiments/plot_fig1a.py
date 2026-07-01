@@ -39,11 +39,16 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 
-def lr_at(step, lr, warmup, max_steps, schedule):
-    """Mirror dve_train_loop.compute_lr for the schedules used here."""
+def lr_at(step, lr, warmup, decay_steps, schedule):
+    """Mirror dve_train_loop.compute_lr for the schedules used here.
+
+    ``decay_steps`` is the LR-decay horizon (the training ``--lr_decay_steps``, or ``max_steps``
+    when that is unset); it must match the run's schedule so the lr-normalization divides by the
+    same per-step lr that was folded into the embedding.
+    """
     if step < warmup:
         return lr * (step + 1) / max(1, warmup)
-    progress = min(1.0, max(0.0, (step - warmup) / max(1, max_steps - warmup)))
+    progress = min(1.0, max(0.0, (step - warmup) / max(1, decay_steps - warmup)))
     if schedule == 'constant':
         return lr
     if schedule == 'linear':
@@ -77,8 +82,9 @@ def per_step_series(args):
     valid = counts > 0
     steps = np.nonzero(valid)[0]
     raw = sums[valid] / counts[valid]                     # lr-weighted influence/step
+    decay_steps = args.lr_decay_steps if args.lr_decay_steps > 0 else args.max_steps
     lrs = np.array([lr_at(int(s), args.learning_rate, args.warmup_steps,
-                          args.max_steps, args.lr_schedule) for s in steps])
+                          decay_steps, args.lr_schedule) for s in steps])
     norm = raw / np.clip(lrs, 1e-12, None) if args.lr_mode == 'scaled' else raw
 
     np.savetxt(args.out + '.csv', np.column_stack([steps, lrs, raw, norm]),
@@ -119,6 +125,8 @@ def main():
     ap.add_argument('--learning_rate', type=float, default=3e-4)
     ap.add_argument('--warmup_steps', type=int, default=2000)
     ap.add_argument('--max_steps', type=int, default=60000)
+    ap.add_argument('--lr_decay_steps', type=int, default=-1,
+                    help='LR-decay horizon; -1 uses max_steps. Must match the training run.')
     ap.add_argument('--lr_schedule', default='linear', choices=['constant', 'linear', 'cosine'])
     ap.add_argument('--bins', type=int, default=60, help='bins for the clean panel')
     ap.add_argument('--smooth', type=int, default=200, help='MA window for the diagnostic panel')

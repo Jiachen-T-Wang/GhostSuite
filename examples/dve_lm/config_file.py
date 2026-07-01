@@ -61,6 +61,10 @@ def parse_arguments():
     parser.add_argument('--min_lr', type=float, default=3e-5)
     parser.add_argument('--lr_schedule', type=str, default='constant',
                         choices=['constant', 'linear', 'cosine'])
+    parser.add_argument('--lr_decay_steps', type=int, default=-1,
+                        help="LR-decay horizon (step at which linear->0 / cosine->min_lr). "
+                             "-1 uses max_steps. Decouples the schedule from the run length to "
+                             "match the reference (hardcoded num_training_steps=10000).")
     parser.add_argument('--warmup_steps', type=int, default=0)
     parser.add_argument('--weight_decay', type=float, default=0.0)
     parser.add_argument('--momentum', type=float, default=0.0, help='SGD momentum')
@@ -127,6 +131,7 @@ class DVEConfig:
         self.learning_rate = args.learning_rate
         self.min_lr = args.min_lr
         self.lr_schedule = args.lr_schedule
+        self.lr_decay_steps = args.lr_decay_steps
         self.warmup_steps = args.warmup_steps
         self.weight_decay = args.weight_decay
         self.momentum = args.momentum
@@ -169,10 +174,13 @@ class DVEConfig:
         proj_id = (f"rank_{self.proj_rank_total}_rmin_{self.proj_rank_min}"
                    f"_seed_{self.proj_seed}_ortho_{int(self.proj_row_orthonormal)}"
                    f"_pdt_{self.proj_dtype}_emb_{int(self.include_embeddings)}")
+        # lr_decay_steps only affects the trajectory (not P); encode it when it decouples the
+        # decay horizon from the run length so a frozen-tail run does not collide with a plain one.
+        decay_tag = f"_decay_{self.lr_decay_steps}" if self.lr_decay_steps > 0 else ""
         run_name = (f"arch_{self.architecture}_layers_{self.proj_layers}"
                     f"_{proj_id}"
                     f"_opt_{self.optimizer}_lr_{self.learning_rate}"
-                    f"_steps_{self.max_steps}_bs_{self.batch_size}"
+                    f"_steps_{self.max_steps}{decay_tag}_bs_{self.batch_size}"
                     f"_lrmode_{self.lr_mode}_data_{self.data_source}")
         self.run_dir = os.path.join(args.output_dir, run_name)
         self.capture_dir = os.path.join(self.run_dir, 'capture')
