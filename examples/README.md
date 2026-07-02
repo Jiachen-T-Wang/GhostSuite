@@ -97,25 +97,44 @@ batches) to your local dataset directories before running.
 
 ### Dot-product levers and the speed ↔ memory tradeoff
 
-The TorchTitan GradDotProd integration computes the train↔val gradient dot-products by running a
-single forward/backward on a **combined `train + val` batch**. Its runtime levers are exposed as
-`--ghost.*` flags (defaults live in `llama3_130m_ghost.toml`):
+The TorchTitan GradDotProd integration computes the train↔val gradient dot-products during
+training. By default it uses the **separate-val two-pass engine**: each optimizer step runs one
+plain backward on the fixed val batch (harvesting autograd's `.grad` as the cached per-param val
+gradient) and then the train microbatches *without* appended val rows, their in-graph dots
+projecting against the cache. Training loss and gradients are **bit-consistent with regular
+training** (the loss curve matches `torchtitan.train` step-for-step), the val cost is paid once
+per step instead of once per microbatch, and peak memory is roughly half the older combined-batch
+engine's. Dots equal the combined-batch dots up to a constant per-config rescale
+(`(T_tr+T_v)²/(T_tr·T_v)` at grad-accum 1). `--ghost.no-separate_val` restores the combined-batch
+engine (one forward/backward on the concatenated `train + val` batch). Runtime levers
+(defaults live in `llama3_130m_ghost.toml`):
 
 | `--ghost.*` lever | default | effect |
 |---|---|---|
-| `subtract_val` | on | recover train grads after backward instead of masking activations |
+| `separate_val` | on | two-pass engine: val backward once per step + train-only microbatches (faster under grad accumulation, ~half the memory, loss matches regular training) |
+| `compile_loss` | on | compile the loss on the ghost path (otherwise it runs EAGER fp32 full-vocab CE — ~17 ms/step here — because the deferred compile builds it with compile disabled) |
+| `subtract_val` | on | (combined path) recover train grads after backward instead of masking activations |
 | `decoupled_fn` | on | graph-clean decoupled-Function path so `torch.compile` can compile the model |
 | `compile_toplevel` | on | also compile the output Linear's dot (memory-free; the rest of the gain) |
 | `opsac_mm_every` | 1 | op-SAC mm save-fraction: recompute every N-th matmul (1 = all → min memory; ↑N = more memory, faster). Active when `selective_ac_option="op"` |
 | `regional_compile` | off | regional compile of RoPE/SwiGLU (helps A100, regresses H200) |
+
+Measured on H200 / Llama-3 130M / seq 4096 at the standard pretraining shape (global batch 12 =
+6 accumulation microbatches of local bs 2, val bs 2, no AC): regular training 285.9 ms/step,
+separate-val ghost 429.3 ms (**1.50×**), v0.5 combined-batch ghost 479.0 ms (1.68×) — and the
+remaining overhead is the algorithm's floor (one val backward per step + one projection GEMM per
+Linear per microbatch), not implementation slack. Full study:
+`docs/analysis/separate_val_efficiency_2026-07-02.md`.
 
 The default also sets `[compile] enable = true` and `[activation_checkpoint] mode = "selective",
 selective_ac_option = "op"`. Together these run a compiled fast path with **op-level selective
 activation checkpointing** that is faster than the eager engine **at the same loss** (bit-identical
 *and* dot-product-identical). Activation checkpointing then gives a single speed↔memory dial. The
 default is **op-SAC `mme1`** — the runtime-memory frontier point that runs *below* the eager
-engine's peak memory while still ~15% faster. Numbers: Llama-3 130M, seq 4096, train bs2 + val bs2,
-single H200, one session; throughput is tokens/s, loss-identical in every row:
+engine's peak memory while still ~15% faster. Numbers below were measured on the **combined-batch
+engine** (`--ghost.no-separate_val`, pre-`compile_loss`); the separate-val default shifts every
+point down in memory by roughly half and the AC dial works the same way. Llama-3 130M, seq 4096,
+train bs2 + val bs2, single H200, one session; throughput is tokens/s, loss-identical in every row:
 
 | config | flags | throughput vs eager | peak memory |
 |---|---|---:|---:|

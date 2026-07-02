@@ -116,6 +116,16 @@ subtract_val = true
 decoupled_fn = true
 compile_toplevel = true
 regional_compile = false
+# separate-val two-pass engine (docs/analysis/separate_val_efficiency_2026-07-02.md): one plain
+# val backward per optimizer step + train-only microbatches whose in-graph dots project against
+# the harvested val gradient. Faster at grad-accum setups, ~half the combined path's peak memory
+# everywhere, and the training loss/grads become bit-consistent with regular training. Dots equal
+# the combined-batch dots up to a constant rescale (4x at this config's N=1). Set
+# --ghost.no-separate_val to restore the v0.5 combined-batch behavior.
+separate_val = true
+# Compile the loss too (the deferred-compile trick otherwise leaves it EAGER — an fp32 128k-vocab
+# CE the compiled baseline does not pay; ~17 ms/step here).
+compile_loss = true
 # op-SAC mm save-fraction (active when activation_checkpoint.selective_ac_option="op"). 1 =
 # recompute all matmuls = the mme1 min-memory frontier point; raise for more memory / more speed.
 opsac_mm_every = 1
