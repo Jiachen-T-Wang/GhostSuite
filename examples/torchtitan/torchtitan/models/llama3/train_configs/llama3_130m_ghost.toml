@@ -100,7 +100,6 @@ seed = 42
 enable = true
 val_batch_size = 2
 val_dataset = "pile_test"
-val_dataset_path = "/path/to/PretrainData/pile/pile-test"
 save_dir = "./outputs/ghost_dotprods"
 save_interval = 50
 save_train_batch = false

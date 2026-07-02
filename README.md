@@ -82,6 +82,9 @@ CONFIG_FILE="./examples/torchtitan/torchtitan/models/llama3/train_configs/llama3
     ./examples/torchtitan/run_train_with_ghost.sh
 ```
 
+Data prerequisite: set `C4_LOCAL_DIR` (training corpus) and `PILE_TEST_DIR` (ghost/validation
+batches) to your local dataset directories before running.
+
 The `--ghost.*` flags expose a speed↔memory tradeoff (a compiled fast path plus op-level
 selective activation checkpointing). See [`examples/README.md`](examples/README.md#3-llm-pretraining-with-torchtitan-torchtitan)
 for the levers, benchmarks, and tuning guidance.

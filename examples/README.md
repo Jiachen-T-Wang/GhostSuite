@@ -92,6 +92,9 @@ CONFIG_FILE="./examples/torchtitan/torchtitan/models/llama3/train_configs/llama3
     ./examples/torchtitan/run_train_with_ghost.sh
 ```
 
+Data prerequisite: set `C4_LOCAL_DIR` (training corpus) and `PILE_TEST_DIR` (ghost/validation
+batches) to your local dataset directories before running.
+
 ### Dot-product levers and the speed ↔ memory tradeoff
 
 The TorchTitan GradDotProd integration computes the train↔val gradient dot-products by running a

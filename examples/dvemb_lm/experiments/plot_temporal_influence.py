@@ -1,28 +1,33 @@
 """Plot per-batch data-value-embedding temporal influence vs training iteration.
 
-Average DVEmb influence per training batch vs training iteration, measured
-against the (final) model's loss on the validation set. The DVEmb value matrix
-``values.pt`` (from stage 3, ``compute_values``) holds ``values[n_test, n_train]`` =
-``<g_val_j, e_s>`` for every (val example j, training sample s), with ``train_order``
-giving each column's training step. We average over the validation rows and over the
-samples within each training step to get one scalar per step, and plot it vs the step.
+Average DVEmb influence per training batch vs training iteration, measured against the
+(final) model's loss on held-out **test-split windows** (Stage 3 draws its scoring
+examples from ``split='test'``). The DVEmb value matrix ``values.pt`` (from stage 3,
+``compute_values``) holds ``values[n_test, n_train]`` = ``<g_test_j, e_s>`` for every
+(test window j, training sample s), with ``train_order`` giving each column's training
+step. We average over the test rows and over the samples within each training step to
+get one scalar per step, and plot it vs the step.
 
 With ``--lr_mode scaled`` (the recommended long-run setting) the stored embedding already
 folds the per-step learning rate (``e_hat = lr_s * e_s``), so the raw per-step average is
 the *lr-weighted* influence. Dividing by the per-step lr recovers the *intrinsic*
 (schedule-independent) influence. Normalizing by the per-batch lr is the standard
-convention; we emit both the lr-weighted and lr-normalized curves plus CSVs.
+convention; we emit both the lr-weighted and lr-normalized curves plus CSVs. The
+schedule flags (``--learning_rate --min_lr --warmup_steps --max_steps --lr_decay_steps
+--lr_schedule``) must match the training run so the normalization divides by the same
+per-step lr that was folded into the embedding.
 
 Outputs (``--out PREFIX``):
-  PREFIX.png            clean panel: binned lr-normalized influence +
-                        inter-quartile band, symlog-y so the warmup spike and the
-                        post-warmup basin/ascent are both legible.
+  PREFIX.png            clean panel: binned mean lr-normalized influence with a ±1 SEM
+                        band; linear y by default (pass --logy for symlog-y).
   PREFIX_diagnostic.png two raw panels (lr-weighted + lr-normalized), lightly smoothed.
-  PREFIX.csv            per-step step,lr,influence_raw,influence_lr_normalized.
-  PREFIX_binned.csv     per-bin center,lr,mean,q25,q75 of the lr-normalized influence.
+  PREFIX_perstep.csv    per-step step,lr,influence_raw,influence_lr_normalized.
+  PREFIX_binned.csv     per-bin step_center,norm_mean,norm_sem of the lr-normalized
+                        influence.
 
 Read the value matrix with ``--values RUN/value/values.pt`` (recomputes the per-step
-series), or re-plot quickly from an existing per-step CSV with ``--from_csv PREFIX.csv``.
+series), or re-plot quickly from an existing per-step CSV with
+``--from_csv PREFIX_perstep.csv``.
 
 Usage:
   python plot_temporal_influence.py --values RUN/value/values.pt --out RUN/dvemb_temporal_influence \
@@ -39,12 +44,14 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 
-def lr_at(step, lr, warmup, decay_steps, schedule):
+def lr_at(step, lr, warmup, decay_steps, schedule, min_lr):
     """Mirror dvemb_train_loop.compute_lr for the schedules used here.
 
     ``decay_steps`` is the LR-decay horizon (the training ``--lr_decay_steps``, or ``max_steps``
     when that is unset); it must match the run's schedule so the lr-normalization divides by the
-    same per-step lr that was folded into the embedding.
+    same per-step lr that was folded into the embedding. ``min_lr`` is the cosine floor
+    (the training ``--min_lr``): cosine decays to ``min_lr`` and holds it past the horizon,
+    while linear decays to 0 — exactly as compute_lr does.
     """
     if step < warmup:
         return lr * (step + 1) / max(1, warmup)
@@ -53,7 +60,9 @@ def lr_at(step, lr, warmup, decay_steps, schedule):
         return lr
     if schedule == 'linear':
         return lr * (1.0 - progress)
-    return lr * 0.5 * (1.0 + np.cos(np.pi * progress))  # cosine (to ~0)
+    # cosine
+    coeff = 0.5 * (1.0 + np.cos(np.pi * progress))
+    return min_lr + coeff * (lr - min_lr)
 
 
 def moving_average(x, w):
@@ -75,7 +84,7 @@ def per_step_series(args):
     print(f"values {tuple(values.shape)}  finite={torch.isfinite(values).all().item()}  "
           f"steps {order.min()}..{order.max()}")
 
-    col_mean = values.mean(dim=0).numpy()                 # mean over val rows
+    col_mean = values.mean(dim=0).numpy()                 # mean over test rows
     n_steps = int(order.max()) + 1
     sums = np.bincount(order, weights=col_mean, minlength=n_steps)
     counts = np.bincount(order, minlength=n_steps)
@@ -84,13 +93,13 @@ def per_step_series(args):
     raw = sums[valid] / counts[valid]                     # lr-weighted influence/step
     decay_steps = args.lr_decay_steps if args.lr_decay_steps > 0 else args.max_steps
     lrs = np.array([lr_at(int(s), args.learning_rate, args.warmup_steps,
-                          decay_steps, args.lr_schedule) for s in steps])
+                          decay_steps, args.lr_schedule, args.min_lr) for s in steps])
     norm = raw / np.clip(lrs, 1e-12, None) if args.lr_mode == 'scaled' else raw
 
-    np.savetxt(args.out + '.csv', np.column_stack([steps, lrs, raw, norm]),
+    np.savetxt(args.out + '_perstep.csv', np.column_stack([steps, lrs, raw, norm]),
                delimiter=',', header='step,lr,influence_raw,influence_lr_normalized',
                comments='', fmt=['%d', '%.8e', '%.8e', '%.8e'])
-    print(f"wrote {args.out}.csv")
+    print(f"wrote {args.out}_perstep.csv")
     return steps, lrs, raw, norm
 
 
@@ -119,10 +128,12 @@ def main():
     ap = argparse.ArgumentParser()
     src = ap.add_mutually_exclusive_group(required=True)
     src.add_argument('--values', help='path to stage-3 values.pt')
-    src.add_argument('--from_csv', help='re-plot from a prior PREFIX.csv (fast)')
+    src.add_argument('--from_csv', help='re-plot from a prior PREFIX_perstep.csv (fast)')
     ap.add_argument('--out', required=True, help='output path prefix')
     ap.add_argument('--lr_mode', default='scaled', choices=['none', 'scaled'])
     ap.add_argument('--learning_rate', type=float, default=3e-4)
+    ap.add_argument('--min_lr', type=float, default=3e-5,
+                    help='cosine-schedule lr floor; must match the training run (--min_lr)')
     ap.add_argument('--warmup_steps', type=int, default=2000)
     ap.add_argument('--max_steps', type=int, default=10000)
     ap.add_argument('--lr_decay_steps', type=int, default=-1,

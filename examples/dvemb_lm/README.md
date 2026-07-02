@@ -102,9 +102,12 @@ python main.py --data_source pile --architecture GPT2-Small --device cuda \
 
 ## Notes / caveats
 
-- **SGD vs AdamW.** The unrolling is derived for SGD; `--optimizer adamw` applies the same recursion
-  to an AdamW trajectory (as the reference does), which is an approximation — prefer `--optimizer
-  sgd` when you need the influence to be exact.
+- **SGD vs AdamW.** The unrolling is derived for **plain** SGD (`θ_{t+1} = θ_t − η_t (1/B) Σ_b g`);
+  `--optimizer adamw` applies the same recursion to an AdamW trajectory (as the reference does),
+  which is an approximation — prefer `--optimizer sgd` when you need the influence to be exact.
+  Exactness also requires `--momentum 0` and `--weight_decay 0` (the defaults): nonzero momentum or
+  decay changes the update rule away from the plain-SGD derivation, making the recursion an
+  approximation there too.
 - **Projection consistency.** All stages must use the same `--proj_seed`, `--architecture`, and
   projection params so `P` is reconstructed identically between the train (Stage 1) and test
   (Stage 3) passes. (The run directory encodes these, so a mismatch resolves to a *different* dir and

@@ -10,7 +10,8 @@
 #SBATCH --partition=ailab
 
 # Mirrors the upstream GREATS/LESS warmup_train.sh config (LoRA r=128 on
-# q/k/v/o_proj, lr 1e-5, bf16, max_seq 512), as a self-contained GhostSuite example.
+# q/k/v/o_proj, lr 2e-5, bf16, max_seq 512), as a self-contained GhostSuite example.
+# lr 2e-5 matches the config_file.py default and experiments/run_compare.sbatch.
 if [[ -n "${SLURM_JOB_ID:-}" ]]; then module load proxy/default; fi
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false
 
@@ -51,4 +52,4 @@ python -u main.py \
     --num_train_epochs "$EPOCHS" --max_steps "$MAX_STEPS" --seed "$SEED" \
     --lora_r 128 --lora_alpha 1 --lora_dropout 0.1 \
     --lora_target_modules q_proj,k_proj,v_proj,o_proj \
-    --learning_rate 1e-5 --max_seq_length 512 --model_dtype bfloat16
+    --learning_rate 2e-5 --max_seq_length 512 --model_dtype bfloat16

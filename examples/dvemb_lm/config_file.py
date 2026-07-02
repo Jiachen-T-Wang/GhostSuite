@@ -121,7 +121,14 @@ def parse_arguments():
 
 
 class DVEmbConfig:
-    """Configuration object for the DVEmb pipeline."""
+    """Configuration object for the DVEmb pipeline.
+
+    Derives ``run_dir`` from every parameter that determines the projection P *and* the
+    training trajectory (arch, proj_*, optimizer / lr / schedule / warmup / steps, batch
+    size, seed, data source, train dtype), so a later stage invoked with a mismatched
+    config resolves to a different dir and fails loudly instead of silently mixing
+    artifacts from incompatible runs.
+    """
 
     def __init__(self, args):
         self.args = args
@@ -189,10 +196,11 @@ class DVEmbConfig:
 
         # Output layout: a run-specific root with per-stage subdirs so all stages
         # (possibly separate invocations) agree on paths from the same config.
-        # The name must encode EVERY parameter that determines the projection P, so a
-        # later stage run with a mismatched projection config resolves to a different
-        # dir and fails loudly (missing checkpoint/embeddings) rather than silently
-        # dotting test gradients against embeddings built under an incompatible P.
+        # The name must encode EVERY parameter that determines the projection P *and*
+        # the training trajectory, so a later stage run with a mismatched config
+        # resolves to a different dir and fails loudly (missing checkpoint/embeddings)
+        # rather than silently dotting test gradients against embeddings built under an
+        # incompatible P or a different trajectory.
         # proj_rank_min / include_embeddings change the projected dims (also caught by
         # the dim check in dvemb_value), while proj_row_orthonormal / proj_dtype change
         # P's values at identical dims (NOT caught there) -- all are included here.
@@ -206,10 +214,22 @@ class DVEmbConfig:
         # gradients, though not P. Tag non-fp32 so a bf16 run (now the default) does not silently
         # overwrite / read a stale fp32 capture at the same path. fp32 stays untagged (back-compat).
         dtype_tag = f"_tdt_{self.train_dtype}" if self.train_dtype != 'float32' else ""
+        # Trajectory identity: seed (model init + data stream), warmup_steps, and lr_schedule
+        # each change the captured trajectory, so they are encoded unconditionally; min_lr /
+        # momentum / weight_decay are tagged only when they differ from the argparse defaults
+        # (mirrors the decay_tag / dtype_tag back-compat pattern). NOTE: adding these tags
+        # intentionally changes run-dir names vs pre-2026-07 captures — a rerun resolves to a
+        # fresh dir (and re-trains) rather than silently mixing with an older trajectory.
+        minlr_tag = f"_minlr_{self.min_lr}" if self.min_lr != 3e-5 else ""
+        mom_tag = f"_mom_{self.momentum}" if self.momentum != 0.0 else ""
+        wd_tag = f"_wd_{self.weight_decay}" if self.weight_decay != 0.0 else ""
         run_name = (f"arch_{self.architecture}_layers_{self.proj_layers}"
                     f"_{proj_id}"
                     f"_opt_{self.optimizer}_lr_{self.learning_rate}"
+                    f"_sched_{self.lr_schedule}_warm_{self.warmup_steps}"
+                    f"{minlr_tag}{mom_tag}{wd_tag}"
                     f"_steps_{self.max_steps}{decay_tag}_bs_{self.batch_size}"
+                    f"_seed_{self.seed}"
                     f"_lrmode_{self.lr_mode}_data_{self.data_source}{dtype_tag}")
         self.run_dir = os.path.join(args.output_dir, run_name)
         self.capture_dir = os.path.join(self.run_dir, 'capture')

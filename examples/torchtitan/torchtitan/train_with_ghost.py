@@ -139,12 +139,21 @@ class GhostTrainer(Trainer):
                 )
             logger.info("Applied deferred regional compile after ghost attach + warmup.")
 
-        logger.info(
-            "Ghost GradDotProd enabled | val_batch_size=%d | save_interval=%d | save_train_batch=%s",
-            self.ghost_helper.val_batch_size,
-            job_config.ghost.save_interval,
-            job_config.ghost.save_train_batch,
-        )
+        if self.ghost_helper.use_fn_path:
+            # fn-path: score persistence is not wired (helper logs a loud warning when
+            # save_interval > 0), so don't advertise save_interval/save_train_batch here.
+            logger.info(
+                "Ghost GradDotProd enabled | val_batch_size=%d | fn-path (scores computed "
+                "in-graph, not persisted)",
+                self.ghost_helper.val_batch_size,
+            )
+        else:
+            logger.info(
+                "Ghost GradDotProd enabled | val_batch_size=%d | save_interval=%d | save_train_batch=%s",
+                self.ghost_helper.val_batch_size,
+                job_config.ghost.save_interval,
+                job_config.ghost.save_train_batch,
+            )
         logger.info(
             "Note: MFU will still include extra ghost dot-product compute as overhead "
             "since num_flops_per_token is model-only; expect MFU closer but not necessarily matching baseline."

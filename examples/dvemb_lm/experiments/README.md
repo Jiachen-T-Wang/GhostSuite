@@ -1,8 +1,9 @@
 # DVEmb temporal influence — GPT-2 on Pile
 
-Average per-batch data-value-embedding influence on the final model's validation loss, plotted
-against training iteration (GPT2-Small, 1% of Pile, 10k steps, MLP-only projected gradients,
-`lr_mode=scaled`, 256 val windows). The influence is normalized by each batch's learning rate.
+Average per-batch data-value-embedding influence on the final model's loss over held-out
+test-split windows, plotted against training iteration (GPT2-Small, 1% of Pile, 10k steps,
+MLP-only projected gradients, `lr_mode=scaled`, 256 test-split windows). The influence is
+normalized by each batch's learning rate.
 
 ![DVEmb temporal influence](dvemb_temporal_influence_2026-06-30.png)
 

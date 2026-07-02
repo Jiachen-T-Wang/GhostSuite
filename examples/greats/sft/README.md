@@ -45,7 +45,7 @@ cd examples/greats/sft
 ./train.sh --method GREATS  --batch_size 4 --fracinv 2.0 --subject world_religions --n_val 4
 ./train.sh --method Regular --batch_size 4                --subject world_religions --n_val 4
 ```
-`train.sh` sets LoRA r=128 / alpha=1 / dropout=0.1 on `q,k,v,o_proj`, lr 1e-5, bf16,
+`train.sh` sets LoRA r=128 / alpha=1 / dropout=0.1 on `q,k,v,o_proj`, lr 2e-5, bf16,
 max_seq 512 — matching upstream `base_training_args.sh`.
 
 ## Key flags

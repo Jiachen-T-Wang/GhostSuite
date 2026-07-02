@@ -8,6 +8,7 @@ from ghostEngines.decoupled_capture_dotprod import GhostDecoupledManager
 from torchtitan.hf_datasets.text_datasets import build_text_validation_dataloader
 from torchtitan.config import JobConfig
 from torchtitan.distributed import ParallelDims
+from torchtitan.tools.logging import logger
 
 
 # Decoupled in-graph path (re-examination doc §3): a transparent identity Function keeps each
@@ -44,18 +45,32 @@ class GhostDotProdHelper:
         save_dir = self.ghost_cfg.save_dir or os.path.join(
             job_config.job.dump_folder, "ghost_dotprods"
         )
-        os.makedirs(save_dir, exist_ok=True)
 
         self.use_decoupled_fn = _DECOUPLED_FN
         # The decoupled Function path uses the trainer's fn-path wiring (no saved_tensors_context;
         # dot-products collected after backward; subtract-val recovery before the optimizer step).
         self.use_fn_path = _DECOUPLED_FN
         if self.use_decoupled_fn:
+            # Persistence is not wired on the fn-path (follow-up:
+            # docs/issues/open/titan-fn-path-never-persists-dots_2026-07-02.md), so save_dir is
+            # not created here — only the eager engine below writes to it.
+            if self.ghost_cfg.save_interval > 0:
+                logger.warning(
+                    "Ghost fn-path (decoupled_fn=true): dot-product score PERSISTENCE IS NOT "
+                    "WIRED in the torchtitan integration — scores are computed each step but "
+                    "NOT saved (ghost.save_interval=%d and ghost.save_dir=%s are ignored). "
+                    "Set GHOST_DUMP_DOTPROD=<dir> for debug dumps, or run with "
+                    "--ghost.no-decoupled_fn to use the eager engine, which persists to "
+                    "save_dir.",
+                    self.ghost_cfg.save_interval,
+                    save_dir,
+                )
             self.fn_manager = GhostDecoupledManager(model, val_batch_size=self.val_batch_size)
             self.fn_manager.attach()
             self.engine = None
             self.dot_products = []
         else:
+            os.makedirs(save_dir, exist_ok=True)
             self.fn_manager = None
             self.engine = GradDotProdEngine(
                 module=model,

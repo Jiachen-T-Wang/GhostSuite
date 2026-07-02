@@ -144,7 +144,13 @@ class TrainingConfig:
             for name in ("flan_v2", "cot", "dolly", "oasst1")
         ]
 
-        run_name = (f"{self.method}_{self.subject}_bs{self.batch_size}"
+        # Encode the selection mode for GREATS so the documented two-arm comparison
+        # (first_order vs second_order at identical bs/frac/lr/seed) writes to distinct
+        # result dirs instead of clobbering each other. Regular has no selection mode and
+        # keeps its unchanged (back-compatible) name.
+        method_tag = (f"{self.method}-{self.selection}" if self.method == "GREATS"
+                      else self.method)
+        run_name = (f"{method_tag}_{self.subject}_bs{self.batch_size}"
                     f"_frac{self.fracinv}_lr{self.learning_rate}_seed{self.seed}")
         self.result_dir = os.path.join(RESULTS_DIR, run_name)
         os.makedirs(self.result_dir, exist_ok=True)
