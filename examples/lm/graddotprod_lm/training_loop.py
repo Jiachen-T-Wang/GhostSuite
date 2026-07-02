@@ -183,8 +183,11 @@ class Trainer:
         
         print(f"step {self.iter_num}: train loss {train_loss:.4f}, "
               f"val loss {val_loss:.4f}, test loss {test_loss:.4f}")
-        
-        save_training_results(result_file, train_loss, val_loss, test_loss, self.iter_num)
+
+        # Only the master process writes the shared result file (DDP ranks would
+        # otherwise race on the same path).
+        if self.ddp_info['master_process']:
+            save_training_results(result_file, train_loss, val_loss, test_loss, self.iter_num)
         self._log_metrics({
             "eval/train_loss": float(train_loss),
             "eval/val_loss": float(val_loss),

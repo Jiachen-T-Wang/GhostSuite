@@ -16,9 +16,20 @@
 #SBATCH --gres=gpu:1                 # Request 1 GPU
 #SBATCH --partition=ailab
 
-# Resolve this script's directory so output is anchored to the example dir
-# (not the caller's CWD), mirroring the Python default in config_file.py.
+# Resolve this script's directory so main.py and the default output dir are
+# anchored to the example dir (not the caller's CWD), mirroring config_file.py.
+# Under sbatch, BASH_SOURCE points at Slurm's spooled copy of this script, so
+# fall back to locating the repo from the submission directory.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ ! -f "$SCRIPT_DIR/main.py" ]]; then
+    REPO="$(git -C "${SLURM_SUBMIT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [[ -n "$REPO" && -f "$REPO/examples/lm/gradproj_lm/main.py" ]]; then
+        SCRIPT_DIR="$REPO/examples/lm/gradproj_lm"
+    else
+        echo "ERROR: could not locate gradproj_lm/main.py (script dir: $SCRIPT_DIR)"
+        exit 1
+    fi
+fi
 
 # Default values
 ARCHITECTURE="GPT2-Small"
@@ -200,7 +211,7 @@ echo "Verbose: $VERBOSE"
 echo "==================================="
 
 # Build Python command with parsed arguments
-PYTHON_CMD="python main.py"
+PYTHON_CMD="python \"$SCRIPT_DIR/main.py\""
 PYTHON_CMD="$PYTHON_CMD --architecture $ARCHITECTURE"
 PYTHON_CMD="$PYTHON_CMD --batch_size $BATCH_SIZE"
 PYTHON_CMD="$PYTHON_CMD --proj_layers \"$PROJ_LAYERS\""

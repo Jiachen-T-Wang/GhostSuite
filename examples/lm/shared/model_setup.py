@@ -2,10 +2,17 @@
 
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
-from transformers import LlavaForConditionalGeneration
 
 from .gpt2 import GPTConfig
 from .gpt2 import GPT
+
+
+DTYPE_MAP = {
+    'float32': torch.float32,
+    'float16': torch.float16,
+    'bfloat16': torch.bfloat16,
+}
+
 
 def setup_model_and_optimizer(config, device, ddp_info):
     """Create model, optimizer, and scaler based on the configuration."""
@@ -14,9 +21,20 @@ def setup_model_and_optimizer(config, device, ddp_info):
     # Create model
     print(f"[INFO] Creating {config.architecture} model...")
     model = create_model(config)
-    model.to(device)
-    print(f"[INFO] Model created and moved to {device}.")
-    
+
+    # Cast parameters to the requested --model_dtype (mirrors examples/lm/gradproj_lm).
+    # bfloat16 falls back to float32 on CUDA devices without bf16 support;
+    # config.model_dtype is updated so downstream consumers (autocast selection,
+    # logging) see the actual parameter dtype.
+    model_dtype = DTYPE_MAP[config.model_dtype]
+    if (model_dtype == torch.bfloat16 and 'cuda' in str(device)
+            and not (torch.cuda.is_available() and torch.cuda.is_bf16_supported())):
+        print("[WARN] bfloat16 not supported on this CUDA device; using float32 model weights.")
+        model_dtype = torch.float32
+        config.model_dtype = 'float32'
+    model.to(device=device, dtype=model_dtype)
+    print(f"[INFO] Model created and moved to {device} ({model_dtype}).")
+
     # Setup optimizer and scaler
     print("[INFO] Setting up optimizer and scaler...")
     optimizer, scaler = setup_adamw_optimizer_and_scaler(model, config)
@@ -92,13 +110,11 @@ def setup_adamw_optimizer_and_scaler(model, config):
 def create_model(config):
     """Create and initialize the model based on the architecture."""
 
-    if config.args.architecture.startswith("LLaVA"):
-        model = create_llava_model(config)
-    elif config.args.architecture.startswith("GPT"):
+    if config.args.architecture.startswith("GPT"):
         model = setup_model_GPT(config)
     else:
         raise ValueError(f"Unknown architecture: {config.architecture}")
-    
+
     return model
 
 
@@ -163,55 +179,4 @@ def create_GPT_model(config):
     model = GPT(gptconf)
 
     return model
-
-
-def create_llava_model(config):
-    """Create and initialize the LLaVA model."""
-
-    model_id_map = {
-        "LLaVA-7B": "llava-hf/llava-1.5-7b-hf",
-        "LLaVA-13B": "llava-hf/llava-1.5-13b-hf",
-    }
-
-    if config.args.architecture in model_id_map.keys():
-        repo_id = model_id_map[config.args.architecture]
-    else:
-        raise ValueError(f"Unknown LLaVA architecture: {config.args.architecture}")
-
-    base_model = LlavaForConditionalGeneration.from_pretrained(
-        repo_id,
-        torch_dtype=config.model_dtype,
-    )
-
-    model = LLaVAModelWrapper(base_model)
-
-    # Freeze the vision tower parameters
-    for p in model.base_model.model.vision_tower.parameters():
-        p.requires_grad = False        # CLIP ViT is frozen
-
-    print(f"[INFO] LLaVA model {config.args.architecture} created with vision tower frozen.")
-
-    return model
-
-
-from torch import nn
-class LLaVAModelWrapper(nn.Module):
-    def __init__(self, base_model):
-        super().__init__()
-        self.base_model = base_model
-    
-    def forward(self, input_ids, labels=None, **kwargs):
-        # If input_ids is a dict, unpack it
-        if isinstance(input_ids, dict):
-            return self.base_model(**input_ids, labels=labels)
-        else:
-            # Regular model call for non-LLaVA models
-            return self.base_model(input_ids=input_ids, labels=labels, **kwargs)
-    
-    def __getattr__(self, name):
-        # Delegate all other attributes to the base model
-        if name == 'base_model':
-            return super().__getattr__(name)
-        return getattr(self.base_model, name)
-
 

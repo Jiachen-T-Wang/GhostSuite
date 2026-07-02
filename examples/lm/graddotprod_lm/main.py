@@ -40,17 +40,19 @@ def main():
     
     # Set random seed
     set_seed(config.seed + ddp_info['seed_offset'])
-    
-    # Setup PyTorch backend
-    ctx = setup_torch_backend(config)
-    
-    # Print training information
-    print_training_info(config)
-    
+
     # Setup model and optimizer
     model, optimizer, scaler = setup_model_and_optimizer(
         config, ddp_info['device'], ddp_info
     )
+
+    # Setup PyTorch backend. Passing the model keys the autocast decision on the
+    # ACTUAL parameter dtype (the model may have fallen back from bf16), not the
+    # claimed --model_dtype/--train_dtype pair.
+    ctx = setup_torch_backend(config, model=model)
+
+    # Print training information
+    print_training_info(config)
 
     # The decoupled in-graph + torch.compile fast path is the default for GradDotProd, but it only
     # supports GPT-2 token models on a single GPU with bf16/fp32 (gradient accumulation IS supported:
@@ -65,6 +67,8 @@ def main():
             reason = "float16 GradScaler (use --train_dtype bfloat16 or float32)"
         elif not str(config.architecture).startswith('GPT2'):
             reason = f"architecture {config.architecture} (the fast path supports GPT-2 token models)"
+        elif config.log_grad_norms:
+            reason = "--log_grad_norms (per-sample gradient norms are computed by the eager engine only)"
         if reason is not None:
             print(f"[INFO] Optimized decoupled+compile path unavailable ({reason}); using the eager "
                   f"engine. Pass --eager to select it explicitly.")

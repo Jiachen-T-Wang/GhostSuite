@@ -57,7 +57,12 @@ def parse_arguments():
                         help="Validation batch size m used as the scoring target.")
     parser.add_argument("--warmup_step", type=int, default=2000)
     parser.add_argument("--learning_rate", type=float, default=6e-4)
-    parser.add_argument("--optimizer", type=str, default="adamw")
+    parser.add_argument("--min_lr", type=float, default=None,
+                        help="Floor of the cosine LR decay (default: 0.1 * learning_rate)")
+    parser.add_argument("--lr_decay_iters", type=int, default=None,
+                        help="Cosine LR decay horizon in steps (default: --max_steps)")
+    parser.add_argument("--optimizer", type=str, default="adamw", choices=["adamw"],
+                        help="Optimizer (only AdamW is implemented)")
     parser.add_argument("--max_steps", type=int, default=20000)
     parser.add_argument("--seed", type=int, default=42)
 
@@ -146,7 +151,7 @@ class TrainingConfig:
         self.batch_size = args.batch_size            # k: trained subset size
         self.val_batch_size = args.val_batch_size    # m: scoring target size
         self.learning_rate = args.learning_rate
-        self.min_lr = self.learning_rate * 0.1
+        self.min_lr = args.min_lr if args.min_lr is not None else self.learning_rate * 0.1
         self.max_steps = args.max_steps
         self.seed = args.seed
 
@@ -187,7 +192,8 @@ class TrainingConfig:
         self.beta2 = 0.95
         self.grad_clip = 1.0
         self.warmup_iters = args.warmup_step
-        self.lr_decay_iters = 10000
+        # Cosine decay horizon; defaults to the full run (nanoGPT convention).
+        self.lr_decay_iters = args.lr_decay_iters if args.lr_decay_iters is not None else args.max_steps
         self.decay_lr = True
 
         # System.
@@ -237,13 +243,14 @@ class TrainingConfig:
         self.wandb_dir = args.wandb_dir or self.result_dir
 
     def setup_result_directories(self):
+        # exist_ok: DDP ranks race on the same paths.
         if not os.path.exists(self.result_folder):
-            os.makedirs(self.result_folder)
             print(f"Results folder '{self.result_folder}' was created.")
+        os.makedirs(self.result_folder, exist_ok=True)
         self.result_dir = build_result_dir(self.result_folder, self.method, self.args)
         if not os.path.exists(self.result_dir):
-            os.makedirs(self.result_dir)
             print(f"Results directory '{self.result_dir}' was created.")
+        os.makedirs(self.result_dir, exist_ok=True)
 
     def get_result_file_path(self):
         return os.path.join(self.result_dir + "_results.json")

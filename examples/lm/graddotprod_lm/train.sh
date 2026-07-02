@@ -23,7 +23,19 @@ else
     echo "Skipping proxy/default module load (not on compute node)"
 fi
 
-
+# Resolve the example directory so main.py is found regardless of the caller's CWD.
+# Under sbatch, BASH_SOURCE points at Slurm's spooled copy of this script, so fall
+# back to locating the repo from the submission directory (cf. experiments/sel50/*.sbatch).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [[ ! -f "$SCRIPT_DIR/main.py" ]]; then
+    REPO="$(git -C "${SLURM_SUBMIT_DIR:-$PWD}" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [[ -n "$REPO" && -f "$REPO/examples/lm/graddotprod_lm/main.py" ]]; then
+        SCRIPT_DIR="$REPO/examples/lm/graddotprod_lm"
+    else
+        echo "ERROR: could not locate graddotprod_lm/main.py (script dir: $SCRIPT_DIR)"
+        exit 1
+    fi
+fi
 
 # Default values
 METHOD="GradDotProd"
@@ -138,6 +150,10 @@ while [[ $# -gt 0 ]]; do
             DYNAMIC_VAL_BATCH=true
             shift 1
             ;;
+        --no_dynamic_val_batch)
+            DYNAMIC_VAL_BATCH=false
+            shift 1
+            ;;
         --log_grad_norms)
             LOG_GRAD_NORMS=true
             shift 1
@@ -185,26 +201,28 @@ while [[ $# -gt 0 ]]; do
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo "Options:"
-            echo "  --method METHOD               Training method (default: Regular)"
-            echo "  --architecture ARCH           Model architecture (default: GPT2-Small)"
-            echo "  --batch_size SIZE             Batch size (default: 16)"
-            echo "  --val_batch_size SIZE         Validation batch size (default: 1)"
-            echo "  --warmup_step STEPS           Warmup steps (default: 2000)"
-            echo "  --learning_rate RATE          Learning rate (default: 3e-4)"
-            echo "  --optimizer OPT               Optimizer (default: adamw)"
-            echo "  --max_steps STEPS             Maximum training steps (default: 50000)"
-            echo "  --seed SEED                   Random seed (default: 42)"
-            echo "  --train_set DATASET           Training dataset (default: pile)"
-            echo "  --val_set DATASET             Validation dataset (default: pile)"
-            echo "  --eval_only                   Evaluation only mode (default: false)"
-            echo "  --eval_interval INTERVAL      Evaluation interval (default: 10)"
-            echo "  --eval_iter ITER              Evaluation iterations (default: 20)"
-            echo "  --eval_bs SIZE                Evaluation batch size (default: 16)"
-            echo "  --dot_prod_save_interval INT  Dot product save interval (default: 10)"
-            echo "  --model_dtype DTYPE           Model data type (default: bfloat16)"
-            echo "  --train_dtype DTYPE           Training data type (default: bfloat16)"
-            echo "  --dynamic_val_batch           Refresh validation batch every training step for GradDotProd"
-            echo "  --log_grad_norms              Record per-sample train grad norm and aggregated val grad norm"
+            echo "  --method METHOD               Training method (default: $METHOD)"
+            echo "  --architecture ARCH           Model architecture (default: $ARCHITECTURE)"
+            echo "  --batch_size SIZE             Batch size (default: $BATCH_SIZE)"
+            echo "  --val_batch_size SIZE         Validation batch size (default: $VAL_BATCH_SIZE)"
+            echo "  --warmup_step STEPS           Warmup steps (default: $WARMUP_STEP)"
+            echo "  --learning_rate RATE          Learning rate (default: $LEARNING_RATE)"
+            echo "  --optimizer OPT               Optimizer (default: $OPTIMIZER; only adamw is implemented)"
+            echo "  --max_steps STEPS             Maximum training steps (default: $MAX_STEPS)"
+            echo "  --seed SEED                   Random seed (default: $SEED)"
+            echo "  --train_set DATASET           Training dataset (default: $TRAIN_SET)"
+            echo "  --val_set DATASET             Validation dataset (default: $VAL_SET)"
+            echo "  --eval_only                   Evaluation only mode (default: $EVAL_ONLY)"
+            echo "  --eval_interval INTERVAL      Evaluation interval (default: $EVAL_INTERVAL)"
+            echo "  --eval_iter ITER              Evaluation iterations (default: $EVAL_ITER)"
+            echo "  --eval_bs SIZE                Evaluation batch size (default: $EVAL_BS)"
+            echo "  --dot_prod_save_interval INT  Dot product save interval (default: $DOT_PROD_SAVE_INTERVAL)"
+            echo "  --model_dtype DTYPE           Model data type (default: $MODEL_DTYPE)"
+            echo "  --train_dtype DTYPE           Training data type (default: $TRAIN_DTYPE)"
+            echo "  --dynamic_val_batch           Refresh validation batch every training step for GradDotProd (default: $DYNAMIC_VAL_BATCH)"
+            echo "  --no_dynamic_val_batch        Keep the same validation batch for the whole run"
+            echo "  --log_grad_norms              Record per-sample train grad norm and aggregated val grad norm (default: $LOG_GRAD_NORMS)"
+            echo "  --wandb                       Enable Weights & Biases logging (default: $USE_WANDB)"
             echo "  --replay_run_dir PATH         Use stored GradDotProd logs as training data (filtered replay)"
             echo "  --replay_filter_metric NAME   dot_product or cosine (default: dot_product)"
             echo "  --replay_filter_threshold X   Drop samples below threshold (default: 0.0)"
@@ -266,7 +284,7 @@ echo "WandB run name: $WANDB_RUN_NAME"
 echo "WandB mode: $WANDB_MODE"
 
 # Build the command with all parameters
-CMD="python main.py --method \"$METHOD\" --architecture \"$ARCHITECTURE\" --batch_size \"$BATCH_SIZE\" --val_batch_size \"$VAL_BATCH_SIZE\" --warmup_step \"$WARMUP_STEP\" --learning_rate \"$LEARNING_RATE\" --optimizer \"$OPTIMIZER\" --max_steps \"$MAX_STEPS\" --seed \"$SEED\" --train_set \"$TRAIN_SET\" --val_set \"$VAL_SET\" --eval_interval \"$EVAL_INTERVAL\" --eval_iter \"$EVAL_ITER\" --eval_bs \"$EVAL_BS\" --dot_prod_save_interval \"$DOT_PROD_SAVE_INTERVAL\" --model_dtype \"$MODEL_DTYPE\" --train_dtype \"$TRAIN_DTYPE\""
+CMD="python \"$SCRIPT_DIR/main.py\" --method \"$METHOD\" --architecture \"$ARCHITECTURE\" --batch_size \"$BATCH_SIZE\" --val_batch_size \"$VAL_BATCH_SIZE\" --warmup_step \"$WARMUP_STEP\" --learning_rate \"$LEARNING_RATE\" --optimizer \"$OPTIMIZER\" --max_steps \"$MAX_STEPS\" --seed \"$SEED\" --train_set \"$TRAIN_SET\" --val_set \"$VAL_SET\" --eval_interval \"$EVAL_INTERVAL\" --eval_iter \"$EVAL_ITER\" --eval_bs \"$EVAL_BS\" --dot_prod_save_interval \"$DOT_PROD_SAVE_INTERVAL\" --model_dtype \"$MODEL_DTYPE\" --train_dtype \"$TRAIN_DTYPE\""
 # Weights & Biases is opt-in (requires a wandb login); enable with --wandb
 if [ "$USE_WANDB" = true ]; then
     CMD="$CMD --wandb --wandb_project \"$WANDB_PROJECT\" --wandb_run_name \"$WANDB_RUN_NAME\" --wandb_mode \"$WANDB_MODE\""

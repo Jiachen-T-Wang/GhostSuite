@@ -26,7 +26,7 @@ def parse_arguments():
     
     # Architecture parameters
     parser.add_argument('--architecture', type=str, default='GPT2-Small',
-                       choices=['GPT2-Tiny', 'GPT2-Small', 'GPT2-Medium', 'GPT2-Large', 'LLaVA-7B', 'LLaVA-13B'])
+                       choices=['GPT2-Tiny', 'GPT2-Small', 'GPT2-Medium', 'GPT2-Large'])
     parser.add_argument('--no_tie_weights', dest='tie_weights', action='store_false',
                         help='Untie the token-embedding and LM-head weight. Default: tied (standard '
                              'GPT-2). Tied weights are handled by all ghost paths (eager, '
@@ -69,7 +69,12 @@ def parse_arguments():
     parser.add_argument('--val_batch_size', type=int, default=1)
     parser.add_argument('--warmup_step', type=int, default=2000)
     parser.add_argument('--learning_rate', type=float, default=3e-4)
-    parser.add_argument('--optimizer', type=str, default='adamw')
+    parser.add_argument('--min_lr', type=float, default=None,
+                        help='Floor of the cosine LR decay (default: 0.1 * learning_rate)')
+    parser.add_argument('--lr_decay_iters', type=int, default=None,
+                        help='Cosine LR decay horizon in steps (default: --max_steps)')
+    parser.add_argument('--optimizer', type=str, default='adamw', choices=['adamw'],
+                        help='Optimizer (only AdamW is implemented)')
     parser.add_argument('--max_steps', type=int, default=50000)
     parser.add_argument('--seed', type=int, default=42)
     
@@ -173,10 +178,10 @@ class TrainingConfig:
         self.batch_size = args.batch_size
         self.val_batch_size = args.val_batch_size
         self.learning_rate = args.learning_rate
-        self.min_lr = self.learning_rate * 0.1
+        self.min_lr = args.min_lr if args.min_lr is not None else self.learning_rate * 0.1
         self.max_steps = args.max_steps
         self.seed = args.seed
-        
+
         # Optimizer settings (currently just assume using AdamW)
         self.optimizer = args.optimizer
         self.weight_decay = 1e-1
@@ -184,7 +189,8 @@ class TrainingConfig:
         self.beta2 = 0.95
         self.grad_clip = 1.0
         self.warmup_iters = args.warmup_step
-        self.lr_decay_iters = 10000
+        # Cosine decay horizon; defaults to the full run (nanoGPT convention).
+        self.lr_decay_iters = args.lr_decay_iters if args.lr_decay_iters is not None else args.max_steps
         self.decay_lr = True
         
         # System settings
@@ -193,7 +199,6 @@ class TrainingConfig:
         self.backend = 'nccl'
 
         # Precision settings
-        # To train LLAVA models, we use bfloat16 for both model and training
         self.model_dtype = args.model_dtype
         self.train_dtype = args.train_dtype
 
@@ -253,17 +258,17 @@ class TrainingConfig:
     
     def setup_result_directories(self):
 
-        # Create result folder if it doesn't exist
+        # Create result folder if it doesn't exist (exist_ok: DDP ranks race here)
         if not os.path.exists(self.result_folder):
-            os.makedirs(self.result_folder)
             print(f"Results folder '{self.result_folder}' was created.")
+        os.makedirs(self.result_folder, exist_ok=True)
 
         # Create specific result directory for this run
         self.result_dir = build_result_dir(self.result_folder, self.method, self.args)
-        
+
         if not os.path.exists(self.result_dir):
-            os.makedirs(self.result_dir)
             print(f"Results directory for this specific run '{self.result_dir}' was created.")
+        os.makedirs(self.result_dir, exist_ok=True)
     
     def get_result_file_path(self):
         """Get the result file path for storing training statistics."""

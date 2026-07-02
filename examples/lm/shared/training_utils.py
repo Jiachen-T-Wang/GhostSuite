@@ -19,16 +19,6 @@ from .dataloader import (
     get_batch_from_dataset,
 )
 
-# Note: llava_dataloader would need to be moved to shared/ or handled separately
-# For now, we'll comment it out as it's not in shared/
-# from .llava_dataloader import (
-#     load_llava_dataset,
-#     get_llava_batch
-# )
-
-
-LLAVA_LIST = ["conversation_58k", "complex_reasoning_77k", "detail_23k", "llava_instruct_80k", "llava_instruct_150k"]
-
 
 def load_dataset_main(train_set, val_set):
     """Load dataset based on the specified training set."""
@@ -36,19 +26,7 @@ def load_dataset_main(train_set, val_set):
 
     print(f"[INFO] Loading {train_set} dataset ...")
 
-    if train_set in LLAVA_LIST:
-        # Dynamically import llava_dataloader only when needed
-        import sys
-        import os
-        sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-        from llava_dataloader import load_llava_dataset
-        
-        dataset = load_llava_dataset(
-            dataset_name=train_set,
-            tokenizer_name="llava-hf/llava-1.5-7b-hf", 
-            max_length=1024,
-        )
-    elif train_set == 'pile':
+    if train_set == 'pile':
         dataset = load_all_data()
     elif train_set == 'synthetic':
         from .dataloader import make_synthetic_dataset
@@ -65,8 +43,13 @@ def load_dataset_main(train_set, val_set):
 def setup_data_functions(dataset, config, device, ddp_info=None):
     """Setup data loading functions for different training sets with split-specific RNGs."""
 
+    # Under DDP each rank draws DISTINCT train batches (rank 0 keeps the exact
+    # single-GPU stream); val/test/eval generators stay rank-identical so every
+    # rank scores and evaluates against the same batches.
+    ddp_rank = ddp_info.get('ddp_rank', 0) if ddp_info else 0
+
     train_gen = torch.Generator()
-    train_gen.manual_seed(config.seed)
+    train_gen.manual_seed(config.seed + ddp_rank * 1000)
 
     val_gen = torch.Generator()
     val_gen.manual_seed(config.seed + 1)
@@ -95,7 +78,6 @@ def setup_data_functions(dataset, config, device, ddp_info=None):
     replay_loader = None
     if getattr(config, "replay_run_dir", None):
         from .replay_loader import ReplayDataLoader
-        rank = ddp_info.get('ddp_rank', 0) if ddp_info else 0
         world_size = ddp_info.get('ddp_world_size', 1) if ddp_info else 1
         replay_loader = ReplayDataLoader(
             run_dir=config.replay_run_dir,
@@ -106,12 +88,14 @@ def setup_data_functions(dataset, config, device, ddp_info=None):
             drop_last=config.replay_drop_last,
             shuffle=getattr(config, "replay_shuffle", False),
             shuffle_seed=getattr(config, "replay_shuffle_seed", None),
-            rank=rank,
+            rank=ddp_rank,
             world_size=world_size,
             device=device,
         )
 
     if config.args.train_set in ('pile', 'synthetic'):
+        device_type = 'cuda' if 'cuda' in str(device) else 'cpu'
+
         def get_batch(split, batch_size, return_idx=False, gen=None):
             if split == 'train' and replay_loader is not None:
                 X, Y, idx = replay_loader.next_batch(batch_size=batch_size, return_idx=return_idx)
@@ -124,6 +108,7 @@ def setup_data_functions(dataset, config, device, ddp_info=None):
             return get_batch_from_dataset(
                 split_for_dataset, batch_size, dataset,
                 block_size=getattr(config, 'block_size', 1024),
+                device=device, device_type=device_type,
                 return_idx=return_idx, generator=gen
             )
 
@@ -140,70 +125,14 @@ def setup_data_functions(dataset, config, device, ddp_info=None):
                 return get_batch_from_dataset(
                     'val', batch_size, dataset,
                     block_size=getattr(config, 'block_size', 1024),
+                    device=device, device_type=device_type,
                     return_idx=return_idx, generator=val_gen, index_pool=eval_val_pool
                 )
             return get_batch('val', batch_size, return_idx=return_idx)
-        
-    elif config.args.train_set in LLAVA_LIST:
-        # Dynamically import llava_dataloader only when needed
-        import sys
-        import os
-        sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-        from llava_dataloader import get_llava_batch
 
-        def get_batch(split, batch_size, return_idx=False, gen=None):
-
-            if split == 'train' and replay_loader is not None:
-                X, Y, idx = replay_loader.next_batch(batch_size=batch_size, return_idx=return_idx)
-                return (X, Y, idx) if return_idx else (X, Y)
-
-            split_for_dataset = 'train' if split == 'train_eval' else split
-            gen = gen if gen is not None else generators.get(split_for_dataset, train_gen)
-
-            # Get the batch from llava dataloader
-            batch_data = get_llava_batch(
-                split_for_dataset, batch_size, dataset, device=device, generator=gen
-            )
-            
-            # Unpack based on what was returned (3 or 4 items)
-            if len(batch_data) == 3:
-                input_ids, pixel_values, labels = batch_data
-                attention_mask = None
-            else:
-                input_ids, pixel_values, labels, attention_mask = batch_data
-            
-            # Create a dict for X that contains all inputs needed by the model
-            X = {
-                'input_ids': input_ids,
-                'pixel_values': pixel_values,
-            }
-            
-            # Add attention_mask if it exists
-            if attention_mask is not None:
-                X['attention_mask'] = attention_mask
-            
-            # For return_idx, we need to track which indices were sampled
-            if return_idx:
-                # Generate the same indices that were used in get_llava_batch
-                if gen is None:
-                    raise ValueError("Generator must be provided for return_idx functionality.")
-                else:
-                    idx = torch.randint(len(dataset[split]), (batch_size,), generator=gen)
-                return X, labels, idx
-            else:
-                return X, labels
-        
-        def get_val_batch(batch_size, return_idx=False):
-            if replay_loader is not None:
-                X_val, Y_val = replay_loader.get_validation_batch(batch_size)
-                if return_idx:
-                    return X_val, Y_val, torch.full((batch_size,), -1, device=device)
-                return X_val, Y_val
-            return get_batch('val', batch_size, return_idx=return_idx)
-        
     else:
         raise ValueError(f"Unsupported training set: {config.args.train_set}")
-    
+
     return get_batch, get_val_batch
 
 
@@ -250,7 +179,13 @@ def setup_distributed():
     }
 
 
-def setup_torch_backend(config):
+def setup_torch_backend(config, model=None):
+    """Set backend flags and build the training autocast context.
+
+    When `model` is given, the autocast decision is keyed on the ACTUAL
+    parameter dtype (setup_model_and_optimizer may have cast the model or
+    fallen back from bf16), not the claimed --model_dtype/--train_dtype pair.
+    """
 
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
@@ -260,25 +195,32 @@ def setup_torch_backend(config):
     else:
         raise ValueError(f"Unsupported device type: {config.device}. Expected 'cuda'")
 
-    if config.model_dtype == config.train_dtype:
-        ctx = nullcontext()  # No autocast needed if model and training dtypes match
+    dtype_map = {
+        'float32': torch.float32,
+        'bfloat16': torch.bfloat16,
+        'float16': torch.float16
+    }
+    train_dtype = dtype_map[config.train_dtype]
+    if model is not None:
+        model_dtype = next(model.parameters()).dtype
     else:
-        # TODO: Better handle dtype conversion
-        ptdtype = {
-            'float32': torch.float32,
-            'bfloat16': torch.bfloat16,
-            'float16': torch.float16
-        }[config.train_dtype]
-        ctx = torch.amp.autocast(device_type=device_type, dtype=ptdtype)
-    
+        model_dtype = dtype_map[config.model_dtype]
+
+    if model_dtype == train_dtype:
+        ctx = nullcontext()  # Parameters already in the training dtype; no autocast needed
+    else:
+        ctx = torch.amp.autocast(device_type=device_type, dtype=train_dtype)
+
     return ctx
 
 
 def get_learning_rate(iteration, config):
     """Get learning rate for current iteration using cosine schedule with warmup."""
     if iteration < config.warmup_iters:
-        return config.learning_rate * iteration / config.warmup_iters
-    
+        # (iteration + 1) so the first optimizer step (iteration 0) is not a
+        # zero-LR no-op (nanoGPT convention); the ratio stays <= 1 within warmup.
+        return config.learning_rate * (iteration + 1) / config.warmup_iters
+
     if iteration > config.lr_decay_iters:
         return config.min_lr
     
