@@ -51,25 +51,37 @@ def stash_tied_contribution(layer, A, B, val_batch_size, log_grad_norms=False,
         raise ValueError("stash_tied_contribution: non-positive train batch size.")
     vocab, embed = weight.shape
 
+    # Memory: slice BEFORE the fp32 cast and stash fresh copies of the train slice
+    # only. Casting the full combined tensor and stashing train-slice views keeps
+    # the whole [total, ...] fp32 base — including the val slice, vocab-sized for a
+    # tied lm_head — pinned from this backward until finalize_tied_param. The val
+    # slice is upcast only transiently to build gval.
     if isinstance(layer, nn.Embedding):
         kind = "embedding"
         A_long = A.long()
         A_tr, A_val = A_long[:train_bs], A_long[train_bs:]
-        Bc = B.to(accum_dtype)
-        B_tr, B_val = Bc[:train_bs], Bc[train_bs:]
+        B_tr = B[:train_bs].to(accum_dtype, copy=True)
+        B_val = B[train_bs:].to(accum_dtype)
+        if layer.padding_idx is not None:
+            # The true embedding backward zeroes the padding_idx row of dL/dW: pad
+            # positions contribute nothing to this use's gradient. Zero their
+            # backprop rows so gval and the finalized per-sample dot/norms match.
+            B_tr = B_tr.masked_fill((A_tr == layer.padding_idx).unsqueeze(-1), 0)
+            B_val = B_val.masked_fill((A_val == layer.padding_idx).unsqueeze(-1), 0)
         gval = torch.zeros((vocab, embed), dtype=accum_dtype, device=B.device)
         gval.index_add_(0, A_val.reshape(-1), B_val.reshape(-1, embed))
         train_factors = (kind, A_tr, B_tr)
     elif isinstance(layer, nn.Linear):
         kind = "linear"
         d_in, d_out = A.size(-1), B.size(-1)
-        Af = A.to(accum_dtype).reshape(-1, d_in)
-        Bf = B.to(accum_dtype).reshape(-1, d_out)
-        seq = Af.size(0) // A.size(0)
-        split = train_bs * seq
-        gval = torch.matmul(Bf[split:].T, Af[split:])           # [d_out, d_in] = [vocab, embed]
-        train_factors = (kind, Af[:split].view(train_bs, seq, d_in),
-                         Bf[:split].view(train_bs, seq, d_out))
+        seq = A[0].numel() // d_in
+        gval = torch.matmul(
+            B[train_bs:].to(accum_dtype).reshape(-1, d_out).T,
+            A[train_bs:].to(accum_dtype).reshape(-1, d_in),
+        )                                                       # [d_out, d_in] = [vocab, embed]
+        train_factors = (kind,
+                         A[:train_bs].to(accum_dtype, copy=True).reshape(train_bs, seq, d_in),
+                         B[:train_bs].to(accum_dtype, copy=True).reshape(train_bs, seq, d_out))
     else:
         raise TypeError(f"Tied weight on unsupported module type {type(layer).__name__}.")
 
@@ -267,9 +279,11 @@ def _compute_linear_dot_product(
         # [train_batch_size*seq_len, d_out] @ [d_out, d_in] = [train_batch_size*seq_len, d_in]
         grad_val_projected = torch.matmul(B_train, grad_val)
 
-        # element-wise product and sum over the d_in dimension
+        # element-wise product, cast to accum_dtype BEFORE the reductions so the
+        # stored score is fp32-accumulated under bf16 compute (matches the
+        # embedding/norm samplers), then sum over the d_in dimension
         # [ train_batch_size*seq_len ]
-        token_scores = torch.sum(A_train * grad_val_projected, dim=1)
+        token_scores = (A_train * grad_val_projected).to(accum_dtype).sum(dim=1)
 
         # [ train_batch_size*seq_len ] -> [ train_batch_size ]
         layer.weight.grad_dot_prod = token_scores.view(train_batch_size, seq_len).sum(dim=1)
@@ -300,7 +314,10 @@ def _compute_linear_dot_product(
         # grad_train: collection of per-sample train gradients [train_batch_size, d_out, d_in]
         grad_train = torch.bmm(B_train_T, A_train_3d)
 
-        layer.weight.grad_dot_prod = torch.matmul(grad_train.view(train_batch_size, -1), grad_val.view(-1))
+        # accum_dtype contraction: keep the stored score fp32 under bf16 compute.
+        layer.weight.grad_dot_prod = torch.matmul(
+            grad_train.view(train_batch_size, -1).to(accum_dtype), grad_val.view(-1).to(accum_dtype)
+        )
         _maybe_store_grad_val(layer.weight, grad_val)
 
         if log_grad_norms:
@@ -398,12 +415,21 @@ def _compute_embedding_dot_product(
     B_train_c = B_train.to(compute_dtype)
     B_val_c = B_val.to(compute_dtype)
 
+    if layer.padding_idx is not None:
+        # The true embedding backward zeroes the padding_idx row of dL/dW: pad
+        # positions contribute nothing to any per-sample or val gradient. Zero
+        # their backprop rows so grad_val, the dot, and the norms match autograd.
+        B_train_c = B_train_c.masked_fill((A_train_long == layer.padding_idx).unsqueeze(-1), 0)
+        B_val_c = B_val_c.masked_fill((A_val_long == layer.padding_idx).unsqueeze(-1), 0)
+
     vocab_size, d_f = layer.weight.shape
-    grad_val = torch.zeros((vocab_size, d_f), dtype=compute_dtype, device=B_val.device)
+    # accum_dtype accumulator: unlike matmul, index_add_ genuinely sums in its
+    # output dtype, and hot token rows receive many summands.
+    grad_val = torch.zeros((vocab_size, d_f), dtype=accum_dtype, device=B_val.device)
     grad_val.index_add_(
         0,
         A_val_long.reshape(-1),                     # indices  [val_batch * seq]
-        B_val_c.reshape(-1, d_f)                    # vectors  [val_batch * seq, d_f]
+        B_val_c.reshape(-1, d_f).to(accum_dtype)    # vectors  [val_batch * seq, d_f]
     )
 
     # Reduce over every dimension except the per-sample batch dim (dim 0). The
@@ -481,6 +507,14 @@ def _compute_layernorm_dot_product(
     accum_dtype: torch.dtype = torch.float32,
 ):
     """Computes the gradient dot-product for an nn.LayerNorm layer."""
+
+    if len(layer.normalized_shape) != 1:
+        raise NotImplementedError(
+            "GradDotProd LayerNorm sampler supports only 1-D normalized_shape "
+            f"(got {tuple(layer.normalized_shape)} for layer "
+            f"'{getattr(layer, 'name', layer.__class__.__name__)}'): the per-sample "
+            "reduction and the stashed grad_val assume a single feature dim."
+        )
 
     A = A.detach()
     B = B.detach()
@@ -641,6 +675,14 @@ def _compute_rmsnorm_dot_product(
     A: [batch, seq, dim] (normalized by RMSNorm); B: [batch, seq, dim] (backpropagated gradients).
     """
 
+    if layer.weight.dim() != 1:
+        raise NotImplementedError(
+            "GradDotProd RMSNorm sampler supports only a 1-D weight "
+            f"(got shape {tuple(layer.weight.shape)} for layer "
+            f"'{getattr(layer, 'name', layer.__class__.__name__)}'): the per-sample "
+            "reduction and the stashed grad_val assume a single feature dim."
+        )
+
     A = A.detach()
     B = B.detach()
 
@@ -659,7 +701,8 @@ def _compute_rmsnorm_dot_product(
     A_train, A_val = torch.split(A, [train_batch_size, val_batch_size], dim=0)
     B_train, B_val = torch.split(B, [train_batch_size, val_batch_size], dim=0)
 
-    eps = getattr(layer, "eps", 1e-5)
+    # nn.RMSNorm defaults eps=None (F.rms_norm then substitutes machine eps).
+    eps = layer.eps if getattr(layer, "eps", None) is not None else torch.finfo(accum_dtype).eps
     rms_train = torch.sqrt((A_train.to(accum_dtype) ** 2).mean(dim=-1, keepdim=True) + eps)
     rms_val = torch.sqrt((A_val.to(accum_dtype) ** 2).mean(dim=-1, keepdim=True) + eps)
 
@@ -700,7 +743,8 @@ def _compute_rmsnorm_train_grad(
     A_train, _ = torch.split(A, [train_batch_size, val_batch_size], dim=0)
     B_train, _ = torch.split(B, [train_batch_size, val_batch_size], dim=0)
 
-    eps = getattr(layer, "eps", 1e-5)
+    # nn.RMSNorm defaults eps=None (F.rms_norm then substitutes machine eps).
+    eps = layer.eps if getattr(layer, "eps", None) is not None else torch.finfo(torch.float32).eps
     rms_train = torch.sqrt((A_train.float() ** 2).mean(dim=-1, keepdim=True) + eps)
     norm_A_train = (A_train.float() / rms_train).to(B_train.dtype)
 
@@ -783,6 +827,8 @@ def _compute_conv1d_dot_product(
         grad_val_proj = torch.einsum('bsp,dp->bsd', B_train_f, grad_val)
         token_scores = torch.einsum('bsd,bsd->bs', A_train_f, grad_val_proj)
         layer.weight.grad_dot_prod = token_scores.sum(dim=1).to(accum_dtype)
+        # ghost grad_val is [d_in, d_out] — already the HF Conv1D weight shape.
+        _maybe_store_grad_val(layer.weight, grad_val)
 
         if log_grad_norms:
             grad_train = torch.einsum('btd,btp->bpd', A_train_f, B_train_f)
@@ -794,6 +840,8 @@ def _compute_conv1d_dot_product(
         grad_train = torch.einsum('b...d, b...p->bpd', A_train_f, B_train_f).detach()
         grad_val = torch.einsum('jtd,jtp->pd', A_val_f, B_val_f).detach()
         layer.weight.grad_dot_prod = torch.einsum('pd,bpd->b', grad_val, grad_train)
+        # non-ghost grad_val is [d_out, d_in]; the HF Conv1D weight is [d_in, d_out].
+        _maybe_store_grad_val(layer.weight, grad_val.T)
         if log_grad_norms:
             weight_train_norm = (grad_train.to(accum_dtype) ** 2).sum(dim=[1, 2])
             weight_val_norm_sq = (grad_val.to(accum_dtype) ** 2).sum()
@@ -821,6 +869,7 @@ def _compute_conv1d_dot_product(
         # grad_bias_val shape: [features]
         # grad_bias_train shape: [batch, features]
         layer.bias.grad_dot_prod = torch.einsum('p,bp->b', grad_bias_val, grad_bias_train)
+        _maybe_store_grad_val(layer.bias, grad_bias_val)
 
         if log_grad_norms:
             layer.bias.grad_train_norm = (grad_bias_train.to(accum_dtype) ** 2).sum(dim=1)
@@ -938,6 +987,8 @@ def _compute_conv2d_dot_product(
         grad_val = torch.einsum('jik,jpk->pi', A_val_u_f, B_val_r_f)
         grad_val_proj = torch.einsum('bpk,pi->bik', B_train_r_f, grad_val)
         layer.weight.grad_dot_prod = torch.einsum('bik,bik->b', A_train_u_f, grad_val_proj).to(accum_dtype)
+        # grad_val is [C_out, C_in*kh*kw] in unfold layout; view as the 4-D weight.
+        _maybe_store_grad_val(layer.weight, grad_val.view_as(layer.weight))
         if log_grad_norms:
             grad_train = torch.einsum('bik,bpk->bpi', A_train_u_f, B_train_r_f)
             weight_train_norm = (grad_train.to(accum_dtype) ** 2).sum(dim=[1, 2])
@@ -950,6 +1001,8 @@ def _compute_conv2d_dot_product(
         grad_train = torch.einsum('bik,bpk->bpi', A_train_u_f, B_train_r_f)
         grad_val = torch.einsum('jik,jpk->pi', A_val_u_f, B_val_r_f)
         layer.weight.grad_dot_prod = torch.einsum('pi,bpi->b', grad_val, grad_train)
+        # grad_val is [C_out, C_in*kh*kw] in unfold layout; view as the 4-D weight.
+        _maybe_store_grad_val(layer.weight, grad_val.view_as(layer.weight))
         if log_grad_norms:
             weight_train_norm = (grad_train.to(accum_dtype) ** 2).sum(dim=[1, 2])
             weight_val_norm_sq = (grad_val.to(accum_dtype) ** 2).sum()
@@ -958,6 +1011,7 @@ def _compute_conv2d_dot_product(
         grad_bias_val = B_val_r.to(accum_dtype).sum(dim=[0, 2])
         grad_bias_train = B_train_r.to(accum_dtype).sum(dim=2)
         layer.bias.grad_dot_prod = torch.einsum('p,bp->b', grad_bias_val, grad_bias_train)
+        _maybe_store_grad_val(layer.bias, grad_bias_val)
         if log_grad_norms:
             layer.bias.grad_train_norm = (grad_bias_train.to(accum_dtype) ** 2).sum(dim=1)
             layer.bias.grad_val_norm_sq = (grad_bias_val.to(accum_dtype) ** 2).sum()

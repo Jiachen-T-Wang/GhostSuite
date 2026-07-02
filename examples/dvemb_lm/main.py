@@ -64,11 +64,6 @@ def _build_model(config, device):
     if model_dtype != torch.float32:
         model = model.to(model_dtype)
     model.config.use_cache = False
-    try:
-        from ghostEngines import transformers_support
-        transformers_support.forward_swapper(model)
-    except ImportError:
-        pass
     return model
 
 

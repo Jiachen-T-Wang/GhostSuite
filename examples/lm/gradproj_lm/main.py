@@ -79,18 +79,7 @@ def main():
         model = model.to(model_dtype)
     
     model.eval()  # Use eval mode to disable dropout
-    
-    # Disable caching for gradient computation
-    model.config.use_cache = False
-    
-    # Apply transformers support if available
-    try:
-        from ghostEngines import transformers_support
-        transformers_support.forward_swapper(model)
-        print("Applied transformers forward swapper")
-    except ImportError:
-        print("Warning: transformers_support not available, continuing without it")
-    
+
     print(f"Model created with dtype {next(model.parameters()).dtype}")
 
     # Load dataset

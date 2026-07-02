@@ -426,6 +426,23 @@ def add_hooks(
     for name, layer in model.named_modules():
         if type(layer) in _supported_layers_dotprod and requires_grad(layer):
 
+            if isinstance(layer, nn.Embedding):
+                # The ghost embedding math assumes the plain embedding backward;
+                # these options rescale or renormalize it and would silently
+                # corrupt grad_val / the per-sample dots (padding_idx IS handled).
+                unsupported = [
+                    opt for opt, is_set in (
+                        ("max_norm", layer.max_norm is not None),
+                        ("scale_grad_by_freq", bool(layer.scale_grad_by_freq)),
+                        ("sparse", bool(layer.sparse)),
+                    ) if is_set
+                ]
+                if unsupported:
+                    raise ValueError(
+                        f"GradDotProd hooks do not support nn.Embedding option(s) "
+                        f"{unsupported} set on layer '{name}'."
+                    )
+
             layer.name = name
             layer._ghost_saved_tensor_mgr = manager
             manager._layers_by_name[name] = layer
@@ -777,7 +794,9 @@ def _compute_rmsnorm_grad_input(
         go_f = go_f * weight.to(compute_dtype)
 
     norm_dims = tuple(range(-len(layer.normalized_shape), 0))
-    inv_rms = torch.rsqrt(x_f.pow(2).mean(dim=norm_dims, keepdim=True) + layer.eps)
+    # nn.RMSNorm defaults eps=None (F.rms_norm then substitutes machine eps).
+    eps = layer.eps if getattr(layer, "eps", None) is not None else torch.finfo(compute_dtype).eps
+    inv_rms = torch.rsqrt(x_f.pow(2).mean(dim=norm_dims, keepdim=True) + eps)
     x_hat = x_f * inv_rms
     go_xhat_mean = (go_f * x_hat).mean(dim=norm_dims, keepdim=True)
     grad_input = inv_rms * (go_f - x_hat * go_xhat_mean)

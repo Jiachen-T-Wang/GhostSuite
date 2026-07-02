@@ -10,12 +10,67 @@ import torch
 from torch import nn
 
 from . import autograd_grad_sample_dotprod
-from . import transformers_support
 from .supported_layers_grad_samplers_dotprod import (
     _supported_layers_dotprod,
     finalize_tied_param,
 )
 
+
+def _add_dummy_bias(embedding: nn.Embedding) -> None:
+    """Ensure the embedding produces gradients without updating its weight."""
+    if hasattr(embedding, "dummy_bias"):
+        return
+
+    embedding.register_parameter(
+        "dummy_bias", nn.Parameter(torch.zeros(1, device=embedding.weight.device))
+    )
+
+    old_forward = embedding.forward
+
+    def new_forward(self, input, *args, **kwargs):
+        output = old_forward(input, *args, **kwargs)
+        bias = self.dummy_bias.to(dtype=output.dtype, device=output.device)
+        return output + bias * 0
+
+    embedding.forward = types.MethodType(new_forward, embedding)
+
+
+def _add_dummy_bias_to_embeddings(module: nn.Module) -> None:
+    """Attach a dummy bias to every ``nn.Embedding`` inside ``module`` (idempotent)."""
+    for submodule in module.modules():
+        if isinstance(submodule, nn.Embedding):
+            _add_dummy_bias(submodule)
+
+
+# One-time flag for the HF-model capture warning below.
+_HF_CAPTURE_WARNED = False
+
+
+def _warn_once_if_hf_model(module: nn.Module) -> None:
+    """Warn once that hook-based capture on HF models has limited validation.
+
+    The forward_swapper shims that used to rewrite GPT-2/OPT/T5 forwards targeted
+    the pre-Cache transformers API and crashed against the pinned
+    transformers>=4.57, so they were removed (see docs/issues/
+    transformers-support-broken-on-pinned-hf_2026-07-02.md).
+    """
+    global _HF_CAPTURE_WARNED
+    if _HF_CAPTURE_WARNED:
+        return
+    try:
+        from transformers import PreTrainedModel
+    except ImportError:
+        return
+    if isinstance(module, PreTrainedModel):
+        _HF_CAPTURE_WARNED = True
+        warnings.warn(
+            "Hook-based per-sample capture on Hugging Face models is only validated "
+            "for Llama-style architectures (see examples/greats/sft). GPT-2/OPT/T5-"
+            "style models with broadcast positional embeddings are untested; verify "
+            "scores against a naive per-sample reference before trusting them.",
+            UserWarning,
+            stacklevel=3,
+        )
 
 
 class GradDotProdEngine:
@@ -48,6 +103,10 @@ class GradDotProdEngine:
 
         self.module = module
         self.val_batch_size = val_batch_size
+        if loss_reduction not in ("mean", "sum"):
+            raise ValueError(
+                f"loss_reduction must be 'mean' or 'sum', got {loss_reduction!r}."
+            )
         self.loss_reduction = loss_reduction
         self.dot_prod_save_path = dot_prod_save_path
         self.log_grad_norms = log_grad_norms
@@ -59,7 +118,7 @@ class GradDotProdEngine:
         self._saved_tensor_mgr = None
 
         if use_dummy_bias:
-            transformers_support.add_dummy_bias_to_embeddings(module)
+            _add_dummy_bias_to_embeddings(module)
 
         self.named_params = list(
             (name, param) for (name, param) in module.named_parameters() if param.requires_grad
@@ -90,8 +149,8 @@ class GradDotProdEngine:
 
             param.requires_grad = param.initially_requires_grad
 
-        # Fix for Hugging Face model incompatibility
-        transformers_support.forward_swapper(module=module)
+        # No forward rewriting for HF models (the old shims are gone); warn once.
+        _warn_once_if_hf_model(module)
 
     def _lock_grad_creation(self):
         """
@@ -191,7 +250,13 @@ class GradDotProdEngine:
                     f"subtract-val: inferred train_bs={train_bs} (total_bs={total_bs}, "
                     f"val_batch_size={self.val_batch_size}) is non-positive."
                 )
-            scale = float(total_bs) / float(train_bs)
+            if self.loss_reduction == "mean":
+                # mean loss: .grad = (1/total)*sum_all g_i, grad_val = (1/total)*sum_val g_i.
+                scale = float(total_bs) / float(train_bs)
+            else:
+                # 'sum' (validated in __init__): .grad - grad_val = sum_train g_i.
+                # Mirrors the masking path in autograd_grad_sample_dotprod.unpack_hook.
+                scale = 1.0 / float(train_bs)
             for name, param in self.module.named_parameters():
                 if not param.initially_requires_grad or "dummy_bias" in name:
                     continue
@@ -350,8 +415,10 @@ class GradDotProdEngine:
                 # Check if tensor is not empty
                 if param.grad_dot_prod.numel() > 0:
                     if total_dot_product_iter is None:
-                        # Initialize with the first dot product tensor found
-                        total_dot_product_iter = param.grad_dot_prod
+                        # fp32 copy: aggregating in-place into the first param's own
+                        # tensor would mutate it, and if that tensor were low-precision
+                        # every later fp32 contribution would be silently downcast.
+                        total_dot_product_iter = param.grad_dot_prod.float().clone()
                     else:
                         # Add subsequent dot product tensors element-wise
                         total_dot_product_iter += param.grad_dot_prod

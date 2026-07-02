@@ -57,11 +57,6 @@ def test_ghost_capture_gpt2(seed=0, device=None):
     model = GPT(cfg).to(device).to(torch.float32)
     model.eval()
     model.config.use_cache = False
-    try:
-        from ghostEngines import transformers_support
-        transformers_support.forward_swapper(model)
-    except ImportError:
-        pass
 
     tmp = tempfile.mkdtemp()
     engine = GradProjLoraEngine(model, proj_layers='mlp,attn', proj_rank_total=32,
