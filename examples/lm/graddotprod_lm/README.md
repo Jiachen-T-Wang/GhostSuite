@@ -90,13 +90,22 @@ cd examples/lm/graddotprod_lm
 
 ## Performance: optimized dot-product paths
 
-**The decoupled in-graph + `torch.compile` fast path is the default** for GradDotProd (~+9% step
-time on GPT-2-Small vs eager). All paths produce identical `dot_prod_log_iter_*.pt` / `valset.pt`
-outputs (the dot-products are numerically equivalent).
+**The decoupled in-graph + `torch.compile` fast path with the separate-val two-pass engine is
+the default** for GradDotProd. Separate-val runs one plain backward on the val batch per step
+(harvesting autograd's `.grad` as the cached per-param val gradient) and scores train-only
+batches against the cache, instead of carrying the val rows through every combined
+forward/backward. Consequences: the training loss/gradients are bit-consistent with regular
+training, the val cost is paid once per step instead of once per microbatch, peak memory drops,
+and the tied `wte`/`lm_head` moves from the eager capture path (fp32 stashes of the vocab-sized
+logits gradient every step) to the compiled in-graph dot. Logged dot-products equal the
+combined-batch ones up to a constant positive rescale (`N·(T_tr+T_v)²/(T_tr·T_v)` over
+per-microbatch train tokens `T_tr`, val tokens `T_v`, grad-accum `N`) — sign, ranking, and
+threshold-0 filtering are unchanged.
 
 | path | how to select | notes |
 |---|---|---|
-| **decoupled in-graph + compile** | *(default)* | keeps each layer's native backward, folds the dot into the `torch.compile`d transformer blocks. **~+9% step time** on GPT-2-Small |
+| **decoupled + compile + separate-val** | *(default)* | native layer backwards, dots folded into the `torch.compile`d blocks, val gradient harvested once per step |
+| **decoupled + compile, combined batch** | `--no_separate_val` | the pre-v0.6 default: val rides every scoring batch (~+9% step time vs eager on GPT-2-Small); restores the old dot scale |
 | **eager** | `--eager` | per-layer saved-tensor hooks; the reference path. Use for incompatible configs (also selected automatically — see below) |
 | **activation checkpointing** | add `--decoupled_mem_budget 0.5` | recompute in backward to cut peak memory (≈−27% on GPT-2-Medium for +29% time); tunable in `(0,1]`. The lever for scaling to GPT-2-Medium/Large |
 
@@ -115,14 +124,16 @@ non-GPT-2 architecture (e.g. LLaVA) — `main.py` prints a notice and falls back
 automatically. Pass `--eager` to select eager explicitly. (`--no_decoupled_compile` keeps the decoupled
 path but skips compile; usually slower than `--eager`, for debugging.)
 
-**Gradient accumulation (`--gradient_accumulation_steps > 1`) is supported** on both the decoupled and
-eager paths. Each microstep draws a distinct train sub-batch of `--batch_size`; the validation batch
-rides in every microstep's combined forward, the per-sample dot-products are collected per microstep,
-and the per-microstep validation gradients are summed for a single subtract-val recovery before the
-optimizer step. The recovered training gradient equals the mean over all `N * batch_size` train samples.
-Note the dot-product scores carry a `1/N^2` loss-rescale factor — consistent within a run (sign /
-ranking / threshold-0 filtering preserved), but not directly comparable in absolute scale across
-different `N`.
+**Gradient accumulation (`--gradient_accumulation_steps > 1`) is supported** on all paths. Each
+microstep draws a distinct train sub-batch of `--batch_size` and the per-sample dot-products are
+collected per microstep. On the separate-val default the val gradient is harvested once per step
+and each train-only microstep projects against it (the training gradient is autograd-native — no
+recovery). On the combined paths (`--no_separate_val` / `--eager`) the validation batch rides in
+every microstep's combined forward and the per-microstep validation gradients are summed for a
+single subtract-val recovery before the optimizer step; either way the applied training gradient
+equals the mean over all `N * batch_size` train samples. Note the dot-product scores carry
+loss-rescale factors (`1/N^2` on the combined paths; `1/(N·T_tr·T_v)`-style on separate-val) —
+consistent within a run, not comparable in absolute scale across different `N` or paths.
 
 **Tied weights:** the token-embedding ↔ LM-head tie (standard GPT-2) is handled by all paths
 (including the gradient cross-terms). `--no_tie_weights` unties if desired.

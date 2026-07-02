@@ -10,10 +10,13 @@ Let `N` = candidate pool size (`--candidate_batch_size`), `k` = trained subset s
 1. **Draw** a candidate pool of `N` train samples and a fresh scoring val batch of `m`
    samples (from the fixed eval window pool by default, so selection targets exactly the
    eval population).
-2. **Scoring pass** — one `GradDotProd` forward/backward over `[candidate ++ val]` yields
-   per-candidate `s_i = <g_i, g_val>` (or cosine with `--eager --select_metric cosine`).
-   No optimizer step. This is the **only** ghost pass; by default it runs the **decoupled
-   in-graph + `torch.compile` fast path**.
+2. **Scoring pass** — per-candidate `s_i = <g_i, g_val>` (or cosine with `--eager
+   --select_metric cosine`). No optimizer step. By default this runs the **decoupled in-graph
+   + `torch.compile` fast path with the separate-val two-pass engine**: one plain backward on
+   the val batch harvests `g_val` per param, then a train-only forward/backward over the
+   candidates projects each in-graph dot against the cache (`--no_separate_val` restores the
+   single combined `[candidate ++ val]` pass and its score scale — scores differ by a constant
+   positive factor, so the selection is identical).
 3. **Select** the top-`k` candidates by `s_i`.
 4. **Update** — a **plain** forward/backward + optimizer step on the selected `k` only (no
    val, no ghost). This is exact: subtract-val over `[selected ++ val]` recovers the mean
@@ -25,8 +28,12 @@ This is first-order selection: there is **no** pairwise train–train Gram matri
 greedy second-order redundancy term. Adding them is future work (see the plan).
 
 ### Engine fast path (default) and flags
-The scoring pass defaults to `--decoupled_fn --decoupled_compile` (the compile-clean in-graph
-path, same as `examples/lm/graddotprod_lm`). Notes:
+The scoring pass defaults to `--decoupled_fn --decoupled_compile --separate_val` (the
+compile-clean in-graph path with the two-pass separate-val engine, same as
+`examples/lm/graddotprod_lm`). Separate-val moves the tied `wte`/`lm_head` off the eager
+capture path — which stashed fp32 copies of the `[candidates, seq, vocab]` logits gradient
+every scoring pass — onto the compiled in-graph dot, and drops the combined-batch activation
+peak. Notes:
 - `--eager` uses the per-layer-hook engine instead. Needed for **`--select_metric cosine`**
   (the fast path has no grad norms yet — future work) and for **large models** (e.g.
   GPT2-Large) where compile's extra activation memory OOMs but eager fits. At the plain-update

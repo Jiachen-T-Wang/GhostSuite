@@ -100,8 +100,16 @@ def online_selection_step(*, manager, model, optimizer, scaler, ctx, forward_fn,
     if manager is None:
         raise ValueError("online_selection_step requires a ghost manager when scores are needed.")
 
-    # --- Scoring pass: one ghost forward/backward over [batch ++ val] per microstep. ---
+    # --- Scoring pass: one ghost forward/backward per microstep — over [batch ++ val] on the
+    # combined path, or train-only on the separate-val path (whose val gradient is harvested
+    # once per step below and cached for the in-graph projections). ---
     manager.begin_step()
+    sep = getattr(manager, "use_separate_val", False)
+    if sep:
+        # One plain backward on the fixed val batch (capture off), harvested into the per-param
+        # gval caches. The val gradient is constant across this step's microbatches (the weights
+        # do not change between them), so it is paid once instead of riding every microbatch.
+        manager.run_separate_val_pass(model, forward_fn, ctx)
     microbatches = []   # (X, Y) per microstep, kept for the subset gather of selection policies
     loss_sum = None
     for micro in range(grad_accum):
@@ -110,8 +118,11 @@ def online_selection_step(*, manager, model, optimizer, scaler, ctx, forward_fn,
         manager.attach_train_batch(Xm, Ym, iter_num, bidx)
         if getattr(manager, "is_fn_path", False):
             # In-graph buffers are per-shape (tensor batches only: the fn-path rejects dict
-            # inputs at init, so ``.shape`` is safe inside this branch).
-            manager.prepare_decoupled_shape(Xm.shape[0] + manager.val_batch_size)
+            # inputs at init, so ``.shape`` is safe inside this branch). separate-val batches
+            # carry no val rows.
+            manager.prepare_decoupled_shape(
+                Xm.shape[0] + (0 if sep else manager.val_batch_size)
+            )
         _set_ddp_sync(model, ddp, micro, grad_accum)
         with manager.saved_tensors_context():
             with ctx:

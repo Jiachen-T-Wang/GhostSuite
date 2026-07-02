@@ -120,6 +120,21 @@ def parse_arguments():
     parser.add_argument("--decoupled_mem_budget", type=float, default=None,
                         help="With --decoupled_compile, Inductor activation-memory budget in (0,1] "
                              "(compile-native activation checkpointing); lower = recompute more.")
+    parser.add_argument("--separate_val", dest="separate_val", action="store_true",
+                        help="Two-pass separate-val engine (decoupled path only; this is the "
+                             "default): each step runs ONE plain backward on the val batch and "
+                             "harvests autograd .grad as the cached per-param val gradient; the "
+                             "scoring pass then runs on the candidate pool WITHOUT appended val "
+                             "rows, projecting its in-graph dots against the cache. The tied "
+                             "wte/lm_head moves from the eager capture path (which stashes fp32 "
+                             "copies of the vocab-sized logits gradient every scoring pass) to "
+                             "the compiled in-graph dot, and peak memory drops. Scores equal the "
+                             "combined-batch scores up to a constant positive rescale "
+                             "((T_cand+T_v)^2/(T_cand*T_v)), so the TopK selection is unchanged.")
+    parser.add_argument("--no_separate_val", dest="separate_val", action="store_false",
+                        help="Restore the combined candidates+val scoring batch (pre-v0.6 "
+                             "behavior and score scale).")
+    parser.set_defaults(separate_val=True)
 
     # WandB.
     parser.add_argument("--wandb", action="store_true")
@@ -170,6 +185,9 @@ class TrainingConfig:
         self.decoupled_compile = args.decoupled_compile
         self.decoupled_compile_toplevel = args.decoupled_compile_toplevel
         self.decoupled_mem_budget = args.decoupled_mem_budget
+        # Two-pass separate-val engine (see --separate_val): a mode of the decoupled path, so it
+        # follows decoupled_fn (--eager turns it off rather than erroring).
+        self.separate_val = bool(getattr(args, "separate_val", True)) and self.decoupled_fn
 
         if self.method == "GREATS" and self.candidate_batch_size < self.batch_size:
             raise ValueError(

@@ -74,6 +74,7 @@ def main():
                   f"engine. Pass --eager to select it explicitly.")
             config.decoupled_fn = False
             config.decoupled_compile = False
+            config.separate_val = False  # a decoupled-path mode; falls back with it
 
     # Load dataset
     dataset = load_dataset_main(args.train_set, args.val_set)

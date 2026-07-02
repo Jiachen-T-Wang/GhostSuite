@@ -46,6 +46,8 @@ def attach_and_compile_decoupled(
     activation_memory_budget=None,
     score_exclude_params=None,
     warmup_shapes=None,
+    separate_val=False,
+    gval_dtype=None,
 ):
     """Attach the decoupled manager, warm up its buffers outside the graph, then compile.
 
@@ -62,13 +64,22 @@ def attach_and_compile_decoupled(
             the compile-native form of activation checkpointing. 1.0 = save everything (default);
             lower = recompute more (less peak memory, more compute). Cuts the in-graph-dot path's
             pinned ``save_for_backward`` activations. Only affects the compiled regions.
+        separate_val: two-pass separate-val mode (see ``GhostDecoupledManager``): batches through
+            the wrapped model are ALL-TRAIN; each step the caller runs a plain backward on the
+            val batch with ``set_enabled(False)`` and calls ``harvest_val_grads()`` before the
+            train microbatches. ``warmup_fn`` / ``warmup_shapes`` must then use TRAIN-ONLY batch
+            sizes. Tied weights need no capture path in this mode, so a tied lm_head in
+            ``extra_regions`` is compiled instead of skipped.
+        gval_dtype: separate-val Linear-weight gval buffer dtype (pass the autocast compute
+            dtype, e.g. torch.bfloat16, so the projection GEMM avoids a per-backward cast).
 
     Returns:
         The attached ``GhostDecoupledManager``. Call ``run_step_dotprod()`` then
         ``recover_train_grads()`` each step, and ``detach()`` at teardown.
     """
     mgr = GhostDecoupledManager(model, val_batch_size,
-                                score_exclude_params=score_exclude_params)
+                                score_exclude_params=score_exclude_params,
+                                separate_val=separate_val, gval_dtype=gval_dtype)
     mgr.attach()
 
     # Eager warmup: allocate the per-layer dot/grad_val buffers before any tracing. compile() must

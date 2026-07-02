@@ -58,6 +58,22 @@ def parse_arguments():
                              '(0,1] (compile-native activation checkpointing): 1.0 saves everything '
                              '(default), lower recomputes more in backward to cut peak memory. '
                              'Matters at GPT-2-Medium/Large scale.')
+    parser.add_argument('--separate_val', dest='separate_val', action='store_true',
+                        help='Two-pass separate-val engine (decoupled path only; this is the '
+                             'default): each step runs ONE plain backward on the val batch and '
+                             'harvests autograd .grad as the cached per-param val gradient; the '
+                             'train microbatches then run WITHOUT appended val rows, projecting '
+                             'their in-graph dots against the cache. Training loss/grads become '
+                             'bit-consistent with regular training, peak memory drops (~half), the '
+                             'tied lm_head moves from the eager capture path to the compiled '
+                             'in-graph dot, and the val cost is paid once per step instead of once '
+                             'per microbatch. Logged dots equal the combined-batch dots up to a '
+                             'constant rescale: N*(T_tr+T_v)^2/(T_tr*T_v) with per-microbatch train '
+                             'tokens T_tr, val tokens T_v, grad-accum N (rankings unchanged).')
+    parser.add_argument('--no_separate_val', dest='separate_val', action='store_false',
+                        help='Restore the combined train+val batch engine (pre-v0.6 behavior and '
+                             'dot scale).')
+    parser.set_defaults(separate_val=True)
 
     # Training parameters
     parser.add_argument('--batch_size', type=int, default=16, help='Training batch size')
@@ -165,6 +181,10 @@ class TrainingConfig:
         self.decoupled_compile = getattr(args, 'decoupled_compile', True)
         self.decoupled_compile_toplevel = getattr(args, 'decoupled_compile_toplevel', False)
         self.decoupled_mem_budget = getattr(args, 'decoupled_mem_budget', None)
+        # Two-pass separate-val engine (see --separate_val): a mode of the decoupled path, so it
+        # follows decoupled_fn — --eager (and the main.py capability gate, which clears
+        # decoupled_fn) turns it off rather than erroring.
+        self.separate_val = bool(getattr(args, 'separate_val', True)) and self.decoupled_fn
 
         # Sequence length (block size). For GPT architectures it is fixed by the
         # model config table; sampled windows must match it (e.g. GPT2-Tiny=64).

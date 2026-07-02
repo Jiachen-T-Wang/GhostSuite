@@ -50,6 +50,10 @@ class GhostEngineManager:
         # grads are recovered via subtract-val before the optimizer step.
         self.decoupled_mgr = None
         self.is_fn_path = False
+        # separate-val mode of the decoupled path: one plain val backward per step (harvested
+        # into per-param gval caches) + train-only scoring batches. Set by
+        # _initialize_decoupled_engine from config.separate_val.
+        self.use_separate_val = False
         self._last_dot = None
         if val_data is not None:
             self.X_val, self.Y_val = val_data
@@ -79,6 +83,11 @@ class GhostEngineManager:
             self._initialize_decoupled_engine()
             return
 
+        if getattr(self.config, "separate_val", False):
+            raise ValueError(
+                "separate_val is a mode of the decoupled fn-path engine; it cannot be combined "
+                "with the eager engine. Drop --eager (or disable separate_val)."
+            )
         print("[INFO] Initializing GradDotProdEngine ...")
         
         # Prepare directory for saving dot products
@@ -133,15 +142,26 @@ class GhostEngineManager:
         train_bs = self.config.batch_size
         val_bs = self.config.val_batch_size
 
-        # GREATS' only ghost pass is scoring over candidate_batch_size + val (the update is a plain
-        # step on the selected subset, taken with capture disabled — no second ghost shape). Prime
-        # that one shape; single-pass callers (no candidate_batch_size) keep the update-size shape.
+        # separate-val: scoring batches are ALL-TRAIN (the val gradient is harvested once per
+        # step from a plain backward on the val batch), so every warmup/buffer shape drops the
+        # +val_bs. The Linear-weight gval buffers are allocated in the autocast compute dtype so
+        # the projection GEMM avoids a per-backward cast.
+        sep = bool(getattr(self.config, "separate_val", False))
+        self.use_separate_val = sep
+        gval_dtype = None
+        if sep and getattr(self.config, "train_dtype", None) == "bfloat16":
+            gval_dtype = torch.bfloat16
+
+        # GREATS' only ghost pass is scoring over candidate_batch_size (+ val when combined; the
+        # update is a plain step on the selected subset, taken with capture disabled — no second
+        # ghost shape). Prime that one shape; single-pass callers (no candidate_batch_size) keep
+        # the update-size shape.
         cand = getattr(self.config, "candidate_batch_size", None)
         if cand is not None:
-            warmup_shapes = [cand + val_bs]
+            warmup_shapes = [cand + (0 if sep else val_bs)]
         else:
             warmup_shapes = None
-        default_total = train_bs + val_bs
+        default_total = train_bs + (0 if sep else val_bs)
 
         xv = self.X_val
         model = self.model
@@ -208,7 +228,7 @@ class GhostEngineManager:
             model, val_batch_size=val_bs, warmup_fn=warmup_fn, compile_regions=regions,
             extra_regions=extra_regions, activation_memory_budget=mem_budget,
             score_exclude_params=getattr(self.config, "score_exclude_params", None),
-            warmup_shapes=warmup_shapes,
+            warmup_shapes=warmup_shapes, separate_val=sep, gval_dtype=gval_dtype,
         )
         self.is_fn_path = True
         self.engine = None
@@ -294,6 +314,28 @@ class GhostEngineManager:
         batch shape per step, e.g. the GREATS scoring (N+m) and update (k+m) passes."""
         if self.is_fn_path and self.decoupled_mgr is not None:
             self.decoupled_mgr.prepare_shape(total_bs)
+
+    def run_separate_val_pass(self, model, forward_fn, ctx):
+        """separate-val: plain fwd/bwd on the stored val batch (capture off), then harvest each
+        wrapped param's ``.grad`` into its gval cache (the buffers the scoring dots project
+        against). Run once per optimizer step — after ``begin_step``, before the scoring
+        microbatches. The harvest clears the harvested ``.grad``, so the scoring backwards
+        accumulate the train gradient from zero."""
+        if not (self.is_fn_path and self.use_separate_val and self.decoupled_mgr is not None):
+            raise RuntimeError(
+                "run_separate_val_pass is only valid on the decoupled fn-path with "
+                "separate_val enabled."
+            )
+        self.optimizer.zero_grad(set_to_none=True)
+        mgr = self.decoupled_mgr
+        mgr.set_enabled(False)
+        try:
+            with ctx:
+                loss = forward_fn(model, self.X_val, self.Y_val)
+            loss.backward()
+        finally:
+            mgr.set_enabled(True)
+        mgr.harvest_val_grads()
 
     def decoupled_run_step(self):
         """fn-path: aggregate the per-train-sample dot from the in-graph buffers and publish
@@ -529,6 +571,10 @@ class GhostEngineManager:
         Returns:
             Tuple of (X, Y) ready for forward pass
         """
+        if self.use_separate_val:
+            # separate-val: the val gradient is harvested once per step (run_separate_val_pass);
+            # scoring batches run WITHOUT the appended val rows.
+            return X_train, Y_train
         if self.config.method == 'GradDotProd' and self.X_val is not None:
             # Concatenate train and val batches for GradDotProd method
             if isinstance(self.X_val, dict):
