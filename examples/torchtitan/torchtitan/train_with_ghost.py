@@ -249,6 +249,9 @@ class GhostTrainer(Trainer):
         harvested ``.grad`` so the following train microbatches accumulate from zero."""
         mgr = self.ghost_helper.fn_manager
         helper = self.ghost_helper
+        # Wrappers disabled: the val rows need no dots, and paying their projection GEMMs is
+        # measurably worse than the guard-flip dispatch (H200 130M: running the val pass with
+        # wrappers enabled cost +14.5 ms/step at N=1 vs the flip's ~0-3 ms).
         mgr.set_enabled(False)
         try:
             with self.train_context(None):

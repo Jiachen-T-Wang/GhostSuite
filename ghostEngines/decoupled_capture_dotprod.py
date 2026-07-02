@@ -985,6 +985,28 @@ class GhostDecoupledManager:
                 if hasattr(w, attr):
                     delattr(w, attr)
 
+    def _collect_lists(self):
+        """separate mode: the ACTIVE dot buffers (fixed layer order) + the 0/1 score mask.
+
+        Cached per active-buffer identity: rebuilt only when a layer's active cell changes
+        (a new batch shape), so steady-state collect does no per-layer Python work beyond
+        the list read."""
+        key = tuple(id(self._cells[id(l)][0][0]) if self._cells[id(l)][0] is not None else 0
+                    for _, l in self._layers)
+        cached = getattr(self, "_collect_cache", None)
+        if cached is not None and cached[0] == key:
+            return cached[1], cached[2]
+        bufs, keep = [], []
+        for name, layer in self._layers:
+            cell = self._cells.get(id(layer))
+            if cell is None or cell[0] is None:
+                raise RuntimeError(f"GHOST_DECOUPLED_FN: '{getattr(layer, 'name', '?')}' no buffer.")
+            bufs.append(cell[0][0])
+            keep.append(0.0 if id(layer) in self._excluded_layer_ids else 1.0)
+        mask = torch.tensor(keep, dtype=ACCUM_DTYPE, device=bufs[0].device)
+        self._collect_cache = (key, bufs, mask)
+        return bufs, mask
+
     def harvest_val_grads(self, clear_grads: bool = True) -> None:
         """separate mode: copy each supported param's autograd ``.grad`` — produced by a plain
         backward on the val batch alone, with the wrappers disabled — into its ``gval`` buffer.
@@ -1000,6 +1022,7 @@ class GhostDecoupledManager:
                 "in-backward instead."
             )
         seen = set()
+        dsts, srcs, params = [], [], []
         for name, layer in self._layers:
             cell = self._cells.get(id(layer))
             bufs = cell[0] if cell and cell[0] is not None else None
@@ -1007,11 +1030,11 @@ class GhostDecoupledManager:
                 # Layer not yet run at any shape (no dot buffer): gval buffers exist per param
                 # from _alloc_ingraph only after a first forward. Allocate now via param map.
                 w_dtype = self.gval_dtype or layer.weight.dtype
-                params = [(layer.weight, w_dtype if isinstance(layer, nn.Linear) else ACCUM_DTYPE)]
+                pdts = [(layer.weight, w_dtype if isinstance(layer, nn.Linear) else ACCUM_DTYPE)]
                 bias = getattr(layer, "bias", None)
                 if bias is not None:
-                    params.append((bias, ACCUM_DTYPE))
-                gvs = [(p, self._gval_buf(p, dt)) for p, dt in params]
+                    pdts.append((bias, ACCUM_DTYPE))
+                gvs = [(p, self._gval_buf(p, dt)) for p, dt in pdts]
             else:
                 gvs = bufs[1]
             for p, buf in gvs:
@@ -1021,12 +1044,23 @@ class GhostDecoupledManager:
                 if p.grad is None:
                     raise RuntimeError(
                         f"GHOST_DECOUPLED_FN: separate-val harvest found no .grad on a param of "
-                        f"'{name}'. Run a plain backward on the val batch (wrappers disabled via "
-                        "set_enabled(False)) before harvest_val_grads()."
+                        f"'{name}'. Run a plain backward on the val batch before "
+                        "harvest_val_grads()."
                     )
-                buf.copy_(p.grad.detach())
-                if clear_grads:
-                    p.grad = None
+                dsts.append(buf)
+                srcs.append(p.grad.detach())
+                params.append(p)
+        # One foreach in place of hundreds of eager copy_ launches (falls back internally per
+        # dtype group; dtype conversion follows copy_ semantics either way).
+        torch._foreach_copy_(dsts, srcs)
+        if clear_grads:
+            for p in params:
+                p.grad = None
+        # The val pass may run with the wrappers ENABLED (so the compiled regions keep ONE hot
+        # specialization instead of flip-flopping on an enabled guard): its dot stores are
+        # garbage-projected-against-stale-gval values that the first train microbatch overwrites
+        # before any collect. Clear the per-pass duplicate-store flags those stores set.
+        self._clear_store_flags()
         self._val_harvested = True
 
     def collect_microbatch_dot(self) -> Optional[torch.Tensor]:
@@ -1039,27 +1073,22 @@ class GhostDecoupledManager:
         consumes the accumulated val grad once, after the loop.
 
         separate mode: the dots were projected against the step's harvested ``gval`` buffers;
-        there is no val grad to fold and no tied finalizer — just sum the per-layer dots
-        (tied-group-aware score exclusion precomputed at attach)."""
+        there is no val grad to fold and no tied finalizer — the per-layer dots are combined
+        with ONE stack + masked sum (score exclusion is a precomputed 0/1 mask), not a Python
+        loop of tiny adds: with hundreds of wrapped layers per microbatch, the loop's kernel
+        launches dominate the collect and are fully exposed between backwards."""
         if self.separate_val:
             if not self._val_harvested:
                 raise RuntimeError(
                     "GHOST_DECOUPLED_FN: separate-val collect before harvest_val_grads(); the "
                     "in-graph dots would have been projected against stale/zero gval buffers."
                 )
-            total = None
-            for name, layer in self._layers:
-                cell = self._cells.get(id(layer))
-                if cell is None or cell[0] is None:
-                    raise RuntimeError(
-                        f"GHOST_DECOUPLED_FN: '{getattr(layer, 'name', '?')}' no buffer."
-                    )
-                dot = cell[0][0]
+            bufs, mask = self._collect_lists()
+            for dot in bufs:
                 if hasattr(dot, "_ghost_pass_stored"):
                     del dot._ghost_pass_stored
-                if id(layer) in self._excluded_layer_ids:
-                    continue
-                total = dot.detach().clone() if total is None else total + dot.detach()
+            stacked = torch.stack(bufs)                         # [n_layers, train_bs]
+            total = (stacked * mask.unsqueeze(1)).sum(dim=0)    # [train_bs]
             self._microbatches_collected += 1
             return total
 
