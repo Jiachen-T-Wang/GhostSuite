@@ -86,7 +86,7 @@ def parse_arguments():
     # --- Capture fast path (decoupled in-graph + torch.compile) — DEFAULT ON ---
     # The in-graph decoupled manager + regional block compile is the default capture path: it
     # numerically matches the hook engine and, at the default bf16 train_dtype, is ~25% faster
-    # (H200, GPT2-Small; see docs/analysis/gradproj_decoupled_compile_bf16_2026-07-01.md). Use
+    # (measured on H200, GPT2-Small). Use
     # --no_decoupled_compile to fall back to the eager hook engine (e.g. Conv1D models, which the
     # decoupled path does not support, or CPU debugging).
     parser.add_argument('--decoupled_compile', dest='decoupled_compile', action='store_true',

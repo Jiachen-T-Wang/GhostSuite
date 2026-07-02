@@ -72,8 +72,8 @@ cd examples/lm/gradproj_lm/
 
 ### Example 1: Quick Test
 ```bash
-# Test with minimal data
-python main.py --batch_size 1 --max_samples 5 --verbose
+# Test with minimal synthetic data (no tokenized corpus needed)
+python main.py --data_source synthetic --batch_size 1 --max_samples 5 --verbose
 ```
 
 ### Example 2: MLP Layers Only

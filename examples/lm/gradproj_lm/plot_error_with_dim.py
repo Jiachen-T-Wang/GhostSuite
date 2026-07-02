@@ -250,7 +250,7 @@ def parse_args() -> argparse.Namespace:
                   help='Directory containing result subfolders')
     p.add_argument('--results_pattern', type=str, required=True,
                   help='Pattern to match result subfolder names that only differ by rank_total_K')
-    p.add_argument('--pattern_type', type=str, default='glob', choices=['regex', 'glob'],
+    p.add_argument('--pattern_type', type=str, default='regex', choices=['regex', 'glob'],
                   help='Interpretation of --results_pattern: regex (default) or shell-style glob')
     p.add_argument('--num_ref', type=int, default=50, help='Number of reference samples')
     p.add_argument('--max_iters', type=int, default=100, help='Max iteration files to load per dir')

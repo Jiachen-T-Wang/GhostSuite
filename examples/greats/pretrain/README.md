@@ -87,8 +87,8 @@ See `examples/lm/graddotprod_lm/README.md` for how to tokenize the Pile.
 GREATS does `~(N+m)` scoring (ghost) + `~k` update (plain) sample-forwards per step vs. `k`
 for the baseline, so step time is genuinely higher — the scoring pass is real work. (The
 update is a plain step on the selected `k`, so it no longer pays the val `m` forwards or any
-ghost overhead — a ~25% step-time saving vs a second ghost pass.) Report `tps` honestly and
-follow the GPU/Slurm method in `AGENTS.md` (H200, drop warmup, bench OFF). Measured H200
+ghost overhead — a ~25% step-time saving vs a second ghost pass.) Report `tps` honestly:
+measure steady-state (drop the first compile/warmup steps, benchmarking hooks off). Measured H200
 steady-state (GREATS `N=32/k=16/m=16`, bf16): GPT2-Small **0.199 s** (compile) / 0.207 s
 (eager); GPT2-Medium 0.463 s / 0.486 s.
 

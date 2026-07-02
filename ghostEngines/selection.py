@@ -34,8 +34,7 @@ def greedy_selection(scores: np.ndarray, interaction: np.ndarray, K: int):
     as ``select(scores)`` — this needs a candidate-candidate ``interaction`` (Gram) matrix, which is
     produced by the second-order GREATS scorer. It therefore lives here as a standalone function;
     wrapping it as a driver-pluggable redundancy-aware policy is deferred to the GramScorer
-    absorption (see
-    docs/issues/open/absorb-greats-second-order-and-generalize-driver_2026-06-29.md)."""
+    absorption (a tracked follow-up)."""
     if K > len(scores):
         # Past exhaustion every score is -inf and argmax silently returns duplicate index 0.
         raise ValueError(f"greedy_selection: K={K} exceeds the {len(scores)} candidates.")

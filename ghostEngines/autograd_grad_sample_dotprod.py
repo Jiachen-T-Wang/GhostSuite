@@ -22,7 +22,7 @@ ACCUM_DTYPE = torch.float32
 # the grad_val already computed for the dot-product. Exact up to fp precision.
 #
 # The masking path (GHOST_SUBTRACT_VAL=0) is retained ONLY as the exact per-sample-gradient
-# oracle for the equivalence tests (tests/_ghost_equiv_common.py): it materializes per-sample train
+# oracle for the internal equivalence tests: it materializes per-sample train
 # gradients directly, against which the subtract-val and decoupled paths are validated. It is
 # KNOWN-INCORRECT for real training on residual-free models: it mutates saved activations to recover
 # the train grad, which corrupts the backward of any op that shares those tensors (e.g. a ReLU whose
@@ -137,7 +137,7 @@ class _NamedSavedTensorManager:
         # different layer that legitimately shares the same input activation (e.g. two
         # projections that both read a block's input). A single global set wrongly
         # makes the second resolver find no candidate -> "Failed to capture saved
-        # activations". See docs/issues/closed/shared-input-activation-capture-fails_2026-06-27.md.
+        # activations".
         self._used_ids_by_name: Dict[str, set[int]] = {}
 
         self._debug: bool = os.getenv("GHOST_SAVED_TENSOR_DEBUG", "0") == "1"

@@ -15,7 +15,7 @@ The GradDotProd engine enables computation of gradient similarities between vali
    - Aggregated training gradients are recovered separately and stored in `.grad` before optimizer step. 
 
 The per-step update rule is a pluggable `ghostEngines.SelectionPolicy` run by the shared
-`examples/lm/shared/selection_trainer.online_selection_step` driver. This example uses `UpdateAll`
+`ghostEngines.online_selection_step` driver. This example uses `UpdateAll`
 (score the batch, log the dots, update on all via subtract-val recovery); `Regular` uses
 `NoSelection`. Online-selection variants (`TopK`/`BottomK`/`Threshold`) reuse the same driver — see
 `examples/greats/`.
@@ -82,9 +82,10 @@ cd examples/lm/graddotprod_lm
 
 ### Key Configurations
 
-Edit `config_file.py` to adjust:
-- `RESULTS_DIR`: Where training results and metrics are saved
-- `PILE_DATA_DIR`: Path to tokenized Pile dataset
+- `RESULTS_DIR` (in `config_file.py`): where training results and metrics are saved.
+- Tokenized-Pile locations come from the `PILE_DATA_DIR_TRAIN` / `PILE_DATA_DIR_VAL` /
+  `PILE_DATA_DIR_TEST` environment variables (see `../shared/dataloader.py`). No tokenized
+  corpus is needed with `--train_set synthetic`.
 
 
 ## Performance: optimized dot-product paths
@@ -133,23 +134,21 @@ kernel than eager cuBLAS); leave it off.
 
 ## Training Loop Integration
 
-The training loop (`training_loop.py`) integrates the ghost engine via hooks:
+The training loop (`training_loop.py`) delegates each step to the shared selection driver,
+which runs the ghost scoring pass over the combined train ++ val batch, logs the per-sample
+dot-products, and performs the update prescribed by the selection policy:
 
 ```python
-# Attach batch information
-ghost_engine.attach_train_batch(X_train, Y_train, iteration, batch_idx)
+from ghostEngines import online_selection_step
 
-# Prepare concatenated input
-X_forward, Y_forward = ghost_engine.prepare_forward_input(X_train, Y_train)
-
-# Forward/backward pass
-loss = model(X_forward, Y_forward).loss
-loss.backward()
-
-# Process gradients
-ghost_engine.prepare_gradients()
-optimizer.step()
-
-# Aggregate and save metrics
-ghost_engine.aggregate_and_log()
+_scores, _idx, loss = online_selection_step(
+    manager=ghost_engine, model=model, optimizer=optimizer,
+    scaler=scaler, ctx=ctx, forward_fn=forward_fn,
+    policy=policy, iter_num=iter_num, grad_clip=grad_clip,
+    grad_accum=gradient_accumulation_steps,
+    draw_microbatch=draw_microbatch, ddp=ddp,
+)
 ```
+
+For custom loops the manager also exposes the underlying step primitives
+(`attach_train_batch`, `prepare_forward_input`, `prepare_gradients`, `aggregate_and_log`).

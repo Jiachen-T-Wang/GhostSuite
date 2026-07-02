@@ -15,7 +15,7 @@ This repository provides a clean, drop-in implementation of "ghost"-based techni
   - Core idea: Reuse activations and output gradients already computed during backprop to obtain per‑parameter dot products without materializing model‑sized gradients; typically concatenates a small validation batch with the training batch.
   - Best for: computing pair-wise gradient similarities through the entire training process (e.g., online data selection, reweighting, curriculum learning, or analyzing training dynamics). 
 
-- `GradProjLoRAEngine`
+- `GradProjLoraEngine`
   - Purpose: Offline, corpus‑scale analysis by storing low‑dimensional per‑sample gradient projections to disk for later similarity analysis.
   - Core idea: Similar to `GradDotProdEngine`, we can reuse activations and output gradients already computed during backprop. Instead of directly computing gradient similarity, we store these per-sample info to disks. Specifically, we can apply a Kronecker‑structured random projection $P = P_i \otimes P_o$. This can be elegantly implemented through a zero‑impact [LoRA‑style side branch](https://arxiv.org/pdf/2405.13954); no changes to model behavior.
   - Best for: computing pair-wise gradient similarities for a large dataset w.r.t. a fixed model checkpoint.  
@@ -28,6 +28,8 @@ Logic and when to use which
 
 ## Installation
 Requires [uv](https://docs.astral.sh/uv/) (`curl -LsSf https://astral.sh/uv/install.sh | sh`).
+The lockfile pins CUDA 12.8 builds of `torch` on Python 3.12, so installation needs a Linux
+machine with an NVIDIA GPU driver (many engine correctness checks can then run on CPU).
 ```bash
 git clone https://github.com/Jiachen-T-Wang/GhostSuite.git
 cd GhostSuite

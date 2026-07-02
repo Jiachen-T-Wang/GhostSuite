@@ -9,11 +9,14 @@ and the default second-order (Gram-based greedy) selection — see **Selection m
 1. Draw a candidate pool of `N = round(fracinv * batch_size)` instruction samples.
 2. **Scoring pass** (GREATS): one `GradDotProd` forward/backward over `[candidate ++ val]`
    gives each candidate `s_i = <g_i, g_val>` over the **LoRA adapters** (`g_val` = gradient
-   on the MMLU validation target). `cosine` ranking is also available.
+   on the MMLU validation target). `cosine` ranking is also available (first-order
+   selection only; combining it with the default second-order selection raises).
 3. Select the top-`k = batch_size` candidates.
-4. **Detach the engine** and take a plain LoRA step on the selected subset, then reattach.
-   (Plain update, not subtract-val, because instruction masking + variable lengths make the
-   subtract-val sample-count scaling inexact — this matches upstream's normal training step.)
+4. Take a **plain LoRA step** on the selected subset. The engine stays attached — its
+   dot-product hook only fires inside the scoring pass's capture context, so the update pass
+   is an ordinary backward. (Plain update, not subtract-val, because instruction masking +
+   variable lengths make the subtract-val sample-count scaling inexact — this matches
+   upstream's normal training step.)
 
 Only the LoRA `nn.Linear` adapters are trainable, so the engine scores exactly those; no
 norm layers are scored.
@@ -63,7 +66,7 @@ max_seq 512 — matching upstream `base_training_args.sh`.
   (LoRA factors are small), and the Gram math is verified against per-sample autograd to
   ~1e-7.
 - `--selection first_order`: top-k by `<g_i, g_val>` via the `GradDotProd` engine (the
-  weaker ablation; what the `greats-example` branch shipped).
+  weaker ablation).
 
 ## Scope
 Single-GPU; MMLU few-shot test accuracy as the headline metric (not the full LESS eval

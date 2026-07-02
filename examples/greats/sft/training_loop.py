@@ -5,8 +5,9 @@ Per optimizer step:
   2. Scoring pass (GREATS only): one GradDotProd forward/backward over
      [candidate ++ val] gives per-candidate s_i = <g_i, g_val> over the LoRA params.
   3. Select the top-k = batch_size candidates.
-  4. Detach the engine and take a plain LoRA step on the selected subset, then
-     reattach for the next step. Plain update (not subtract-val) because with
+  4. Take a plain LoRA step on the selected subset. The engine stays attached:
+     its dot-product hook only fires inside saved_tensors_context(), so the
+     update backward is ordinary. Plain update (not subtract-val) because with
      instruction masking + variable lengths the subtract-val sample-count scaling
      is not exact; this matches upstream's normal training step on selected inputs.
 """

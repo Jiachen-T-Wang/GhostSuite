@@ -83,7 +83,7 @@ def main():
     parser.add_argument('--max_length', type=int, default=None,
                        help='Maximum sequence length (None for no limit)')
     parser.add_argument('--max_tokens', type=int, default=30_000_000_000,
-                       help='Maximum total tokens to process (default: 15B)')
+                       help='Maximum total tokens to process (default: 30B)')
     parser.add_argument('--progress_interval', type=int, default=10000,
                        help='Progress update interval')
     args = parser.parse_args()

@@ -26,14 +26,14 @@ supported and is rejected at ``attach()`` — Conv1D models must use the eager e
 
 Unlike the dot-product decoupled path this is **much simpler**: the projection engine only *observes*
 gradients (no subtract-val / no ``.grad`` rewrite) and treats each matched module as an independent
-block (no tied cross-term finalizer — the shared-weight cross-terms are out of scope here, see
-``docs/issues/open/dve-projection-ignores-weight-tying-cross-terms_2026-07-01.md``). DVEmb also runs a
+block (no tied cross-term finalizer — capturing BOTH modules of a tied weight, e.g. GPT-2
+``wte``/``lm_head``, would drop the shared weight's cross-terms and is unsupported). DVEmb also runs a
 single fixed batch shape, so there is one buffer per layer and no multi-shape cache.
 
 Projection matrices, per-layer dims, concatenation order, metadata and the disk-save format are
 **reused verbatim** from an (unattached) ``GradProjLoraEngine`` instance, so a decoupled run and a
 hook run with the same config produce byte-for-identical ``P`` and identically-ordered projection
-vectors (equivalence-tested in ``tests/test_gradproj_decoupled_equiv.py``).
+vectors (equivalence-tested against the hook engine).
 """
 
 from typing import Dict, List, Optional, Tuple

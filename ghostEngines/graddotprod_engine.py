@@ -51,8 +51,7 @@ def _warn_once_if_hf_model(module: nn.Module) -> None:
 
     The forward_swapper shims that used to rewrite GPT-2/OPT/T5 forwards targeted
     the pre-Cache transformers API and crashed against the pinned
-    transformers>=4.57, so they were removed (see docs/issues/
-    transformers-support-broken-on-pinned-hf_2026-07-02.md).
+    transformers>=4.57, so they were removed.
     """
     global _HF_CAPTURE_WARNED
     if _HF_CAPTURE_WARNED:
