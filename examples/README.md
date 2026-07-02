@@ -1,7 +1,7 @@
 # Examples Directory
 
 This directory contains runnable examples demonstrating the Ghost Engine framework for
-efficient per-sample gradient computation. It is organized into four subfolders, each
+efficient per-sample gradient computation. It is organized into five subfolders, each
 covered by a section below:
 
 1. [`minimal/`](#1-minimal-examples-minimal) — smallest end-to-end demos, no data prep.
@@ -9,6 +9,8 @@ covered by a section below:
 3. [`torchtitan/`](#3-llm-pretraining-with-torchtitan-torchtitan) — large-scale LLM pretraining.
 4. [`greats/`](#4-online-batch-selection-with-greats-greats) — online batch selection built
    on the ghost dot-products.
+5. [`dve_lm/`](#5-data-value-embedding-dve_lm) — trajectory-specific data valuation built on
+   the ghost gradient projections.
 
 
 ## 1. Minimal Examples (`minimal/`)
@@ -156,3 +158,32 @@ python examples/greats/pretrain/main.py --method GREATS --train_set synthetic \
 
 See [`greats/README.md`](greats/README.md), [`greats/pretrain/README.md`](greats/pretrain/README.md),
 and [`greats/sft/README.md`](greats/sft/README.md) for details.
+
+
+## 5. Data Value Embedding (`dve_lm/`)
+
+[Data Value Embedding](https://arxiv.org/abs/2412.09538) (DVE) attributes a trained model's
+behavior on **test** examples back to each **training** example *and the training step at which it
+appeared* (in-run / temporal influence), via a compact per-training-point embedding. Unlike the
+GradDotProd examples (pairwise similarities) and GREATS (online selection), DVE captures per-step
+per-sample **projected** gradients along the *whole* training trajectory, then a reverse recursion
+unrolls the SGD Jacobian to turn them into value embeddings — built on the same ghost projection
+`P = P_i ⊗ P_o` as `lm/gradproj_lm/` (no per-sample gradient is ever materialized).
+
+It is a 4-stage pipeline (`--train_and_store_grad` → `--compute_embedding` → `--compute_value` →
+`--attribute`), sharing config-derived paths so the stages can run together or separately.
+
+```bash
+# All four stages, synthetic smoke (CPU-friendly, GPT2-Tiny)
+python examples/dve_lm/main.py --data_source synthetic --architecture GPT2-Tiny --device cpu \
+    --optimizer sgd --learning_rate 0.05 --max_steps 8 --batch_size 4 \
+    --n_test 8 --test_batch_size 4 --proj_rank_total 64 \
+    --model_dtype float32 --train_dtype float32 --proj_dtype float32 \
+    --train_and_store_grad --compute_embedding --compute_value --attribute
+```
+
+Stage-1 capture defaults (on CUDA) to a **decoupled in-graph + `torch.compile`** fast path at
+`--train_dtype bfloat16` — numerically matching the eager hook engine while ~25% faster on an H200;
+pass `--no_decoupled_compile` to use the eager engine, or `--ac_budget b` for compile-native
+activation checkpointing. See [`dve_lm/README.md`](dve_lm/README.md) for the method, the LR-mode /
+projection options, and the real-Pile run.
