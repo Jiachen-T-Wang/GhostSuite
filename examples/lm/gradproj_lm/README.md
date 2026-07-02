@@ -57,7 +57,10 @@ cd examples/lm/gradproj_lm/
 - `--proj_dtype`: Data type for storing projections
 - `--proj_row_orthonormal`: Use row-orthonormal projections
 - `--include_embeddings`: Include embedding layers in projections
-- `--proj_save_interval`: Save projections every N iterations
+- `--proj_save_interval`: Save every Nth batch's projections; the batches in between
+  are computed and returned to the loop but are **not buffered** — they are discarded,
+  not batched up for a later save. Leave at `1` (save every batch) unless you
+  deliberately want a sparse sample of the dataset's projections.
   - Default: `1`
 
 ### Output Parameters
@@ -99,9 +102,12 @@ python main.py \
     --architecture GPT2-Medium \
     --batch_size 8 \
     --proj_layers "mlp,attn" \
-    --proj_save_interval 100 \
     --output_dir "./pile_projections"
 ```
+
+Keep `--proj_save_interval` at its default of `1` here: with an interval of N, only
+every Nth batch's projections reach disk — the intermediate batches are **discarded,
+not buffered**, so the GPU work for them is lost.
 
 ## Loading Projections
 

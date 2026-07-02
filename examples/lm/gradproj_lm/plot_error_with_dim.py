@@ -32,7 +32,10 @@ import fnmatch
 # Ensure project root is on path for local imports
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))))
-from ghostEngines.gradProjection.projection_utils import get_projection_initializer
+from ghostEngines.gradProjection.projection_utils import (
+    check_projection_metadata_reconstructible,
+    get_projection_initializer,
+)
 
 
 def load_gradient_projections(result_dir: Path, max_iters: Optional[int] = None) -> torch.Tensor:
@@ -87,7 +90,7 @@ def compute_dot_products_multi_ref(projections: torch.Tensor, num_ref: int = 10)
 
 
 def discover_rank_dirs(results_dir: Path, pattern: Pattern[str]) -> Dict[int, Path]:
-    """
+    r"""
     Find result subdirectories whose names match the regex and extract rank_total.
     Ensures all matched names differ only in the 'rank_total_\d+' token.
     """
@@ -177,13 +180,18 @@ def extract_layer_restricted(grads: torch.Tensor, full_meta: dict, proj_meta: di
 
 def rebuild_naive_projection_from_full(grads_layer_restricted: torch.Tensor,
                                        proj_meta: dict,
-                                       proj_seed: int,
                                        method: str) -> torch.Tensor:
     """
-    For each layer: reshape full dW, apply P_o @ dW @ P_i^T using metadata dims and seed,
+    For each layer: reshape full dW, apply P_o @ dW @ P_i^T using metadata dims and seeds,
     then flatten and concatenate across layers. grads_layer_restricted concatenation order
     must match proj_meta['layers'] order with only .weight tensors.
+
+    Requires metadata_version-2 captures: P was generated with a CPU generator, so
+    rebuilding it here on CPU reproduces the capture's P exactly regardless of the
+    device the capture ran on. Version-1 (device-bound RNG) captures are rejected —
+    their P cannot be reconstructed from the recorded seeds.
     """
+    check_projection_metadata_reconstructible(proj_meta)
     init_fn = get_projection_initializer(method)
     device = torch.device('cpu')
 
@@ -209,10 +217,15 @@ def rebuild_naive_projection_from_full(grads_layer_restricted: torch.Tensor,
         else:  # nn.Linear
             gW = g_slice.reshape(B, n_o, n_i)
 
-        # Rebuild P matrices using the exact per-layer seeds recorded in metadata
-        # (falls back to the legacy proj_seed + sorted-index scheme).
-        seed_i = int(layer.get('seed_i', proj_seed + li))
-        seed_o = int(layer.get('seed_o', proj_seed + li + 1000))
+        # Rebuild P using the exact per-layer seeds recorded in the (version-2,
+        # CPU-RNG) metadata; validated above, so missing seeds are a hard error.
+        if 'seed_i' not in layer or 'seed_o' not in layer:
+            raise KeyError(
+                f"Layer '{layer.get('name', li)}' metadata lacks seed_i/seed_o; cannot "
+                "reconstruct its projection matrices. Re-run the capture with the "
+                "current code (which records per-layer seeds).")
+        seed_i = int(layer['seed_i'])
+        seed_o = int(layer['seed_o'])
         P_i = init_fn(k_i, n_i, dtype=torch.float32, device=device, seed=seed_i)
         P_o = init_fn(k_o, n_o, dtype=torch.float32, device=device, seed=seed_o)
 
@@ -350,9 +363,8 @@ def main():
                 target_meta = json.load(f)
             # Restrict full grads to layer weights
             full_lr = extract_layer_restricted(full_grads, full_meta, target_meta)
-            proj_seed = int(target_meta['proj_seed'])
             method = target_meta.get('proj_method', 'gaussian')
-            naive_proj = rebuild_naive_projection_from_full(full_lr, target_meta, proj_seed, method)
+            naive_proj = rebuild_naive_projection_from_full(full_lr, target_meta, method)
             reference_dots = compute_dot_products_multi_ref(naive_proj, num_ref=args.num_ref)
         else:
             raise ValueError(f"Unknown --reference option: {ref_mode}")

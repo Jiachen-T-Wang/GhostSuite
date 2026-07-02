@@ -8,33 +8,97 @@ import torch.nn as nn
 from typing import Optional, Tuple, Any
 
 
-def _flatten_tokens(x: torch.Tensor) -> torch.Tensor:
-    """
-    Flatten middle dimensions to get [batch, tokens, features] shape.
+def project_dense(A: torch.Tensor, B_out: torch.Tensor,
+                  P_i: torch.Tensor, P_o: torch.Tensor) -> torch.Tensor:
+    """Per-sample projected dense (Linear/Conv1D) gradient.
+
+    With layer input ``A`` and output grad ``B``, the per-sample gradient is
+    ``dL/dW = Σ_t B_t A_tᵀ``, projected without materializing it:
+    ``P_o dL/dW P_iᵀ = Σ_t (P_o B_t)(P_i A_t)ᵀ``.
+
+    Shared by the eager hook path and the decoupled in-graph Function so any
+    scaling/masking fix applies to both at once.
 
     Args:
-        x: Input tensor of shape [B, ...] or [B, ..., D]
+        A: input activations ``[B, ..., n_i]`` (middle dims flattened as tokens)
+        B_out: output grads ``[B, ..., n_o]``
+        P_i: ``[k_i, n_i]`` input projection
+        P_o: ``[k_o, n_o]`` output projection
 
     Returns:
-        Tensor of shape [B, T, D] where T is the product of middle dimensions
+        ``[B, k_o, k_i]`` float32 per-sample projected gradients, scaled by the
+        batch size (undoes the 1/B a mean-reduced loss puts on the output grads,
+        matching a reduction='sum' naive per-sample gradient).
     """
-    if x.dim() <= 2:
-        # [B, D] -> [B, 1, D]
-        return x.unsqueeze(1)
+    batch_size = A.shape[0]
+    # The projection runs outside autocast, so A/B may carry the model dtype
+    # (e.g. bf16) while P is float32: cast to the projection dtype so the matmuls
+    # don't raise and the projection accumulates in full precision.
+    A2 = A.reshape(batch_size, -1, A.shape[-1]).to(P_i.dtype)      # [B, T, n_i]
+    B2 = B_out.reshape(batch_size, -1, B_out.shape[-1]).to(P_o.dtype)  # [B, T, n_o]
+    A_proj = torch.matmul(A2, P_i.t())                             # [B, T, k_i]
+    B_proj = torch.matmul(B2, P_o.t())                             # [B, T, k_o]
+    gradG = torch.einsum('bti,btj->bij', B_proj, A_proj)           # [B, k_o, k_i]
+    return (gradG * batch_size).to(torch.float32)
 
-    B = x.shape[0]
-    *mid, D = x.shape[1:]
 
-    if len(mid) == 0:
-        # Already [B, D]
-        return x.unsqueeze(1)
+def project_embedding(idx: torch.Tensor, B_out: torch.Tensor,
+                      P_i: torch.Tensor, P_o: torch.Tensor,
+                      padding_idx: Optional[int] = None) -> torch.Tensor:
+    """Per-sample projected nn.Embedding gradient (accumulated directly in projected space).
 
-    # Compute total tokens
-    T = 1
-    for dim in mid:
-        T *= dim
+    For token index ``idx_t`` with output grad ``g_t``, accumulates the outer product
+    ``(P_o g_t)(P_i[:, idx_t])ᵀ`` over tokens. Shared by the eager hook path and the
+    decoupled in-graph Function.
 
-    return x.reshape(B, T, D)
+    ``padding_idx``: the native embedding backward zeroes ``dL/dW[padding_idx]``, and
+    all of that row's mass comes exactly from the pad-token positions — so masking
+    those positions out of the accumulation reproduces the native behavior in
+    projected space.
+
+    Args:
+        idx: token indices ``[B, T]`` (or ``[B, ...]``, flattened)
+        B_out: output grads ``[B, ..., D]``
+        P_i: ``[k_i, vocab]`` input projection
+        P_o: ``[k_o, D]`` output projection
+        padding_idx: the layer's ``padding_idx`` (or None)
+
+    Returns:
+        ``[B, k_o, k_i]`` float32, scaled by batch size (see :func:`project_dense`).
+    """
+    batch_size = idx.shape[0]
+    idx_flat = idx.reshape(batch_size, -1)                                  # [B, T]
+    grad_flat = B_out.reshape(batch_size, -1, B_out.shape[-1]).to(P_o.dtype)  # [B, T, D]
+    if padding_idx is not None:
+        grad_flat = grad_flat * (idx_flat != padding_idx).unsqueeze(-1).to(grad_flat.dtype)
+    B_proj = torch.matmul(grad_flat, P_o.t())                               # [B, T, k_o]
+    A_proj = P_i.t()[idx_flat]                                              # [B, T, k_i]
+    gradG = torch.einsum('bto,bti->boi', B_proj, A_proj)                    # [B, k_o, k_i]
+    return (gradG * batch_size).to(torch.float32)
+
+
+def check_embedding_supported(module: nn.Embedding, layer_name: str) -> None:
+    """Reject nn.Embedding options the projection math does not model (fail loud at attach).
+
+    ``max_norm`` renormalizes weight rows in-place during forward, ``scale_grad_by_freq``
+    rescales gradient rows by token frequency, and ``sparse`` yields sparse grads — none
+    of which the projected per-sample gradient accounts for, so the capture would silently
+    diverge from the true gradient. ``padding_idx`` IS supported (masked in
+    :func:`project_embedding`).
+    """
+    unsupported = []
+    if module.max_norm is not None:
+        unsupported.append(f"max_norm={module.max_norm}")
+    if module.scale_grad_by_freq:
+        unsupported.append("scale_grad_by_freq=True")
+    if module.sparse:
+        unsupported.append("sparse=True")
+    if unsupported:
+        raise NotImplementedError(
+            f"Gradient projection does not support nn.Embedding option(s) "
+            f"[{', '.join(unsupported)}] on layer '{layer_name}': the captured projected "
+            "gradient would silently diverge from the true per-sample gradient. Use a "
+            "default-configured embedding or exclude this layer from proj_layers.")
 
 
 class GradProjHooks:
@@ -58,6 +122,7 @@ class GradProjHooks:
         self.P_o = P_o
         self.layer_name = layer_name
         self.layer_type = layer_type
+        self._module = None
         self._handle_forward = None
         self._handle_backward = None
 
@@ -71,6 +136,11 @@ class GradProjHooks:
             inputs: Input tuple (typically contains single tensor)
             output: Output from the layer (unused)
         """
+        # Skip no-grad forwards (e.g. an eval pass between a train forward and its
+        # backward): capturing here would overwrite the train activations and pair
+        # the eval input with the train output grads — silently wrong projections.
+        if not torch.is_grad_enabled():
+            return
         # Store detached input for later use in backward.
         # Limitation: a single cache slot per module, so a projected module
         # invoked more than once per forward pass (e.g. a shared/tied module) only
@@ -119,100 +189,47 @@ class GradProjHooks:
         """
         Compute projected gradients for dense layers (Linear, Conv1D).
 
-        The per-sample gradient is dL/dW = sum_t B_t @ A_t^T, where A_t is the
-        layer input and B_t the output grad. We project it as
-        P_o @ dL/dW @ P_i^T = sum_t (P_o @ B_t) @ (P_i @ A_t)^T. This is defined
-        purely in terms of (input activations, output grads), so the same path is
-        correct for nn.Linear and transformers Conv1D alike once get_layer_dimensions
-        reports the true (n_i = in_features, n_o = out_features) for each.
+        Delegates the math to the shared :func:`project_dense` kernel (also used by
+        the decoupled in-graph path). The kernel is defined purely in terms of
+        (input activations, output grads), so the same path is correct for
+        nn.Linear and transformers Conv1D alike once get_layer_dimensions reports
+        the true (n_i = in_features, n_o = out_features) for each.
         """
-        # Flatten to [B, T, D] format
-        A = _flatten_tokens(A_raw)  # [B, T, n_i]
-        B = _flatten_tokens(B_out)  # [B, T, n_o]
-
-        # Backward hooks run outside autocast, so A/B carry the model dtype
-        # (e.g. bf16/fp16) while the projection matrices are float32. Cast the
-        # operands to the projection dtype so the matmuls below don't raise on a
-        # dtype mismatch and the projection is accumulated in full precision.
-        A = A.to(self.P_i.dtype)
-        B = B.to(self.P_o.dtype)
-
-        batch_size = A.shape[0]
-
-        # A_proj: [B, T, n_i] @ [n_i, k_i] -> [B, T, k_i]
-        A_proj = torch.matmul(A, self.P_i.t())
-
-        # B_proj: [B, T, n_o] @ [n_o, k_o] -> [B, T, k_o]
-        B_proj = torch.matmul(B, self.P_o.t())
-
-        # Per-sample projected gradients, aligned with naive reference: [B, k_o, k_i]
-        gradG = torch.einsum('bti,btj->bij', B_proj, A_proj)
-
-        # Note: grad_output from CrossEntropyLoss(mean) carries a 1/B factor;
-        # multiply by batch_size to match reduction='sum' naive computation.
-        gradG = gradG * batch_size
-
-        # Store in float32 for precision
-        module._ghost_grad_proj = gradG.to(torch.float32)
+        module._ghost_grad_proj = project_dense(A_raw, B_out, self.P_i, self.P_o)
 
     def _compute_embedding_proj(self, module: nn.Module, indices: torch.Tensor,
                                grad_output: torch.Tensor) -> None:
         """
         Compute projected gradients for embedding layers.
 
-        Memory-efficient implementation that accumulates directly in projected space.
-        For each token index j with gradient g_t, we compute:
-        - P_o @ g_t (k_o-dimensional)
-        - P_i[:, j] (k_i-dimensional)
-        Then accumulate their outer product into [k_o, k_i] matrix.
+        Delegates to the shared :func:`project_embedding` kernel (also used by the
+        decoupled in-graph path), which accumulates directly in projected space and
+        masks the layer's ``padding_idx`` positions to match the native backward.
         """
-        # indices: [B, T] or [B, ..., T]
-        # grad_output: [B, T, embedding_dim] or [B, ..., T, embedding_dim]
-
-        # Flatten inputs
-        if indices.dim() > 2:
-            batch_size = indices.shape[0]
-            indices_flat = indices.reshape(batch_size, -1)  # [B, T_total]
-            grad_flat = grad_output.reshape(batch_size, -1, grad_output.shape[-1])  # [B, T_total, D]
-        else:
-            indices_flat = indices  # [B, T]
-            grad_flat = grad_output  # [B, T, D]
-            batch_size = indices.shape[0]
-
-        # Backward hooks run outside autocast: cast grads to the projection dtype
-        # (float32) so the projection below matches the dense-layer precision.
-        grad_flat = grad_flat.to(self.P_o.dtype)
-
-        # Vectorized over batch and tokens (no Python per-token loop):
-        #   gradG[b] = sum_t (P_o @ g_{b,t}) outer (P_i[:, idx_{b,t}])
-        # Project output grads: [B, T, D] @ [D, k_o] -> [B, T, k_o]
-        B_proj = torch.matmul(grad_flat, self.P_o.t())
-        # Gather the input-projection column for each token index.
-        # P_i.t() is [V, k_i]; indexing by [B, T] gives [B, T, k_i].
-        A_proj = self.P_i.t()[indices_flat]
-        # Accumulate the per-sample outer products over tokens -> [B, k_o, k_i]
-        gradG = torch.einsum('bto,bti->boi', B_proj, A_proj)
-
-        # Match the dense path: grad_output from CrossEntropyLoss(mean) carries a
-        # 1/B factor; multiply by batch_size so the embedding block is on the same
-        # scale as the Linear/Conv1D blocks in the concatenated projection.
-        gradG = gradG * batch_size
-
-        module._ghost_grad_proj = gradG.to(torch.float32)
+        module._ghost_grad_proj = project_embedding(
+            indices, grad_output, self.P_i, self.P_o, padding_idx=module.padding_idx)
 
     def attach(self, module: nn.Module) -> None:
         """Attach hooks to the module."""
+        self._module = module
         self._handle_forward = module.register_forward_hook(self.forward_hook_store_inputs)
         self._handle_backward = module.register_full_backward_hook(self.backward_hook_compute_proj)
 
     def detach(self) -> None:
-        """Remove hooks from the module."""
+        """Remove hooks from the module and clear its capture scratch."""
         if self._handle_forward is not None:
             self._handle_forward.remove()
             self._handle_forward = None
         if self._handle_backward is not None:
             self._handle_backward.remove()
             self._handle_backward = None
+        # Drop any stray capture (e.g. a forward that was never followed by a
+        # backward) so detached modules cannot leak activations.
+        if self._module is not None:
+            for attr in ('_ghost_A_raw', '_ghost_grad_proj'):
+                if hasattr(self._module, attr):
+                    delattr(self._module, attr)
+            self._module = None
 
 
 def create_projection_hooks(module: nn.Module, layer_name: str,
@@ -255,6 +272,7 @@ def create_projection_hooks(module: nn.Module, layer_name: str,
     elif isinstance(module, nn.Linear):
         layer_type = 'Linear'
     elif isinstance(module, nn.Embedding):
+        check_embedding_supported(module, layer_name)
         layer_type = 'Embedding'
     else:
         raise ValueError(f"Unsupported layer type: {layer_type}")

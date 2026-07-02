@@ -42,6 +42,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from .autograd_gradproj import check_embedding_supported, project_dense, project_embedding
 from .gradproj_engine import GradProjLoraEngine
 
 ACCUM_DTYPE = torch.float32
@@ -68,12 +69,12 @@ def _store(buf, val):
 class _IGProjDenseFn(torch.autograd.Function):
     """Identity on a dense layer's output; computes the projected per-sample grad in backward.
 
-    Mirrors ``GradProjHooks._compute_dense_proj``: with layer input ``A`` [B, T, n_i] and output
-    grad ``B`` [B, T, n_o], the per-sample gradient is ``dL/dW = Σ_t B_t A_tᵀ``, projected as
-    ``P_o dL/dW P_iᵀ = Σ_t (P_o B_t)(P_i A_t)ᵀ`` → ``[B, k_o, k_i]``. The ``* batch_size`` factor
-    undoes the ``1/B`` that a mean-reduced loss puts on ``B`` (matches the eager engine and the naive
-    reduction='sum' reference). ``P_i``/``P_o`` are read-only constants stashed on ``ctx``; only the
-    input activation is ``save_for_backward`` (so the min-cut partitioner may recompute it under AC).
+    Uses the shared :func:`project_dense` kernel (same math as ``GradProjHooks``): with layer
+    input ``A`` [B, T, n_i] and output grad ``B`` [B, T, n_o], the per-sample gradient
+    ``dL/dW = Σ_t B_t A_tᵀ`` is projected as ``P_o dL/dW P_iᵀ = Σ_t (P_o B_t)(P_i A_t)ᵀ`` →
+    ``[B, k_o, k_i]`` (× batch_size to undo a mean-reduced loss's 1/B, in float32 == ACCUM_DTYPE).
+    ``P_i``/``P_o`` are read-only constants stashed on ``ctx``; only the input activation is
+    ``save_for_backward`` (so the min-cut partitioner may recompute it under AC).
     """
 
     @staticmethod
@@ -87,16 +88,7 @@ class _IGProjDenseFn(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         (A,) = ctx.saved_tensors
-        P_i, P_o = ctx.P_i, ctx.P_o
-        B = grad_output
-        batch_size = A.shape[0]
-        # Rank-generic token flatten: [B, ..., n] -> [B, T, n]; handles 2-D (T=1) and >3-D alike.
-        A2 = A.reshape(batch_size, -1, A.shape[-1]).to(P_i.dtype)   # [B, T, n_i]
-        B2 = B.reshape(batch_size, -1, B.shape[-1]).to(P_o.dtype)   # [B, T, n_o]
-        A_proj = torch.matmul(A2, P_i.t())                          # [B, T, k_i]
-        B_proj = torch.matmul(B2, P_o.t())                          # [B, T, k_o]
-        gradG = torch.einsum('bti,btj->bij', B_proj, A_proj)        # [B, k_o, k_i]
-        gradG = (gradG * batch_size).to(ACCUM_DTYPE)
+        gradG = project_dense(A, grad_output, ctx.P_i, ctx.P_o)  # [B, k_o, k_i] fp32
         m = _store(ctx.proj_buf, gradG)
         grad_out = grad_output + (0.0 * m).to(grad_output.dtype)
         # grads for (output, input_act, P_i, P_o, proj_buf)
@@ -106,34 +98,31 @@ class _IGProjDenseFn(torch.autograd.Function):
 class _IGProjEmbeddingFn(torch.autograd.Function):
     """Identity on an Embedding's output; computes the projected per-sample grad in backward.
 
-    Mirrors ``GradProjHooks._compute_embedding_proj``: project the output grads
-    ``B_proj = B @ P_oᵀ`` [B, T, k_o] and gather the input-projection column per token id
-    (``P_iᵀ[idx]`` → [B, T, k_i]), then ``Σ_t`` outer product → ``[B, k_o, k_i]`` (× batch_size).
+    Uses the shared :func:`project_embedding` kernel (same math as ``GradProjHooks``): project
+    the output grads ``B_proj = B @ P_oᵀ`` [B, T, k_o] and gather the input-projection column per
+    token id (``P_iᵀ[idx]`` → [B, T, k_i]), then ``Σ_t`` outer product → ``[B, k_o, k_i]``
+    (× batch_size). ``padding_idx`` positions are masked out of the accumulation to match the
+    native embedding backward (which zeroes ``dL/dW[padding_idx]``).
     """
 
     @staticmethod
-    def forward(ctx, output, idx, P_i, P_o, proj_buf):
+    def forward(ctx, output, idx, P_i, P_o, proj_buf, padding_idx):
         ctx.save_for_backward(idx)
         ctx.P_i = P_i
         ctx.P_o = P_o
         ctx.proj_buf = proj_buf
+        ctx.padding_idx = padding_idx
         return output
 
     @staticmethod
     def backward(ctx, grad_output):
         (idx,) = ctx.saved_tensors
-        P_i, P_o = ctx.P_i, ctx.P_o
-        B = grad_output
-        batch_size = idx.shape[0]
-        idx_flat = idx.reshape(batch_size, -1)                                # [B, T]
-        grad_flat = B.reshape(batch_size, -1, B.shape[-1]).to(P_o.dtype)      # [B, T, D]
-        B_proj = torch.matmul(grad_flat, P_o.t())                            # [B, T, k_o]
-        A_proj = P_i.t()[idx_flat]                                           # [B, T, k_i]
-        gradG = torch.einsum('bto,bti->boi', B_proj, A_proj)                 # [B, k_o, k_i]
-        gradG = (gradG * batch_size).to(ACCUM_DTYPE)
+        gradG = project_embedding(idx, grad_output, ctx.P_i, ctx.P_o,
+                                  padding_idx=ctx.padding_idx)  # [B, k_o, k_i] fp32
         m = _store(ctx.proj_buf, gradG)
         grad_out = grad_output + (0.0 * m).to(grad_output.dtype)
-        return grad_out, None, None, None, None
+        # grads for (output, idx, P_i, P_o, proj_buf, padding_idx)
+        return grad_out, None, None, None, None, None
 
 
 class GradProjDecoupledManager:
@@ -211,8 +200,8 @@ class GradProjDecoupledManager:
         cell = [None]
         self._cells[id(layer)] = cell
         weight = layer.weight
-        # Preserve every nn.Embedding forward arg (not just padding_idx), so the base op is exact
-        # for non-default embeddings (max_norm / scale_grad_by_freq / sparse ...).
+        # attach() rejects max_norm / scale_grad_by_freq / sparse (the capture math does not
+        # model them); still forward every arg so the base op stays exact by construction.
         padding_idx = layer.padding_idx
         max_norm = layer.max_norm
         norm_type = layer.norm_type
@@ -226,7 +215,7 @@ class GradProjDecoupledManager:
                 return out
             if cell[0] is None or cell[0].shape[0] != idx.shape[0]:
                 self._ensure_buf(layer, idx.shape[0], _param_device(weight))
-            return _IGProjEmbeddingFn.apply(out, idx, P_i, P_o, cell[0])
+            return _IGProjEmbeddingFn.apply(out, idx, P_i, P_o, cell[0], padding_idx)
 
         return forward
 
@@ -235,6 +224,11 @@ class GradProjDecoupledManager:
     def attach(self):
         if self.is_attached:
             return
+        # Validate every embedding before wrapping any forward, so an unsupported
+        # option fails atomically instead of leaving earlier layers wrapped.
+        for name, layer in self.matched_layers.items():
+            if isinstance(layer, nn.Embedding):
+                check_embedding_supported(layer, name)
         self._layer_names = {id(layer): name for name, layer in self.matched_layers.items()}
         for name, layer in self.matched_layers.items():
             if isinstance(layer, nn.Embedding):

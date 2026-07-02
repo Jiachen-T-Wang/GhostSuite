@@ -12,11 +12,12 @@ from typing import Dict, List, Optional, Union, Tuple
 from collections import OrderedDict
 
 from .projection_utils import (
+    PROJECTION_METADATA_VERSION,
     choose_ki_ko,
     get_projection_initializer,
     compute_projection_metadata
 )
-from .autograd_gradproj import create_projection_hooks
+from .autograd_gradproj import check_embedding_supported, create_projection_hooks
 from .supported_layers_gradproj import (
     find_matching_layers,
     validate_layer_selection,
@@ -62,7 +63,10 @@ class GradProjLoraEngine:
             proj_row_orthonormal: Whether to use row-orthonormal projections
             include_embeddings: Whether to include embedding layers
             include_conv2d: Whether to include Conv2d layers
-            proj_save_interval: How often to save projections (in iterations)
+            proj_save_interval: Save every Nth collect_batch call's projections to
+                disk. Batches in between are computed and returned to the caller but
+                are NOT buffered — they are discarded, not batched up for a later
+                save. Use 1 (the default) to persist every batch.
             **kwargs: Additional unused arguments for compatibility
         """
         self.module = module
@@ -104,6 +108,9 @@ class GradProjLoraEngine:
         # Counters
         self.iteration = 0
         self.batch_count = 0
+
+        # One-time notice that proj_save_interval > 1 discards (not buffers) skipped batches.
+        self._save_interval_notice_printed = False
 
         # Gradient-accumulation state. None when no accumulation step is in
         # progress (the legacy single-microbatch path). begin_step() sets it to a
@@ -170,6 +177,12 @@ class GradProjLoraEngine:
         """Prepare metadata for saving."""
         self.metadata = {
             'engine': 'GradProjLora',
+            # Version 2: P generated with a CPU generator (device-independent for a
+            # given seed) and orthonormal P calibrated by sqrt(cols/rows) so
+            # E[P^T P] = I. Reconstruction paths must check these fields (see
+            # projection_utils.check_projection_metadata_reconstructible).
+            'metadata_version': PROJECTION_METADATA_VERSION,
+            'rng_device': 'cpu',
             'proj_seed': self.proj_seed,
             'proj_dtype': str(self.proj_dtype).split('.')[-1],
             'proj_method': self.proj_method,
@@ -178,6 +191,11 @@ class GradProjLoraEngine:
             'total_proj_dim': self.total_proj_dim,
             'layers': []
         }
+        if self.proj_method == 'orthonormal':
+            # Records that this capture's orthonormal P includes the sqrt(cols/rows)
+            # factor (uncalibrated version-1 orthonormal captures shrink dot products
+            # by a layer-dependent (k_i*k_o)/(n_i*n_o) factor).
+            self.metadata['orthonormal_calibration'] = 'sqrt(cols/rows)'
 
         # Add per-layer metadata
         for layer_name in sorted(self.matched_layers.keys()):
@@ -204,6 +222,12 @@ class GradProjLoraEngine:
         """
         if self.is_attached:
             return
+
+        # Validate every embedding before attaching any hook, so an unsupported
+        # option fails atomically instead of leaving earlier layers hooked.
+        for layer_name, layer in self.matched_layers.items():
+            if isinstance(layer, nn.Embedding):
+                check_embedding_supported(layer, layer_name)
 
         for layer_name, layer in self.matched_layers.items():
             P_i, P_o = self.projection_matrices[layer_name]
@@ -363,6 +387,11 @@ class GradProjLoraEngine:
         full_projection = full_projection.to(self.proj_dtype)
 
         # Save if needed
+        if save and self.proj_save_interval > 1 and not self._save_interval_notice_printed:
+            print(f"[INFO] GradProjLora: proj_save_interval={self.proj_save_interval} — saving "
+                  f"every {self.proj_save_interval}th batch's projections; the batches in "
+                  "between are returned to the caller but NOT buffered — they are discarded.")
+            self._save_interval_notice_printed = True
         if save and self.iteration % self.proj_save_interval == 0:
             self._save_projection(full_projection, batch_indices, extra)
 
@@ -416,33 +445,15 @@ class GradProjLoraEngine:
         """Get metadata about the projection configuration."""
         return self.metadata.copy()
 
-    # === GhostEngine protocol methods (see ghostEngines/engine_protocol.py) ===
-
-    def attach_train_batch(self, X_train, Y_train, iter_num, batch_idx=None):
-        """Store the current training iteration / batch indices for saving purposes."""
-        self.current_iter_num = iter_num
-        self.current_batch_idx = batch_idx
+    # === Lifecycle helpers shared with the direct-driving loops (gradproj_lm / dvemb_lm) ===
 
     def prepare_gradients(self):
         """No-op for GradProjLora: projections are computed during the backward hooks."""
         pass
 
-    def aggregate_and_log(self):
-        """
-        Aggregate and log metrics after optimizer step (compatibility method).
-
-        This calls collect_batch() to compute and save projections.
-        """
-        if hasattr(self, 'current_batch_idx') and self.current_batch_idx is not None:
-            # Collect with batch indices if available
-            self.collect_batch(batch_indices=self.current_batch_idx)
-        else:
-            # Collect without batch indices
-            self.collect_batch()
-
     def clear_gradients(self):
         """
-        Clear gradients and cached data after optimizer step (compatibility method).
+        Clear gradients and cached data after optimizer step.
 
         This cleans up any cached activations or gradients.
         """
@@ -453,27 +464,9 @@ class GradProjLoraEngine:
             if hasattr(layer, '_ghost_grad_proj'):
                 delattr(layer, '_ghost_grad_proj')
 
-    def detach_for_evaluation(self):
-        """
-        Detach during evaluation (compatibility method).
-
-        Alias for the existing detach() method.
-        """
-        self.detach()
-
-    def reattach_after_evaluation(self):
-        """
-        Reattach after evaluation (compatibility method).
-
-        Re-attaches projection hooks after evaluation.
-        """
-        # attach() is idempotent (no-ops if already attached) and rebuilds the
-        # hooks from the same projection matrices.
-        self.attach()
-
     def cleanup(self):
         """
-        Cleanup and free resources (compatibility method).
+        Cleanup and free resources.
 
         Projections are saved in collect_batch(); this just detaches hooks and
         releases the projection matrices.
@@ -483,18 +476,6 @@ class GradProjLoraEngine:
 
         # Clear projection matrices to free memory
         self.projection_matrices.clear()
-
-    def save_projections(self, iter_num: int):
-        """
-        Save projections at the given iteration (compatibility method).
-
-        This is called by engine_manager's save_metrics().
-        For GradProjLora, projections are saved in collect_batch(),
-        so this can be a no-op or trigger a forced save.
-        """
-        # Projections are saved automatically in collect_batch()
-        # This method exists for compatibility
-        pass
 
     def __repr__(self):
         return (f"GradProjLoraEngine(layers={len(self.matched_layers)}, "
