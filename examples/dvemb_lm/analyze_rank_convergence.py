@@ -1,6 +1,6 @@
-"""Rank-convergence analysis for the DVE value matrices.
+"""Rank-convergence analysis for the DVEmb value matrices.
 
-Loads the per-rank ``value/values.pt`` produced by running the DVE pipeline at
+Loads the per-rank ``value/values.pt`` produced by running the DVEmb pipeline at
 several ``--proj_rank_total`` settings on the SAME trajectory (same seed/data/optimizer),
 and checks that the value matrices converge as rank grows -- the JL guarantee on the
 real model. Because every run shares the seed, the n_train columns (training windows,

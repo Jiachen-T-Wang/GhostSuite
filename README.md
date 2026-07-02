@@ -102,8 +102,8 @@ python examples/greats/pretrain/main.py --method GREATS --train_set synthetic \
 See [`examples/greats/README.md`](examples/greats/README.md) for both variants and the
 first-order vs. second-order selection modes.
 
-### Data Value Embedding (`examples/dve_lm/`)
-[Data Value Embedding](https://arxiv.org/abs/2412.09538) (DVE) attributes a trained model's
+### Data Value Embedding (`examples/dvemb_lm/`)
+[Data Value Embedding](https://arxiv.org/abs/2412.09538) (DVEmb) attributes a trained model's
 test-time behavior back to each training example *and the step it appeared at* (in-run / temporal
 influence). It captures per-step per-sample projected gradients over the whole trajectory with the
 `GradProjLoRA` engine, then unrolls the SGD dynamics into per-training-point value embeddings — a
@@ -111,13 +111,13 @@ influence). It captures per-step per-sample projected gradients over the whole t
 
 ```bash
 # All four stages, synthetic smoke (CPU-friendly, GPT2-Tiny)
-python examples/dve_lm/main.py --data_source synthetic --architecture GPT2-Tiny --device cpu \
+python examples/dvemb_lm/main.py --data_source synthetic --architecture GPT2-Tiny --device cpu \
     --optimizer sgd --max_steps 8 --batch_size 4 --n_test 8 --proj_rank_total 64 \
     --train_and_store_grad --compute_embedding --compute_value --attribute
 ```
 
 On CUDA, capture defaults to a decoupled in-graph + `torch.compile` fast path at bf16 (~25% faster
-than the eager engine, values unchanged). See [`examples/dve_lm/README.md`](examples/dve_lm/README.md).
+than the eager engine, values unchanged). See [`examples/dvemb_lm/README.md`](examples/dvemb_lm/README.md).
 
 
 ## How the Ghost Engines Work

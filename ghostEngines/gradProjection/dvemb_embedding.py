@@ -21,7 +21,7 @@ Learning-rate handling is configurable via ``lr_mode``:
                    size (Gauss-Newton H ~= (1/B) sum_b g g^T).
 
 The final value of a test point against a training point is ``<g_test, e_s>`` (computed
-in ``dve_value.py``); the sign convention follows the reference (positive dot product).
+in ``dvemb_value.py``); the sign convention follows the reference (positive dot product).
 """
 
 import json
@@ -64,7 +64,7 @@ def _reverse_step(M: Optional[torch.Tensor], g: torch.Tensor, lr: float,
     return emb, M
 
 
-def dve_recursion(grads_by_step: Sequence[torch.Tensor],
+def dvemb_recursion(grads_by_step: Sequence[torch.Tensor],
                   lrs: Optional[Sequence[float]] = None,
                   lr_mode: str = 'none') -> List[torch.Tensor]:
     """Pure in-memory recursion over a single gradient block (one layer).

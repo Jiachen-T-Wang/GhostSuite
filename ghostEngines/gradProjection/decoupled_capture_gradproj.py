@@ -21,13 +21,13 @@ the backward hook entirely, so nothing is captured). This module keeps the captu
 **Supported leaves:** ``nn.Linear`` and ``nn.Embedding`` only. Unlike the eager
 ``GradProjLoraEngine`` (which never replaces ``forward``), this path monkeypatches ``forward`` to
 ``F.linear``, so transformers ``Conv1D`` (weight ``[in, out]``, forward ``x @ W + b``) is **not**
-supported and is rejected at ``attach()`` — Conv1D models must use the eager engine. DVE's
+supported and is rejected at ``attach()`` — Conv1D models must use the eager engine. DVEmb's
 ``shared/gpt2.py`` is all ``nn.Linear``.
 
 Unlike the dot-product decoupled path this is **much simpler**: the projection engine only *observes*
 gradients (no subtract-val / no ``.grad`` rewrite) and treats each matched module as an independent
 block (no tied cross-term finalizer — the shared-weight cross-terms are out of scope here, see
-``docs/issues/open/dve-projection-ignores-weight-tying-cross-terms_2026-07-01.md``). DVE also runs a
+``docs/issues/open/dve-projection-ignores-weight-tying-cross-terms_2026-07-01.md``). DVEmb also runs a
 single fixed batch shape, so there is one buffer per layer and no multi-shape cache.
 
 Projection matrices, per-layer dims, concatenation order, metadata and the disk-save format are
@@ -174,7 +174,7 @@ class GradProjDecoupledManager:
         """Preallocate this layer's ``[B, k_o, k_i]`` fp32 projection buffer (once, outside graph)."""
         # Once warmup has locked the shape, a compiled block's traced graph writes the warmup-time
         # buffer tensor; reallocating for a different batch here would desync that write from what
-        # collect_batch reads. Fail loud (DVE uses a fixed batch, so this never triggers there).
+        # collect_batch reads. Fail loud (DVEmb uses a fixed batch, so this never triggers there).
         if self._warmup_bs is not None and batch_size != self._warmup_bs:
             raise RuntimeError(
                 f"GradProjDecoupledManager: batch size {batch_size} != warmup batch "
@@ -248,7 +248,7 @@ class GradProjDecoupledManager:
                 # op than F.linear (x@Wᵀ). The eager hook engine supports it because it never
                 # replaces forward; this in-graph path does, so wrapping it with F.linear would
                 # corrupt BOTH the forward and the projection. Fail loud rather than silently wrong;
-                # use the eager GradProjLoraEngine for Conv1D models. (DVE's shared/gpt2.py is all
+                # use the eager GradProjLoraEngine for Conv1D models. (DVEmb's shared/gpt2.py is all
                 # nn.Linear, so this is not hit there.)
                 raise NotImplementedError(
                     f"GradProjDecoupledManager: layer '{name}' ({type(layer).__name__}) is not "

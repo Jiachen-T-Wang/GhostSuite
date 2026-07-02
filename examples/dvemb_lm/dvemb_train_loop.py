@@ -16,7 +16,7 @@ import time
 import torch
 from tqdm import tqdm
 
-# examples/lm/ provides `shared` (this file lives at examples/dve_lm/).
+# examples/lm/ provides `shared` (this file lives at examples/dvemb_lm/).
 _LM_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lm")
 if _LM_DIR not in sys.path:
     sys.path.insert(0, _LM_DIR)
@@ -27,7 +27,7 @@ def compute_lr(step, config):
     """Per-step learning rate: constant, linear, or cosine -- each with linear warmup.
 
     The decay horizon is ``config.lr_decay_steps`` (falling back to ``max_steps`` when it is
-    <= 0), decoupled from the run length so the schedule can match the reference DVE code,
+    <= 0), decoupled from the run length so the schedule can match the reference DVEmb code,
     which hardcodes ``get_linear_schedule_with_warmup(num_training_steps=10000)`` regardless
     of the actual epoch length. ``progress`` clamps to [0, 1], so steps past the horizon hold
     LR at 0 (linear) / ``min_lr`` (cosine), mirroring HF's post-horizon behavior.
@@ -46,7 +46,7 @@ def compute_lr(step, config):
 
     if config.lr_schedule == 'linear':
         # Linear decay to 0 at lr_decay_steps (matches HF get_linear_schedule_with_warmup,
-        # the reference DVE pretraining schedule).
+        # the reference DVEmb pretraining schedule).
         return config.learning_rate * (1.0 - progress)
 
     # cosine

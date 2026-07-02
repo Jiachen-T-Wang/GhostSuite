@@ -1,6 +1,6 @@
 """Direct-on-model correctness tests for Data Value Embedding.
 
-Complements validate_dve.py (which tests the recursion + projection on abstract tensors)
+Complements validate_dvemb.py (which tests the recursion + projection on abstract tensors)
 with two checks that exercise the real machinery on real models:
 
   Test A (ghost-capture correctness, on GPT2): the engine's per-sample *projected*
@@ -12,11 +12,11 @@ with two checks that exercise the real machinery on real models:
   Test B (exact unrolled-SGD influence, on a small MLP): the semantic ground truth that
       the reference repo lacks. The TRUE first-order influence dL_test/dw_{s,b} is
       obtained by autodiff *through the SGD trajectory* (double-backprop, no Gauss-Newton,
-      no projection). DVE values (which use the Gauss-Newton outer-product Hessian) must
+      no projection). DVEmb values (which use the Gauss-Newton outer-product Hessian) must
       track it -- and track it at least as well as a plain gradient-dot (TracIn-style)
       baseline, showing the reverse recursion adds signal.
 
-Run:  python validate_dve_model.py
+Run:  python validate_dvemb_model.py
 """
 
 import os
@@ -34,7 +34,7 @@ for _p in (os.path.join(_EXAMPLES_DIR, "lm"), os.path.dirname(_EXAMPLES_DIR)):
         sys.path.insert(0, _p)
 
 from ghostEngines.gradProjection.gradproj_engine import GradProjLoraEngine
-from ghostEngines.gradProjection.dve_embedding import dve_recursion
+from ghostEngines.gradProjection.dvemb_embedding import dvemb_recursion
 
 
 def _pearson(a, b):
@@ -115,7 +115,7 @@ def _flat_grad(loss, params):
 
 
 def test_unrolled_influence_mlp(seed=0):
-    print("\n[Test B] DVE vs exact unrolled-SGD influence (small MLP, autodiff)...")
+    print("\n[Test B] DVEmb vs exact unrolled-SGD influence (small MLP, autodiff)...")
     from torch.func import functional_call
     torch.manual_seed(seed)
 
@@ -154,7 +154,7 @@ def test_unrolled_influence_mlp(seed=0):
         gW = torch.autograd.grad(lj, W, retain_graph=True)[0]   # [K, B]
         infl[j] = gW.reshape(-1)
 
-    # ---- DVE side: per-sample grads along the SAME (detached) trajectory ----
+    # ---- DVEmb side: per-sample grads along the SAME (detached) trajectory ----
     p = {k: base[k].clone().requires_grad_(True) for k in pkeys}
     per_step_grads = []  # list of [B, D_flat]
     for s in range(K):
@@ -179,9 +179,9 @@ def test_unrolled_influence_mlp(seed=0):
         g_test.append(_flat_grad(lj, [p[k] for k in pkeys]).detach())
     g_test = torch.stack(g_test)        # [n_test, D_flat]
 
-    # DVE embeddings (single block = full params, no projection -> isolates the
+    # DVEmb embeddings (single block = full params, no projection -> isolates the
     # first-order + Gauss-Newton approximations from projection error).
-    embs = dve_recursion(per_step_grads, lrs=[eta] * K, lr_mode='scaled')
+    embs = dvemb_recursion(per_step_grads, lrs=[eta] * K, lr_mode='scaled')
     E = torch.cat(embs, dim=0)          # [K*B, D_flat]
     dve_vals = g_test @ E.t()           # [n_test, K*B]
 
@@ -189,21 +189,21 @@ def test_unrolled_influence_mlp(seed=0):
     G_all = torch.cat([g for g in per_step_grads], dim=0)  # [K*B, D_flat]
     tracin = (eta) * (g_test @ G_all.t())
 
-    # DVE value ~= -B * influence (see README math); compare to -influence.
+    # DVEmb value ~= -B * influence (see README math); compare to -influence.
     target = (-infl).reshape(-1)
     pe_dve = _pearson(dve_vals.reshape(-1), target)
     pe_tracin = _pearson(tracin.reshape(-1), target)
-    print(f"  Pearson(DVE,  -influence) = {pe_dve:+.4f}")
+    print(f"  Pearson(DVEmb,  -influence) = {pe_dve:+.4f}")
     print(f"  Pearson(grad-dot, -infl)  = {pe_tracin:+.4f}  (baseline, no recursion)")
-    assert pe_dve > 0.85, f"DVE should track exact influence (got {pe_dve})"
+    assert pe_dve > 0.85, f"DVEmb should track exact influence (got {pe_dve})"
     assert pe_dve >= pe_tracin - 1e-3, "recursion should not hurt vs plain grad-dot"
-    print("  PASS (DVE tracks exact unrolled influence, >= grad-dot baseline)")
+    print("  PASS (DVEmb tracks exact unrolled influence, >= grad-dot baseline)")
 
 
 def main():
     test_ghost_capture_gpt2()
     test_unrolled_influence_mlp()
-    print("\nAll direct-on-model DVE tests passed.")
+    print("\nAll direct-on-model DVEmb tests passed.")
 
 
 if __name__ == '__main__':

@@ -2,7 +2,7 @@
 Data Value Embedding — value computation and corpus attribution.
 
 Stage 3: dot projected **test** gradients against the stored per-training-point
-embeddings (``embed_iter_*.pt`` from :mod:`dve_embedding`) to form a dense
+embeddings (``embed_iter_*.pt`` from :mod:`dvemb_embedding`) to form a dense
 ``(n_test x n_train)`` value matrix:
 
     value(test_j, train_s) = <g_test_j, e_s>

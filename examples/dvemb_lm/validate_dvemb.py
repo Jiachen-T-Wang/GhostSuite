@@ -3,12 +3,12 @@
 These run on CPU in seconds and need no GPU or corpus:
 
   Test 1 (recursion fidelity): an independent, literal port of the reference recursion
-      (store_train_grad.py:343-386) must match dve_recursion(lr_mode='none') exactly.
+      (store_train_grad.py:343-386) must match dvemb_recursion(lr_mode='none') exactly.
 
-  Test 2 (projection approximates exact DVE): on a small linear model where the FULL
-      parameter dimension is small enough that exact (un-projected) DVE is computable,
-      the projected DVE values track the exact values, with correlation -> 1 as the
-      projection rank grows (the JL guarantee). Note: exact full-dim DVE is infeasible
+  Test 2 (projection approximates exact DVEmb): on a small linear model where the FULL
+      parameter dimension is small enough that exact (un-projected) DVEmb is computable,
+      the projected DVEmb values track the exact values, with correlation -> 1 as the
+      projection rank grows (the JL guarantee). Note: exact full-dim DVEmb is infeasible
       on a real GPT (the vocab*d_model embedding makes M huge) — which is exactly why
       the method projects; the toy is the honest exact comparison.
 
@@ -21,11 +21,11 @@ import sys
 
 import torch
 
-# Repo root provides `ghostEngines` (this file lives at examples/dve_lm/).
+# Repo root provides `ghostEngines` (this file lives at examples/dvemb_lm/).
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
-from ghostEngines.gradProjection.dve_embedding import dve_recursion
+from ghostEngines.gradProjection.dvemb_embedding import dvemb_recursion
 
 
 def reference_recursion(grads_by_step):
@@ -60,7 +60,7 @@ def test_recursion_fidelity(seed=0):
     grads = [torch.randn(B, D, generator=g) * 0.1 for _ in range(n_steps)]
 
     ref = reference_recursion(grads)
-    ours = dve_recursion(grads, lrs=None, lr_mode='none')
+    ours = dvemb_recursion(grads, lrs=None, lr_mode='none')
 
     rel_err = max((a - b).abs().max().item() / (a.abs().max().item() + 1e-12)
                   for a, b in zip(ref, ours))
@@ -84,16 +84,16 @@ def _pearson(a, b):
 
 
 def _run_linear_dve(grads, test_grads, lr_mode, lrs):
-    """Full-dim DVE values for a single block: [n_test, n_steps*B]."""
-    embs = dve_recursion(grads, lrs=lrs, lr_mode=lr_mode)  # each [B, D]
+    """Full-dim DVEmb values for a single block: [n_test, n_steps*B]."""
+    embs = dvemb_recursion(grads, lrs=lrs, lr_mode=lr_mode)  # each [B, D]
     E = torch.cat(embs, dim=0)              # [n_train, D]
     return test_grads @ E.t()              # [n_test, n_train]
 
 
 def test_projection_approximates_exact(seed=0, lr_mode='scaled'):
-    print(f"\n[Test 2] Projection approximates exact DVE (lr_mode={lr_mode})...")
+    print(f"\n[Test 2] Projection approximates exact DVEmb (lr_mode={lr_mode})...")
     gen = torch.Generator().manual_seed(seed)
-    # Full parameter dim small enough that exact (un-projected) DVE is feasible. Use
+    # Full parameter dim small enough that exact (un-projected) DVEmb is feasible. Use
     # B > D and a modest lr so the SGD trajectory is contractive (I - lr*H stable) and
     # the recursion stays bounded — the regime real training lives in.
     D = 40
@@ -120,7 +120,7 @@ def test_projection_approximates_exact(seed=0, lr_mode='scaled'):
     g_test = (Xte @ w - tte).unsqueeze(1) * Xte  # [n_test, D]
 
     V_exact = _run_linear_dve(grads, g_test, lr_mode, lrs)  # [n_test, n_train]
-    assert torch.isfinite(V_exact).all(), "exact DVE diverged; trajectory not stable"
+    assert torch.isfinite(V_exact).all(), "exact DVEmb diverged; trajectory not stable"
     v_exact_flat = V_exact.reshape(-1)
 
     print(f"  {'rank':>6} {'pearson':>9} {'spearman':>9}")
@@ -142,7 +142,7 @@ def test_projection_approximates_exact(seed=0, lr_mode='scaled'):
 def main():
     test_recursion_fidelity()  # covers lr_mode='none' exactly vs the reference port
     test_projection_approximates_exact(lr_mode='scaled')  # realistic, stable regime
-    print("\nAll DVE correctness tests passed.")
+    print("\nAll DVEmb correctness tests passed.")
 
 
 if __name__ == '__main__':

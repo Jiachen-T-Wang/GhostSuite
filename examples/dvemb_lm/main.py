@@ -1,4 +1,4 @@
-"""Data Value Embedding (DVE) — 4-stage pipeline entry point.
+"""Data Value Embedding (DVEmb) — 4-stage pipeline entry point.
 
 Stages (selected by flags; can be run together or separately, all sharing config-derived
 paths so a later invocation finds the earlier outputs):
@@ -23,7 +23,7 @@ import numpy as np
 import torch
 
 # examples/lm/ provides `shared`; the repo root provides `ghostEngines`; this dir provides
-# the local config_file / dve_train_loop modules.
+# the local config_file / dvemb_train_loop modules.
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 _EXAMPLES_DIR = os.path.dirname(_THIS_DIR)
 _REPO_ROOT = os.path.dirname(_EXAMPLES_DIR)
@@ -31,12 +31,12 @@ for _p in (_THIS_DIR, os.path.join(_EXAMPLES_DIR, "lm"), _REPO_ROOT):
     if _p not in sys.path:
         sys.path.insert(0, _p)
 
-from config_file import parse_arguments, DVEConfig
+from config_file import parse_arguments, DVEmbConfig
 from shared.dataloader import load_all_data, make_synthetic_dataset, get_batch_from_dataset
 from shared.model_setup import create_GPT_model
 from ghostEngines.gradProjection.gradproj_engine import GradProjLoraEngine
-from ghostEngines.gradProjection.dve_embedding import compute_embeddings_reverse
-from ghostEngines.gradProjection.dve_value import compute_values, attribute
+from ghostEngines.gradProjection.dvemb_embedding import compute_embeddings_reverse
+from ghostEngines.gradProjection.dvemb_value import compute_values, attribute
 
 DTYPE_MAP = {'float32': torch.float32, 'float16': torch.float16, 'bfloat16': torch.bfloat16}
 
@@ -81,7 +81,7 @@ def _engine_config(config, proj_dir):
         'proj_dtype': config.proj_dtype,
         'proj_dir': proj_dir,
         'proj_row_orthonormal': config.proj_row_orthonormal,
-        'proj_save_interval': 1,  # DVE needs every step
+        'proj_save_interval': 1,  # DVEmb needs every step
         'include_embeddings': config.include_embeddings,
     }
 
@@ -98,7 +98,7 @@ def _load_dataset(config):
 # Stage 1
 # --------------------------------------------------------------------------------------
 def stage_train(config, device, ctx, dataset):
-    from dve_train_loop import train_and_capture, build_optimizer
+    from dvemb_train_loop import train_and_capture, build_optimizer
 
     print("\n" + "=" * 60 + "\n[Stage 1] Train and capture projected gradients\n" + "=" * 60)
     os.makedirs(config.capture_dir, exist_ok=True)
@@ -146,7 +146,7 @@ def stage_train(config, device, ctx, dataset):
     torch.save(model.state_dict(), config.checkpoint_path)
     print(f"[train] saved final checkpoint to {config.checkpoint_path}")
 
-    with open(os.path.join(config.capture_dir, 'dve_run_config.json'), 'w') as f:
+    with open(os.path.join(config.capture_dir, 'dvemb_run_config.json'), 'w') as f:
         json.dump({'timestamp': datetime.now().isoformat(),
                    'config': repr(config), 'stats': stats,
                    'optimizer': config.optimizer, 'lr_mode': config.lr_mode,
@@ -233,7 +233,7 @@ def stage_attribute(config):
 
 def main():
     args = parse_arguments()
-    config = DVEConfig(args)
+    config = DVEmbConfig(args)
     print("=" * 80 + f"\nData Value Embedding pipeline\n{config}\n" + "=" * 80)
 
     if not any([config.train_and_store_grad, config.compute_embedding,

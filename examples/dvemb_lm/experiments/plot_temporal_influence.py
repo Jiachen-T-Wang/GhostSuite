@@ -1,7 +1,7 @@
 """Plot per-batch data-value-embedding temporal influence vs training iteration.
 
-Average DVE influence per training batch vs training iteration, measured
-against the (final) model's loss on the validation set. The DVE value matrix
+Average DVEmb influence per training batch vs training iteration, measured
+against the (final) model's loss on the validation set. The DVEmb value matrix
 ``values.pt`` (from stage 3, ``compute_values``) holds ``values[n_test, n_train]`` =
 ``<g_val_j, e_s>`` for every (val example j, training sample s), with ``train_order``
 giving each column's training step. We average over the validation rows and over the
@@ -25,7 +25,7 @@ Read the value matrix with ``--values RUN/value/values.pt`` (recomputes the per-
 series), or re-plot quickly from an existing per-step CSV with ``--from_csv PREFIX.csv``.
 
 Usage:
-  python plot_temporal_influence.py --values RUN/value/values.pt --out RUN/dve_temporal_influence \
+  python plot_temporal_influence.py --values RUN/value/values.pt --out RUN/dvemb_temporal_influence \
       --lr_mode scaled --learning_rate 3e-4 --warmup_steps 2000 \
       --max_steps 10000 --lr_decay_steps 10000 --lr_schedule linear --bins 60
 """
@@ -40,7 +40,7 @@ import matplotlib.pyplot as plt
 
 
 def lr_at(step, lr, warmup, decay_steps, schedule):
-    """Mirror dve_train_loop.compute_lr for the schedules used here.
+    """Mirror dvemb_train_loop.compute_lr for the schedules used here.
 
     ``decay_steps`` is the LR-decay horizon (the training ``--lr_decay_steps``, or ``max_steps``
     when that is unset); it must match the run's schedule so the lr-normalization divides by the
@@ -155,7 +155,7 @@ def main():
     ax.set_xlabel('training iteration')
     ax.set_ylabel('avg influence per batch  (/ lr)')
     steps_lbl = f'{args.max_steps // 1000}k' if args.max_steps >= 1000 else str(args.max_steps)
-    ax.set_title(f'DVE temporal influence — GPT2-Small / Pile (1% subset, {steps_lbl} steps)')
+    ax.set_title(f'DVEmb temporal influence — GPT2-Small / Pile (1% subset, {steps_lbl} steps)')
     ax.legend(loc='upper right', fontsize=8)
     fig.tight_layout()
     fig.savefig(args.out + '.png', dpi=150)
@@ -169,7 +169,7 @@ def main():
     axes[1].set_title('lr-normalized'); axes[1].axhline(0, color='k', lw=0.5, alpha=0.4)
     for a in axes:
         a.set_xlabel('training iteration'); a.set_ylabel('influence')
-    fig2.suptitle(f'DVE temporal influence diagnostic — GPT2-Small / Pile (MA{args.smooth})')
+    fig2.suptitle(f'DVEmb temporal influence diagnostic — GPT2-Small / Pile (MA{args.smooth})')
     fig2.tight_layout()
     fig2.savefig(args.out + '_diagnostic.png', dpi=140)
     print(f"wrote {args.out}_diagnostic.png")

@@ -1,7 +1,7 @@
-"""Configuration for the Data Value Embedding (DVE) pipeline.
+"""Configuration for the Data Value Embedding (DVEmb) pipeline.
 
 Mirrors gradproj_lm's config but adds a trainable trajectory (optimizer / LR schedule),
-the DVE learning-rate mode, and per-stage output directories. The four pipeline stages
+the DVEmb learning-rate mode, and per-stage output directories. The four pipeline stages
 are selected by boolean flags (mirrors the reference store_train_grad.py):
     --train_and_store_grad  --compute_embedding  --compute_value  --attribute
 """
@@ -48,14 +48,14 @@ def parse_arguments():
     parser.add_argument('--proj_row_orthonormal', action='store_true')
     parser.add_argument('--include_embeddings', action='store_true')
 
-    # --- DVE recursion ---
+    # --- DVEmb recursion ---
     parser.add_argument('--lr_mode', type=str, default='scaled', choices=['none', 'scaled'],
                         help="'scaled' folds dynamic per-step lr into the embedding (and 1/B "
                              "Gauss-Newton norm); 'none' reproduces the reference (lr=1).")
 
     # --- Training trajectory ---
     parser.add_argument('--optimizer', type=str, default='adamw', choices=['adamw', 'sgd'],
-                        help="Optimizer for the training run. DVE's unrolling is derived for "
+                        help="Optimizer for the training run. DVEmb's unrolling is derived for "
                              "SGD; use sgd for the cleanest correctness check.")
     parser.add_argument('--learning_rate', type=float, default=3e-4)
     parser.add_argument('--min_lr', type=float, default=3e-5)
@@ -120,8 +120,8 @@ def parse_arguments():
     return parser.parse_args()
 
 
-class DVEConfig:
-    """Configuration object for the DVE pipeline."""
+class DVEmbConfig:
+    """Configuration object for the DVEmb pipeline."""
 
     def __init__(self, args):
         self.args = args
@@ -144,7 +144,7 @@ class DVEConfig:
         self.proj_row_orthonormal = args.proj_row_orthonormal
         self.include_embeddings = args.include_embeddings
 
-        # DVE
+        # DVEmb
         self.lr_mode = args.lr_mode
 
         # Training
@@ -194,7 +194,7 @@ class DVEConfig:
         # dir and fails loudly (missing checkpoint/embeddings) rather than silently
         # dotting test gradients against embeddings built under an incompatible P.
         # proj_rank_min / include_embeddings change the projected dims (also caught by
-        # the dim check in dve_value), while proj_row_orthonormal / proj_dtype change
+        # the dim check in dvemb_value), while proj_row_orthonormal / proj_dtype change
         # P's values at identical dims (NOT caught there) -- all are included here.
         proj_id = (f"rank_{self.proj_rank_total}_rmin_{self.proj_rank_min}"
                    f"_seed_{self.proj_seed}_ortho_{int(self.proj_row_orthonormal)}"
@@ -219,5 +219,5 @@ class DVEConfig:
         os.makedirs(self.run_dir, exist_ok=True)
 
     def __repr__(self):
-        return (f"DVEConfig(arch={self.architecture}, opt={self.optimizer}, "
+        return (f"DVEmbConfig(arch={self.architecture}, opt={self.optimizer}, "
                 f"steps={self.max_steps}, lr_mode={self.lr_mode}, data={self.data_source})")
