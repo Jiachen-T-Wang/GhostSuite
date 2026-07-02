@@ -14,7 +14,6 @@ import torch
 from torch import nn
 
 from .graddotprod_engine import GradDotProdEngine
-from .gradProjection.gradproj_engine import GradProjLoraEngine
 from .decoupled_capture_dotprod import GhostDecoupledManager
 from .decoupled_compile import attach_and_compile_decoupled
 from .engine_protocol import GhostEngine
@@ -63,13 +62,16 @@ class GhostEngineManager:
         """Initialize the appropriate engine based on config.method."""
         if self.config.method == 'GradDotProd':
             self._initialize_graddotprod_engine()
-        elif self.config.method == 'GradProjLora':
-            self._initialize_gradproj_engine()
         elif self.config.method == 'Regular':
             # No engine needed for regular training
             print("[INFO] Regular training mode - no ghost engine required.")
+        elif self.config.method == 'GradProjLora':
+            raise ValueError(
+                "GhostEngineManager does not drive GradProjLora: GradProjLoraEngine is driven "
+                "directly; see examples/lm/gradproj_lm."
+            )
         else:
-            print(f"[WARNING] Unknown method '{self.config.method}' - no ghost engine initialized.")
+            raise ValueError(f"GhostEngineManager: unknown method '{self.config.method}'.")
     
     def _initialize_graddotprod_engine(self):
         """Initialize the GradDotProd engine — eager by default, or the decoupled fn-path."""
@@ -258,44 +260,6 @@ class GhostEngineManager:
         print(f"[INFO] Saved decoupled dot-product log at iteration {iter_num} ...")
         self.dot_product_log.clear()
 
-    def _initialize_gradproj_engine(self):
-        """Initialize GradProjLoraEngine with projection setup."""
-        print("[INFO] Initializing GradProjLoraEngine ...")
-        
-        # Prepare directory for saving projections
-        proj_dir = os.path.join(self.config.result_dir, "projections")
-        if self.ddp_info['master_process']:
-            os.makedirs(proj_dir, exist_ok=True)
-        
-        # Get projection parameters from config or use defaults
-        proj_layers = getattr(self.config, 'proj_layers', 'mlp,attn')
-        proj_rank_total = getattr(self.config, 'proj_rank_total', 256)
-        proj_rank_min = getattr(self.config, 'proj_rank_min', 8)
-        proj_seed = getattr(self.config, 'proj_seed', 42)
-        proj_dtype = getattr(self.config, 'proj_dtype', self.config.train_dtype)
-        proj_save_interval = getattr(self.config, 'proj_save_interval', 
-                                    self.config.dot_prod_save_interval)
-        include_embeddings = getattr(self.config, 'include_embeddings', False)
-        
-        # Initialize the engine
-        self.engine = GradProjLoraEngine(
-            module=self.model,
-            proj_layers=proj_layers,
-            proj_rank_total=proj_rank_total,
-            proj_rank_min=proj_rank_min,
-            proj_seed=proj_seed,
-            proj_dtype=proj_dtype,
-            proj_dir=proj_dir,
-            proj_save_interval=proj_save_interval,
-            include_embeddings=include_embeddings
-        )
-        
-        # Attach the engine
-        self.engine.attach()
-        
-        print("[INFO] GradProjLoraEngine initialized successfully.")
-    
-
     def is_active(self) -> bool:
         """Check if any ghost engine is active."""
         return self.engine is not None or self.is_fn_path
@@ -366,8 +330,8 @@ class GhostEngineManager:
         if self.is_fn_path and self.decoupled_mgr is not None:
             self.decoupled_mgr.begin_step()
             return
-        # Engines with their own accumulation lifecycle (e.g. GradProjLora) reset their
-        # per-step microbatch buffers here; collect_microbatch then routes to the engine.
+        # Engines with their own accumulation lifecycle reset their per-step microbatch
+        # buffers here; collect_microbatch then routes to the engine.
         if self.engine is not None and hasattr(self.engine, 'begin_step'):
             self.engine.begin_step()
             return
@@ -396,18 +360,18 @@ class GhostEngineManager:
             if self._last_dot is not None:
                 self._pooled_dots.append(self._last_dot.detach().float())
             return
-        # Engines with their own accumulation lifecycle (e.g. GradProjLora) buffer this
-        # microbatch's per-sample projections; the end-of-step collect_batch/save_metrics
-        # concatenates and saves once. Routed here (not the per-microbatch aggregate_and_log
-        # path below) so projections are pooled instead of saved-and-overwritten per microbatch.
+        # Engines with their own accumulation lifecycle buffer this microbatch's per-sample
+        # metrics; the end-of-step collect/save concatenates and saves once. Routed here (not
+        # the per-microbatch aggregate_and_log path below) so per-microbatch results are pooled
+        # instead of saved-and-overwritten per microbatch.
         if self.engine is not None and hasattr(self.engine, 'collect_microbatch'):
             self.engine.collect_microbatch()
             return
         if self.engine is not None:
             # eager GradDotProd: append this microbatch's per-sample dots, then fold its val grad
-            # for the single end-of-step subtract-val recovery. Guarded with hasattr so a non-
-            # GradDotProd engine (e.g. GradProjLora, which has no accumulate_microbatch) routed
-            # through this lifecycle degrades gracefully instead of crashing.
+            # for the single end-of-step subtract-val recovery. Guarded with hasattr so an engine
+            # without these methods routed through this lifecycle degrades gracefully instead of
+            # crashing.
             if hasattr(self.engine, 'aggregate_and_log'):
                 log = getattr(self.engine, "dot_product_log", None)
                 n_before = len(log) if log is not None else 0
@@ -480,6 +444,10 @@ class GhostEngineManager:
         if self.is_fn_path:
             self.dot_product_log.clear()
             self._last_dot = None
+            # Close the decoupled manager's open accumulation step so a later single-shot
+            # run_step_dotprod isn't misread as lifecycle mixing.
+            if self.decoupled_mgr is not None:
+                self.decoupled_mgr.discard_step()
         elif self.engine is not None:
             self.engine.dot_product_log.clear()
             if hasattr(self.engine, "clear_gradients"):
@@ -539,13 +507,9 @@ class GhostEngineManager:
         """Check if metrics should be saved at this iteration."""
         if self.config.method == 'GradDotProd' and iter_num > 0:
             return iter_num % self.config.dot_prod_save_interval == 0
-        elif self.config.method == 'GradProjLora' and iter_num > 0:
-            save_interval = getattr(self.config, 'proj_save_interval', 
-                                   self.config.dot_prod_save_interval)
-            return iter_num % save_interval == 0
         # Add other engine-specific save intervals here
         return False
-    
+
     def save_metrics(self, iter_num: int):
         """Save metrics to disk (if applicable)."""
         if self.is_fn_path:
@@ -553,10 +517,6 @@ class GhostEngineManager:
             return
         if self.config.method == 'GradDotProd' and self.engine:
             self.engine.save_dot_product_log(iter_num=iter_num)
-        elif self.config.method == 'GradProjLora' and self.engine:
-            # For GradProjLora, collect_batch handles saving internally
-            if hasattr(self.engine, 'save_projections'):
-                self.engine.save_projections(iter_num=iter_num)
     
     def get_validation_data(self):
         """Get validation data for methods that need it."""
@@ -627,22 +587,15 @@ class GhostEngineManager:
             return
             
         # Save any remaining metrics
-        if (self.config.method == 'GradDotProd' and 
-            hasattr(self.engine, 'dot_product_log') and 
+        if (self.config.method == 'GradDotProd' and
+            hasattr(self.engine, 'dot_product_log') and
             self.engine.dot_product_log):
             try:
                 # Save with a special cleanup iteration number
                 self.engine.save_dot_product_log(iter_num=-1)
             except Exception as e:
                 print(f"Error saving remaining dot products during cleanup: {e}")
-        elif self.config.method == 'GradProjLora':
-            # GradProjLora saves projections incrementally, just ensure cleanup
-            if hasattr(self.engine, 'cleanup'):
-                try:
-                    self.engine.cleanup()
-                except Exception as e:
-                    print(f"Error during GradProjLora cleanup: {e}")
-        
+
         # Detach the engine
         try:
             self.engine.detach()

@@ -22,6 +22,15 @@ parameter's dot includes the cross-terms. Non-tied leaves use the fast in-graph 
 
 Gated behind ``GHOST_DECOUPLED_FN=1`` (requires ``GHOST_SUBTRACT_VAL=1``). FAIL-LOUD on any
 unsupported parameterized leaf.
+
+**Module-reuse / buffer-clobber detection (uncompiled path only).** The in-graph store is an
+overwrite, so a wrapped module invoked more than once in a single backward (ALBERT-style module
+sharing) — or a second backward before ``collect_microbatch_dot`` reads the buffers — would
+silently drop a contribution. Each in-graph Function backward therefore fails loud on a second
+store into the same ``dot`` buffer within one pass. Limitation: inside a ``torch.compile``-d
+region the Function backward is traced into the graph, so this Python-level check cannot run at
+runtime there; compiled regions rely on the model being reuse-free (true for the supported
+transformer blocks).
 """
 
 from typing import Dict, List, Optional, Tuple
@@ -58,6 +67,27 @@ def _store(buf, val):
     return torch.ops.ghost.capture_store(buf, val)
 
 
+def _mark_pass_store(dot_buf: torch.Tensor) -> None:
+    """Fail loud on a second store into the same in-graph ``dot`` buffer within one pass.
+
+    ``_capture_store`` overwrites, so a duplicate store silently clobbers the earlier
+    contribution — either a wrapped module ran more than once in a single backward (module
+    reuse), or a second backward ran before ``collect_microbatch_dot`` read the previous one's
+    buffers. Skipped while tracing: under compile the Function backward is baked into the graph
+    and this Python check cannot execute at runtime (see the module docstring)."""
+    if torch.compiler.is_compiling():
+        return
+    if getattr(dot_buf, "_ghost_pass_stored", False):
+        raise RuntimeError(
+            "GHOST_DECOUPLED_FN: in-graph dot buffer stored twice in one pass. Either a wrapped "
+            "module was invoked more than once per forward (module reuse is unsupported on the "
+            "in-graph path), or a second backward ran before collect_microbatch_dot read the "
+            "previous one's buffers. The store is an overwrite, so a contribution would be "
+            "silently lost."
+        )
+    dot_buf._ghost_pass_stored = True
+
+
 # =======================================================================================
 # tied-weight capture: store full (A, B) for the post-backward cross-term finalizer
 # =======================================================================================
@@ -88,6 +118,11 @@ class _CaptureFn(torch.autograd.Function):
     def backward(ctx, grad_output):
         from .supported_layers_grad_samplers_dotprod import stash_tied_contribution
         (input_act,) = ctx.saved_tensors
+        # Record the combined batch size for the subtract-val recovery scale HERE, in the
+        # backward: only a pass that actually contributes gradients can set the scale, so a
+        # no_grad eval forward — or a grad-enabled forward whose graph is discarded — at another
+        # batch size can never clobber it (recording in the forward wrapper could).
+        ctx.layer._ghost_capture_total_bs = input_act.size(0)
         # Reduce immediately: accumulate gval + keep only the small train factors, then let the
         # captured (A, B) free with this backward node — no persistent vocab-sized buffer.
         stash_tied_contribution(ctx.layer, input_act, grad_output, ctx.val_bs)
@@ -126,6 +161,7 @@ class _IGLinearFn(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
+        _mark_pass_store(ctx.dot_buf)
         A = ctx.saved_tensors[0]
         B = grad_output
         train_bs = ctx.train_bs
@@ -163,9 +199,11 @@ class _IGEmbeddingFn(torch.autograd.Function):
     """Identity on an Embedding's output; computes the embedding dot-product in backward."""
 
     @staticmethod
-    def forward(ctx, output, idx, weight_shape, dot_buf, gradval_buf, train_bs, val_bs):
+    def forward(ctx, output, idx, weight_shape, padding_idx, dot_buf, gradval_buf,
+                train_bs, val_bs):
         ctx.save_for_backward(idx)
         ctx.weight_shape = weight_shape
+        ctx.padding_idx = padding_idx
         ctx.dot_buf = dot_buf
         ctx.gradval_buf = gradval_buf
         ctx.train_bs = train_bs
@@ -173,6 +211,7 @@ class _IGEmbeddingFn(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
+        _mark_pass_store(ctx.dot_buf)
         idx = ctx.saved_tensors[0]
         B = grad_output
         train_bs = ctx.train_bs
@@ -181,6 +220,12 @@ class _IGEmbeddingFn(torch.autograd.Function):
         idx_train, idx_val = idx_l[:train_bs], idx_l[train_bs:]
         B_train, B_val = B[:train_bs].to(compute_dtype), B[train_bs:].to(compute_dtype)
         vocab, d_f = ctx.weight_shape
+        # The native embedding backward zeroes the padding_idx row of dL/dW, so pad positions
+        # must not contribute to grad_val (mask, not filter — shapes stay static under compile).
+        # With grad_val[padding_idx] == 0, train pad positions then contribute
+        # B_train . grad_val[padding_idx] == 0 to the dot automatically.
+        if ctx.padding_idx is not None:
+            B_val = B_val * (idx_val != ctx.padding_idx).unsqueeze(-1).to(B_val.dtype)
         grad_val = torch.zeros((vocab, d_f), dtype=compute_dtype, device=B.device)
         grad_val.index_add_(0, idx_val.reshape(-1), B_val.reshape(-1, d_f))
         # Reduce over every dim except the per-sample batch dim, so a 1-D [batch] index
@@ -190,7 +235,7 @@ class _IGEmbeddingFn(torch.autograd.Function):
         m1 = _store(ctx.dot_buf, dot)
         m2 = _store(ctx.gradval_buf, grad_val.to(ACCUM_DTYPE))
         grad_out = grad_output + (0.0 * (m1 + m2)).to(grad_output.dtype)
-        return grad_out, None, None, None, None, None, None
+        return grad_out, None, None, None, None, None, None, None
 
 
 class _IGRMSNormFn(torch.autograd.Function):
@@ -207,6 +252,7 @@ class _IGRMSNormFn(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
+        _mark_pass_store(ctx.dot_buf)
         A = ctx.saved_tensors[0].to(ACCUM_DTYPE)
         B = grad_output.to(ACCUM_DTYPE)
         train_bs = ctx.train_bs
@@ -217,8 +263,11 @@ class _IGRMSNormFn(torch.autograd.Function):
         rms_val = torch.sqrt((A_val ** 2).mean(dim=-1, keepdim=True) + eps)
         gw_train = B_train * (A_train / rms_train)
         gw_val = B_val * (A_val / rms_val)
-        per_sample = gw_train.sum(dim=list(range(1, gw_train.dim() - 1)))  # [train, d]
-        total_val = gw_val.sum(dim=list(range(gw_val.dim() - 1)))          # [d]
+        # Rank-2 [batch, d] input has no token dims: sum(dim=[]) reduces ALL dims, so guard
+        # (mirrors _IGLayerNormFn and the eager path).
+        sum_dims = list(range(1, gw_train.dim() - 1))
+        per_sample = gw_train.sum(dim=sum_dims) if sum_dims else gw_train    # [train, d]
+        total_val = gw_val.sum(dim=list(range(gw_val.dim() - 1)))            # [d]
         dot = torch.einsum("bf,f->b", per_sample, total_val)              # [train]
         m1 = _store(ctx.dot_buf, dot)
         m2 = _store(ctx.gradval_buf, total_val.to(ACCUM_DTYPE))
@@ -252,6 +301,7 @@ class _IGLayerNormFn(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, grad_output):
+        _mark_pass_store(ctx.dot_buf)
         A = ctx.saved_tensors[0].to(ACCUM_DTYPE)
         B = grad_output.to(ACCUM_DTYPE)
         train_bs = ctx.train_bs
@@ -297,10 +347,12 @@ class GhostDecoupledManager:
                  score_exclude_params=None) -> None:
         self.model = model
         self.val_batch_size = val_batch_size
-        # Layer-name substrings whose dot-product is dropped from the logged SCORE only
-        # (grad_val is still published, so training is unaffected) — mirrors the eager engine's
-        # score_exclude_params. Used e.g. to drop the dominant tied wte/lm_head term from GREATS
-        # selection without changing the update.
+        # MODULE-name substrings whose dot-product is dropped from the logged SCORE only
+        # (grad_val is still published, so training is unaffected) — the decoupled analogue of the
+        # eager engine's param-name score_exclude_params. A tied weight is excluded when ANY of
+        # its sharing modules' names match (so "lm_head" excludes the tied wte/lm_head weight even
+        # though it finalizes under the first tied use's name). Used e.g. to drop the dominant
+        # tied wte/lm_head term from GREATS selection without changing the update.
         self.score_exclude_params = list(score_exclude_params or [])
         # When disabled, the wrapped forwards fall through to the native op (no dot Function),
         # so the model can take a plain forward/backward while the manager stays attached — e.g.
@@ -323,6 +375,13 @@ class GhostDecoupledManager:
         # Track attach-time mutations so detach() restores the model cleanly (no leaked attrs):
         self._flagged_weights: List[torch.Tensor] = []   # weights WE set ``_ghost_tied`` on
         self._name_restore: Dict[int, object] = {}       # id(layer) -> prior ``name`` (or _MISSING)
+        self._attached = False
+        # Step-state machine (idle -> collecting -> recovered): begin_step opens an accumulation
+        # step, collect_microbatch_dot counts its microbatches, recover_train_grads closes it.
+        # run_step_dotprod refuses to run inside an open accumulation step (it would wipe the
+        # accumulated val grad and re-read only the last microbatch's buffers).
+        self._step_state = "idle"
+        self._microbatches_collected = 0
 
     # -- forward wrappers (ingraph mode) --------------------------------------------------
 
@@ -346,13 +405,24 @@ class GhostDecoupledManager:
         """Drop any per-pass tied-weight accumulation (stash + val aggregate). Tied uses now stash
         inline in `_CaptureFn.backward`, so a backward that is not followed by finalize/recover
         (e.g. the attach-time warmup) would otherwise leak its stash into the next pass and
-        double-count. A complete scoring step cleans itself up via finalize_tied_param + recover."""
+        double-count. A complete scoring step cleans itself up via finalize_tied_param + recover.
+        Also clears the in-graph per-pass store flags for the same reason (a warmup backward sets
+        them; the next real backward would otherwise be misread as a duplicate store)."""
         for _, layer in self._tied_layers:
             w = layer.weight
             for attr in ("_ghost_tied_stash", "_ghost_tied_train_bs", "_ghost_tied_log_norms",
                          "_ghost_grad_val", "_ghost_tied_gval", "grad_dot_prod"):
                 if hasattr(w, attr):
                     delattr(w, attr)
+        self._clear_store_flags()
+
+    def _clear_store_flags(self) -> None:
+        """Reset the per-pass duplicate-store flags on EVERY cached in-graph dot buffer (all
+        shapes, not just the active cell) so a completed/abandoned pass never poisons the next."""
+        for cache in self._cell_bufs.values():
+            for bufs in cache.values():
+                if hasattr(bufs[0], "_ghost_pass_stored"):
+                    del bufs[0]._ghost_pass_stored
 
     def prepare_shape(self, total_bs: int) -> None:
         """Point every in-graph layer's active cell at the buffers for this combined batch size.
@@ -430,7 +500,9 @@ class GhostDecoupledManager:
                 cell[0] = self._ensure_bufs_ingraph(layer, idx.shape[0], weight.device)
             dot_buf = cell[0][0]
             gv_buf = cell[0][1][0][1]
-            return _IGEmbeddingFn.apply(out, idx, wshape, dot_buf, gv_buf, idx.shape[0] - vbs, vbs)
+            return _IGEmbeddingFn.apply(
+                out, idx, wshape, padding_idx, dot_buf, gv_buf, idx.shape[0] - vbs, vbs
+            )
 
         return forward
 
@@ -439,7 +511,12 @@ class GhostDecoupledManager:
         self._cells[id(layer)] = cell
         weight = layer.weight
         normalized_shape = tuple(layer.normalized_shape)
-        eps = layer.eps if layer.eps is not None else 1e-5
+        # Pass layer.eps through UNCHANGED (F.rms_norm accepts None => machine eps of the input
+        # dtype), so the wrapped forward's numerics match the native module exactly. The dot
+        # recompute needs a concrete value; it runs in ACCUM_DTYPE, so mirror None with that
+        # dtype's machine eps there.
+        eps = layer.eps
+        fn_eps = eps if eps is not None else torch.finfo(ACCUM_DTYPE).eps
         vbs = self.val_batch_size
 
         def forward(x):
@@ -450,7 +527,7 @@ class GhostDecoupledManager:
                 cell[0] = self._ensure_bufs_ingraph(layer, x.shape[0], x.device)
             dot_buf = cell[0][0]
             gv_buf = cell[0][1][0][1]
-            return _IGRMSNormFn.apply(out, x, eps, dot_buf, gv_buf, x.shape[0] - vbs, vbs)
+            return _IGRMSNormFn.apply(out, x, fn_eps, dot_buf, gv_buf, x.shape[0] - vbs, vbs)
 
         return forward
 
@@ -492,8 +569,9 @@ class GhostDecoupledManager:
             # Tied-capture layers are eager (top-level, never in a compiled region): the reduction
             # happens inside _CaptureFn.backward (stash_tied_contribution), so there is no persistent
             # (A, B) buffer to size — this naturally serves any batch shape (e.g. GREATS' two
-            # per-step shapes). Record the combined batch for the subtract-val recovery scale.
-            layer._ghost_capture_total_bs = x.shape[0]
+            # per-step shapes). The combined batch size for the subtract-val recovery scale is
+            # recorded in _CaptureFn.backward, so enabled forwards WITHOUT a backward (no_grad
+            # eval, discarded logging forwards) cannot clobber it.
             return _CaptureFn.apply(out, x, layer, vbs)
 
         return forward
@@ -517,11 +595,31 @@ class GhostDecoupledManager:
                 self._flagged_weights.append(w)  # record so detach() clears only what WE set
 
     def attach(self) -> None:
+        if self._attached:
+            raise RuntimeError(
+                "GHOST_DECOUPLED_FN: attach() called on an already-attached manager; detach() "
+                "first. Re-attaching would wrap the wrapped forwards again (detach would then "
+                "restore a wrapper) and duplicate every layer entry, double-counting dots and "
+                "subtracting the val grad twice."
+            )
         self._flag_tied_weights()
+        try:
+            self._attach_walk()
+        except Exception:
+            # Mid-walk failure (e.g. an unsupported parameterized leaf): restore the layers
+            # already wrapped instead of leaving the model half-monkeypatched.
+            self.detach()
+            raise
+        self._attached = True
+
+    def _attach_walk(self) -> None:
         for name, layer in self.model.named_modules():
             if isinstance(layer, _SUPPORTED):
                 if any(p.requires_grad for p in layer.parameters(recurse=False)):
                     tied = getattr(layer.weight, "_ghost_tied", False)
+                    # All per-layer fail-loud checks run BEFORE any mutation of this layer, so a
+                    # raise here leaves it pristine and the rollback in attach() only has to
+                    # restore fully-registered layers.
                     # Non-tied biased Linear is handled by _IGLinearFn (bias dot folded in-graph).
                     # A tied weight whose module also has a per-module bias stays unsupported: the
                     # tied capture path (_CaptureFn / stash_tied_contribution) handles only the
@@ -532,6 +630,22 @@ class GhostDecoupledManager:
                             f"GHOST_DECOUPLED_FN: tied Linear '{name}' has a bias; not supported "
                             "(tied weight + per-module bias)."
                         )
+                    if tied and not isinstance(layer, (nn.Linear, nn.Embedding)):
+                        raise RuntimeError(
+                            f"GHOST_DECOUPLED_FN: tied weight on unsupported layer '{name}' "
+                            f"({type(layer).__name__}); only Linear/Embedding tying is handled."
+                        )
+                    # The ghost forwards call F.embedding(idx, weight, padding_idx) only, so any
+                    # other non-default embedding option would be silently dropped from the
+                    # wrapped forward — and the captured math ignores them. Fail loud.
+                    if isinstance(layer, nn.Embedding) and (
+                        layer.max_norm is not None or layer.scale_grad_by_freq or layer.sparse
+                    ):
+                        raise ValueError(
+                            f"GHOST_DECOUPLED_FN: Embedding '{name}' uses max_norm/"
+                            "scale_grad_by_freq/sparse, which the ghost wrappers do not "
+                            "implement (only padding_idx is supported)."
+                        )
                     if id(layer) not in self._name_restore:
                         self._name_restore[id(layer)] = getattr(layer, "name", _MISSING)
                     setattr(layer, "name", name)
@@ -539,11 +653,6 @@ class GhostDecoupledManager:
                     if tied:
                         # Tied weight: capture (A, B) eagerly and combine post-backward with
                         # cross-terms (these layers are top-level, not in compiled regions).
-                        if not isinstance(layer, (nn.Linear, nn.Embedding)):
-                            raise RuntimeError(
-                                f"GHOST_DECOUPLED_FN: tied weight on unsupported layer '{name}' "
-                                f"({type(layer).__name__}); only Linear/Embedding tying is handled."
-                            )
                         layer.forward = self._wrap_capture(layer, self._build_op(layer))
                         self._tied_layers.append((name, layer))
                     else:  # ingraph (non-tied)
@@ -573,7 +682,7 @@ class GhostDecoupledManager:
         if isinstance(layer, nn.Embedding):
             return lambda x, w=weight, p=layer.padding_idx: F.embedding(x, w, p)
         ns = tuple(layer.normalized_shape)
-        ep = layer.eps if layer.eps is not None else 1e-5
+        ep = layer.eps  # pass through unchanged; F.rms_norm treats None as machine eps
         return lambda x, w=weight, ns=ns, ep=ep: F.rms_norm(x, ns, w, ep)
 
     def warmup(self, example_input: torch.Tensor) -> None:
@@ -583,6 +692,9 @@ class GhostDecoupledManager:
         loss.backward()
         self.model.zero_grad(set_to_none=True)
         self.model.train(was_training)
+        # The warmup backward stored into the in-graph buffers without a collect; drop the
+        # per-pass store flags so the first real backward isn't misread as a duplicate store.
+        self._clear_store_flags()
 
     def detach(self) -> None:
         for _, layer in (self._layers + self._tied_layers):
@@ -596,6 +708,8 @@ class GhostDecoupledManager:
                     del layer.name
             else:
                 layer.name = prior
+            if hasattr(layer, "_ghost_capture_total_bs"):
+                del layer._ghost_capture_total_bs
         # Clear only the tied flags WE set, so a model reused across cycles doesn't leak them.
         for w in self._flagged_weights:
             if hasattr(w, "_ghost_tied"):
@@ -607,6 +721,9 @@ class GhostDecoupledManager:
         self._cell_bufs.clear()
         self._flagged_weights.clear()
         self._name_restore.clear()
+        self._attached = False
+        self._step_state = "idle"
+        self._microbatches_collected = 0
 
     # -- post-backward --------------------------------------------------------------------
 
@@ -626,7 +743,11 @@ class GhostDecoupledManager:
         """Reset per-step accumulation state before the microbatch loop.
 
         Clears any leftover ``_ghost_grad_val_accum`` / tied stash / ``grad_dot_prod`` so a step's
-        accumulation starts clean. Required before the first ``collect_microbatch_dot`` of a step."""
+        accumulation starts clean. Required before the first ``collect_microbatch_dot`` of a step.
+        Opens the step-state machine (idle -> collecting)."""
+        self._step_state = "collecting"
+        self._microbatches_collected = 0
+        self._clear_store_flags()
         for _, layer in self._layers:
             for p in layer.parameters(recurse=False):
                 for attr in ("_ghost_grad_val_accum", "_ghost_grad_val", "grad_dot_prod"):
@@ -656,6 +777,9 @@ class GhostDecoupledManager:
             if cell is None or cell[0] is None:
                 raise RuntimeError(f"GHOST_DECOUPLED_FN: '{getattr(layer,'name','?')}' no buffer.")
             dot, gvs = cell[0]
+            # This microbatch's store is consumed; let the next backward store afresh.
+            if hasattr(dot, "_ghost_pass_stored"):
+                del dot._ghost_pass_stored
             for param, gv in gvs:
                 self._accumulate_grad_val(param, gv)  # publish for recover (training unaffected)
             if self._excluded(name):
@@ -667,6 +791,12 @@ class GhostDecoupledManager:
         # fold its val grad into the accumulator, then clear _ghost_grad_val so the next microbatch's
         # inline stash starts from prev=None (first_use_this_pass keys off the deleted
         # _ghost_tied_stash, which finalize_tied_param removed).
+        # Score-exclusion for a tied weight matches ANY of its sharing modules' names: e.g.
+        # score_exclude_params=["lm_head"] must exclude the shared wte/lm_head weight even though
+        # it finalizes under the first tied use's name (transformer.wte on tied GPT-2).
+        tied_names: Dict[int, List[str]] = {}
+        for n, l in self._tied_layers:
+            tied_names.setdefault(id(l.weight), []).append(n)
         seen = set()
         for name, layer in self._tied_layers:
             w = layer.weight
@@ -674,7 +804,7 @@ class GhostDecoupledManager:
                 continue
             seen.add(id(w))
             finalize_tied_param(w)            # sets w.grad_dot_prod, leaves _ghost_grad_val for the fold
-            if not self._excluded(name):
+            if not any(self._excluded(n) for n in tied_names[id(w)]):
                 dp = w.grad_dot_prod
                 total = dp.detach().clone() if total is None else total + dp.detach()
             if hasattr(w, "_ghost_grad_val"):
@@ -682,6 +812,7 @@ class GhostDecoupledManager:
                 del w._ghost_grad_val
             if hasattr(w, "grad_dot_prod"):
                 del w.grad_dot_prod
+        self._microbatches_collected += 1
         return total
 
     def _reset_accumulators(self) -> None:
@@ -705,9 +836,27 @@ class GhostDecoupledManager:
 
         Called AFTER one backward, so it must NOT ``begin_step`` (that would wipe this backward's
         inline tied stash before ``collect_microbatch_dot`` reads it). Resets only the accumulator so
-        the lone microbatch's val grad lands fresh in ``_ghost_grad_val_accum``."""
+        the lone microbatch's val grad lands fresh in ``_ghost_grad_val_accum``. Refuses to run
+        inside an open ``begin_step`` accumulation step (mixing the two lifecycles would wipe the
+        accumulated val grad and re-read only the last microbatch's buffers)."""
+        if self._step_state == "collecting" and self._microbatches_collected > 0:
+            raise RuntimeError(
+                "GHOST_DECOUPLED_FN: run_step_dotprod called inside an open begin_step "
+                f"accumulation step ({self._microbatches_collected} microbatch(es) already "
+                "collected). It would wipe the accumulated val grad and re-read only the last "
+                "microbatch's buffers. Finish the step with recover_train_grads (or discard_step), "
+                "or drop the begin_step/collect_microbatch_dot lifecycle for single-shot use."
+            )
         self._reset_accumulators()
         return self.collect_microbatch_dot()
+
+    def discard_step(self) -> None:
+        """Close an open accumulation step WITHOUT recovery (the reselect path scores, then takes
+        a plain backward on a subset). Resets the step-state machine so a later single-shot
+        ``run_step_dotprod`` is not misread as lifecycle mixing; the caller is responsible for
+        clearing the per-param scoring state (``discard_scores`` does)."""
+        self._step_state = "idle"
+        self._microbatches_collected = 0
 
     def _excluded(self, name: str) -> bool:
         return any(pat in name for pat in self.score_exclude_params)
@@ -763,3 +912,7 @@ class GhostDecoupledManager:
                 del w._ghost_grad_val
             if hasattr(w, "_ghost_tied_gval"):
                 del w._ghost_tied_gval
+
+        # Close the step-state machine: the accumulated state is consumed.
+        self._step_state = "recovered"
+        self._microbatches_collected = 0

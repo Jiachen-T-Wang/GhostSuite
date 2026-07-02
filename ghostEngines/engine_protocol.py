@@ -1,15 +1,16 @@
 """Shared engine interface.
 
-`GhostEngineManager` drives concrete engines (``GradDotProdEngine``, ``GradProjLoraEngine``)
-through a small lifecycle. This Protocol declares the **mandatory, common** subset of that
-lifecycle so the manager can be typed against an interface instead of duck-typing, and so a new
-engine has an explicit contract to implement.
+`GhostEngineManager` drives concrete engines (currently ``GradDotProdEngine``; the projection
+engine ``GradProjLoraEngine`` is driven directly by its examples, not by the manager) through a
+small lifecycle. This Protocol declares the **mandatory, common** subset of that lifecycle so the
+manager can be typed against an interface instead of duck-typing, and so a new engine has an
+explicit contract to implement.
 
-It is intentionally minimal: only the methods every engine must provide. Engine-specific
-capabilities the manager invokes opportunistically — e.g. ``saved_tensors_context`` /
-``accumulate_microbatch`` (GradDotProd) or ``save_projections`` (GradProjLora) — are deliberately
-NOT part of this Protocol; the manager guards those with ``hasattr`` so an engine that lacks them
-degrades gracefully rather than being forced to define no-ops.
+It is intentionally minimal: only the methods every manager-driven engine must provide.
+Engine-specific capabilities the manager invokes opportunistically — e.g.
+``saved_tensors_context`` / ``accumulate_microbatch`` (GradDotProd) — are deliberately NOT part
+of this Protocol; the manager guards those with ``hasattr`` so an engine that lacks them degrades
+gracefully rather than being forced to define no-ops.
 """
 
 from typing import Optional, Protocol, runtime_checkable
@@ -22,8 +23,8 @@ class GhostEngine(Protocol):
     """The mandatory lifecycle every ghost engine implements (see module docstring)."""
 
     def attach(self, optimizer: Optional[torch.optim.Optimizer] = None) -> None:
-        """Register hooks / projections. ``optimizer`` is used by engines that update grads
-        (GradDotProd) and ignored by those that only observe them (GradProjLora)."""
+        """Register hooks. ``optimizer`` is used by engines that update grads (GradDotProd);
+        engines that only observe gradients may ignore it."""
         ...
 
     def detach(self) -> None:
