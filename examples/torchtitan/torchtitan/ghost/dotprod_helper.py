@@ -17,6 +17,11 @@ from torchtitan.tools.logging import logger
 # compile); train grads are recovered via subtract-val. When off, the eager GradDotProdEngine runs.
 _DECOUPLED_FN = os.getenv("GHOST_DECOUPLED_FN", "0") == "1"
 
+# separate-val mode of the decoupled path: one plain val backward per optimizer step (harvested
+# into per-param gval caches) + train-only microbatches whose in-graph dots project against the
+# cache. See GhostDecoupledManager(separate_val=True).
+_SEPARATE_VAL = os.getenv("GHOST_SEPARATE_VAL", "0") == "1"
+
 
 class GhostDotProdHelper:
     """Utility wrapper to manage GradDotProdEngine lifecycle for TorchTitan runs."""
@@ -50,6 +55,7 @@ class GhostDotProdHelper:
         # The decoupled Function path uses the trainer's fn-path wiring (no saved_tensors_context;
         # dot-products collected after backward; subtract-val recovery before the optimizer step).
         self.use_fn_path = _DECOUPLED_FN
+        self.use_separate_val = _DECOUPLED_FN and _SEPARATE_VAL
         if self.use_decoupled_fn:
             # Persistence is not wired on the fn-path (follow-up:
             # docs/issues/open/titan-fn-path-never-persists-dots_2026-07-02.md), so save_dir is
@@ -65,7 +71,20 @@ class GhostDotProdHelper:
                     self.ghost_cfg.save_interval,
                     save_dir,
                 )
-            self.fn_manager = GhostDecoupledManager(model, val_batch_size=self.val_batch_size)
+            # gval buffers hold the harvested val grads for the separate-val projection GEMMs;
+            # allocate the Linear-weight ones in the autocast compute dtype so the projection
+            # runs on tensor cores without a per-backward cast (params are fp32 under AMP).
+            gval_dtype = None
+            if self.use_separate_val and (
+                job_config.training.mixed_precision_param == "bfloat16"
+            ):
+                gval_dtype = torch.bfloat16
+            self.fn_manager = GhostDecoupledManager(
+                model,
+                val_batch_size=self.val_batch_size,
+                separate_val=self.use_separate_val,
+                gval_dtype=gval_dtype,
+            )
             self.fn_manager.attach()
             self.engine = None
             self.dot_products = []
@@ -134,8 +153,11 @@ class GhostDotProdHelper:
     def warmup_for_compile(self, train_local_batch_size: int, seq_len: int) -> None:
         """Run one eager forward+backward to populate the per-layer dot/grad_val buffers BEFORE
         torch.compile traces the model (compile must not allocate buffers inside the graph).
-        Uses a combined train+val token batch matching the real training shape."""
-        combined_bs = train_local_batch_size + self.val_batch_size
+        Uses a batch matching the real training shape: combined train+val on the combined-batch
+        path, train-only on the separate-val path (its microbatches never carry val rows)."""
+        combined_bs = train_local_batch_size + (
+            0 if self.use_separate_val else self.val_batch_size
+        )
         example = torch.randint(
             0, 1, (combined_bs, seq_len), device=self.device, dtype=torch.long
         )

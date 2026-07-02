@@ -107,6 +107,37 @@ class GhostTrainer(Trainer):
             )
             apply_compile(self.model_parts[0], self._compile_config)
 
+            # The loss was built while compile.enable was force-disabled (the deferred-compile
+            # trick), so it would run EAGER — an fp32 full-vocab cross-entropy the plain compiled
+            # baseline does not pay. Recompile it here, swapping in the compile-friendly CE
+            # (constant 1/N normalizer) because the default F.cross_entropy backward trips
+            # Inductor's data-dependent-scalar codegen. Only the known CE variants are replaced;
+            # anything else fails loud rather than silently changing the training objective.
+            if job_config.ghost.compile_loss and "loss" in self._compile_config.components:
+                from torchtitan.components import loss as loss_mod
+
+                inner = getattr(self.loss_fn, "unwrapped_loss_fn", None)
+                if inner is None:
+                    raise RuntimeError(
+                        "ghost.compile_loss: expected the trainer loss_fn to be the "
+                        "RescaleAccumulatedLoss wrapper; got a bare callable."
+                    )
+                base = getattr(inner, "_torchdynamo_orig_callable", inner)
+                if base not in (
+                    loss_mod.cross_entropy_loss,
+                    loss_mod.compile_friendly_cross_entropy_loss,
+                ):
+                    raise RuntimeError(
+                        "ghost.compile_loss: loss_fn is not the known cross-entropy variant "
+                        f"({base}); refusing to swap in the compile-friendly CE. Set "
+                        "--ghost.no-compile_loss."
+                    )
+                self.loss_fn.unwrapped_loss_fn = torch.compile(
+                    loss_mod.compile_friendly_cross_entropy_loss,
+                    backend=self._compile_config.backend,
+                )
+                logger.info("Ghost: compiled the loss (compile-friendly CE).")
+
             # Opt-in: also regional-compile the top-level layers that apply_compile skips, so their
             # ghost in-graph dot folds into a compiled region instead of running eager.
             # Per-layer attribution (docs/investigations/ghost_outemb_plus_ac_2026-06-19.md, Part 4)
@@ -172,6 +203,7 @@ class GhostTrainer(Trainer):
             ("GHOST_DECOUPLED_FN", ghost_cfg.decoupled_fn),
             ("GHOST_COMPILE_TOPLEVEL", ghost_cfg.compile_toplevel),
             ("GHOST_REGIONAL_COMPILE", ghost_cfg.regional_compile),
+            ("GHOST_SEPARATE_VAL", ghost_cfg.separate_val),
         ]
         resolved = {}
         for name, cfg_val in mapping:
@@ -194,6 +226,11 @@ class GhostTrainer(Trainer):
                 "train gradients via subtract-val after backward. Enable subtract_val or disable "
                 "the lever."
             )
+        if resolved["GHOST_SEPARATE_VAL"] and not resolved["GHOST_DECOUPLED_FN"]:
+            raise ValueError(
+                "ghost lever GHOST_SEPARATE_VAL is a mode of the decoupled-Function engine; "
+                "enable ghost.decoupled_fn or disable separate_val."
+            )
 
         logger.info(
             "Ghost levers: subtract_val=%s decoupled_fn=%s compile_toplevel=%s "
@@ -203,6 +240,31 @@ class GhostTrainer(Trainer):
             resolved["GHOST_OPSAC_MM_EVERY"],
         )
 
+    def _ghost_val_pass(self) -> None:
+        """separate-val: plain fwd/bwd on the fixed val batch, then harvest .grad -> gval caches.
+
+        Runs with the ghost wrappers disabled (native ops — the val rows need no dots) and with
+        the accumulation-rescale off (the harvested gval should be the plain mean-over-val-tokens
+        gradient, not divided by the train accumulation steps). ``harvest_val_grads`` clears the
+        harvested ``.grad`` so the following train microbatches accumulate from zero."""
+        mgr = self.ghost_helper.fn_manager
+        helper = self.ghost_helper
+        mgr.set_enabled(False)
+        try:
+            with self.train_context(None):
+                with self.maybe_enable_amp:
+                    pred = self.model_parts[0](helper.val_input_dict["input"])
+                    with self.loss_fn.no_rescale():
+                        loss = self.loss_fn(pred, helper.val_labels)
+                del pred
+                loss.backward()
+        finally:
+            mgr.set_enabled(True)
+        mgr.harvest_val_grads()
+        # The val pass is real per-step work: count its tokens once in throughput metrics
+        # (the combined-batch path counts them once per microbatch instead).
+        self.metrics_processor.ntokens_since_last_log += helper.val_labels.numel()
+
     def forward_backward_step(
         self,
         input_dict: dict[str, torch.Tensor],
@@ -211,11 +273,18 @@ class GhostTrainer(Trainer):
     ) -> torch.Tensor:
         """Override to append fixed validation batch and run ghost hooks."""
         # No parallel contexts supported in ghost mode.
-        combined_input, combined_labels = self.ghost_helper.combine_with_val(input_dict, labels)
-        # Include validation tokens in throughput/MFU metrics for ghost runs.
-        self.metrics_processor.ntokens_since_last_log += (
-            combined_labels.numel() - labels.numel()
-        )
+        if self.ghost_helper.use_separate_val:
+            # separate-val: the val gradient was harvested once at step start (_ghost_val_pass);
+            # train microbatches run WITHOUT the appended val rows.
+            combined_input, combined_labels = input_dict, labels
+        else:
+            combined_input, combined_labels = self.ghost_helper.combine_with_val(
+                input_dict, labels
+            )
+            # Include validation tokens in throughput/MFU metrics for ghost runs.
+            self.metrics_processor.ntokens_since_last_log += (
+                combined_labels.numel() - labels.numel()
+            )
 
         self.ghost_helper.attach_train_batch(
             train_input=input_dict["input"],
@@ -258,6 +327,13 @@ class GhostTrainer(Trainer):
 
         # Reset per-step dot/grad accumulation before the gradient-accumulation microbatch loop.
         self.ghost_helper.begin_step()
+
+        # separate-val: one plain backward on the fixed val batch (wrappers disabled), harvest
+        # autograd's .grad into the per-param gval caches the microbatch dots project against.
+        # The val gradient is constant across a step's microbatches (weights don't change), so
+        # this replaces carrying the val rows through EVERY microbatch's forward/backward.
+        if self.ghost_helper.use_separate_val:
+            self._ghost_val_pass()
 
         accumulated_losses = []
         for microbatch_idx in range(self.gradient_accumulation_steps):

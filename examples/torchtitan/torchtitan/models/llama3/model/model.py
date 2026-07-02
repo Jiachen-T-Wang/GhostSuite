@@ -445,6 +445,10 @@ class TransformerBlock(nn.Module):
 
     def __init__(self, layer_id: int, model_args: TransformerModelArgs):
         super().__init__()
+        # Resolve the lever-1c decision at build time: the first *forward* may already be
+        # inside a fullgraph torch.compile trace (stock torchtitan compiles blocks with no
+        # eager warmup), where the lazy resolver's one-time print is an unsupported builtin.
+        _regional_compile_enabled()
         self.n_heads = model_args.n_heads
         self.dim = model_args.dim
         self.attention = Attention(model_args)

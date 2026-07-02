@@ -1018,6 +1018,23 @@ class Ghost:
     regional_compile: bool = False
     """Lever 1c: regional torch.compile of RoPE/SwiGLU. GPU-dependent (+A100 / -H200); default off."""
 
+    separate_val: bool = False
+    """Two-pass separate-val engine (requires decoupled_fn): each step runs ONE plain backward on
+    the fixed val batch (wrappers disabled) and harvests autograd's .grad as the cached per-param
+    val gradient; the train microbatches then run WITHOUT the appended val rows, and their in-graph
+    dots project against the cache. Removes the per-microbatch val fwd/bwd, the per-layer grad_val
+    GEMMs + fp32 buffer stores, and the subtract-val recovery (autograd .grad IS the train grad).
+    Dots equal the combined-batch dots up to a constant per-config rescale
+    (total_tok^2 / (train_tok * val_tok) at N=1)."""
+
+    compile_loss: bool = True
+    """Compile the loss on the decoupled_fn path (effective with compile.enable and 'loss' in
+    compile.components). The deferred-compile trick builds the loss while compile.enable is
+    force-disabled, so without this the ghost path trains with an EAGER fp32 cross-entropy over
+    the full vocab — a large bandwidth/memory cost the plain compiled baseline does not pay.
+    Swaps in the compile-friendly CE (constant normalizer; numerically equal when the dataloader
+    emits no ignore_index labels, which holds for the llama3 text datasets)."""
+
     opsac_mm_every: int = 1
     """op-SAC mm save-fraction (bridged to GHOST_OPSAC_MM_EVERY): recompute every N-th matmul.
     Only effective when activation_checkpoint.selective_ac_option='op'. N=1 (default) recomputes

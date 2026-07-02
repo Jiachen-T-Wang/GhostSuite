@@ -337,6 +337,149 @@ class _IGLayerNormFn(torch.autograd.Function):
         return grad_out, None, None, None, None, None, None, None, None, None
 
 
+# =======================================================================================
+# separate-val Functions (``separate_val=True``): project the train backward against a
+# CACHED val gradient. The val gradient is harvested once per optimizer step from a plain
+# autograd backward on the val batch alone (``harvest_val_grads``) — it is constant across
+# a step's microbatches because the weights do not change between them. These Functions
+# therefore never see val rows: the whole batch is train, there is no per-layer grad_val
+# GEMM, no grad_val buffer store, and no subtract-val recovery (autograd's ``.grad`` IS the
+# train gradient). Tied weights need no special path — autograd already summed all uses'
+# val contributions into the shared ``.grad``, and ``<G_i, gval> = sum_uses <g_i^use, gval>``
+# is linear, so each use's in-graph projection against the same total ``gval`` just adds.
+# =======================================================================================
+
+
+class _SVLinearFn(torch.autograd.Function):
+    """Identity on a Linear's output; dots the per-sample train grad with cached ``gval``.
+
+    ``dot_i = sum_t A_i[t] . (B_i[t] @ gval_w)`` (+ bias term ``sum_t B_i[t] . gval_b``).
+    The projection GEMM is the only non-trivial cost; token products are accumulated in
+    fp32 before the per-sample reduction.
+    """
+
+    @staticmethod
+    def forward(ctx, output, input_act, dot_buf, gvalw_buf, gvalb_buf, has_bias):
+        ctx.save_for_backward(input_act)
+        ctx.dot_buf = dot_buf
+        ctx.gvalw_buf = gvalw_buf
+        ctx.gvalb_buf = gvalb_buf
+        ctx.has_bias = has_bias
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        _mark_pass_store(ctx.dot_buf)
+        A = ctx.saved_tensors[0]
+        B = grad_output
+        bs = A.size(0)
+        d_in = A.shape[-1]
+        d_out = B.shape[-1]
+        compute_dtype = B.dtype if B.is_floating_point() else A.dtype
+        A_flat = A.to(compute_dtype).reshape(-1, d_in)
+        B_flat = B.to(compute_dtype).reshape(-1, d_out)
+        seq = A_flat.size(0) // bs
+        gval = ctx.gvalw_buf.to(compute_dtype)
+        proj = torch.matmul(B_flat, gval)                                # [bs*seq, d_in]
+        token_scores = (A_flat * proj).to(ACCUM_DTYPE).sum(dim=1)        # [bs*seq]
+        dot = token_scores.view(bs, seq).sum(dim=1)                      # [bs]
+        if ctx.has_bias:
+            per_sample_b = B_flat.view(bs, seq, d_out).to(ACCUM_DTYPE).sum(dim=1)
+            dot = dot + torch.einsum("bf,f->b", per_sample_b, ctx.gvalb_buf)
+        m = _store(ctx.dot_buf, dot)
+        grad_out = grad_output + (0.0 * m).to(grad_output.dtype)
+        # grads for (output, input_act, dot_buf, gvalw_buf, gvalb_buf, has_bias)
+        return grad_out, None, None, None, None, None
+
+
+class _SVEmbeddingFn(torch.autograd.Function):
+    """Identity on an Embedding's output; dots the train grad with cached ``gval``.
+
+    ``dot_i = sum_t B_i[t] . gval[idx_i[t]]`` — a row gather, no index_add. Pad positions
+    need no masking: the harvested val ``.grad`` already has a zero ``padding_idx`` row
+    (the native embedding backward zeroes it), so their contribution is exactly 0.
+    """
+
+    @staticmethod
+    def forward(ctx, output, idx, dot_buf, gval_buf):
+        ctx.save_for_backward(idx)
+        ctx.dot_buf = dot_buf
+        ctx.gval_buf = gval_buf
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        _mark_pass_store(ctx.dot_buf)
+        idx = ctx.saved_tensors[0].long()
+        prod = (grad_output.to(ACCUM_DTYPE) * ctx.gval_buf[idx].to(ACCUM_DTYPE))
+        dot = prod.sum(dim=tuple(range(1, prod.dim())))
+        m = _store(ctx.dot_buf, dot)
+        grad_out = grad_output + (0.0 * m).to(grad_output.dtype)
+        # grads for (output, idx, dot_buf, gval_buf)
+        return grad_out, None, None, None
+
+
+class _SVRMSNormFn(torch.autograd.Function):
+    """Identity on an RMSNorm's output; dots the per-sample train weight-grad with ``gval``."""
+
+    @staticmethod
+    def forward(ctx, output, input_act, eps, dot_buf, gval_buf):
+        ctx.save_for_backward(input_act)
+        ctx.eps = eps
+        ctx.dot_buf = dot_buf
+        ctx.gval_buf = gval_buf
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        _mark_pass_store(ctx.dot_buf)
+        A = ctx.saved_tensors[0].to(ACCUM_DTYPE)
+        B = grad_output.to(ACCUM_DTYPE)
+        rms = torch.sqrt((A ** 2).mean(dim=-1, keepdim=True) + ctx.eps)
+        gw = B * (A / rms)
+        sum_dims = list(range(1, gw.dim() - 1))
+        per_sample = gw.sum(dim=sum_dims) if sum_dims else gw               # [bs, d]
+        dot = torch.einsum("bf,f->b", per_sample, ctx.gval_buf)
+        m = _store(ctx.dot_buf, dot)
+        grad_out = grad_output + (0.0 * m).to(grad_output.dtype)
+        # grads for (output, input_act, eps, dot_buf, gval_buf)
+        return grad_out, None, None, None, None
+
+
+class _SVLayerNormFn(torch.autograd.Function):
+    """Identity on a LayerNorm's output; dots train weight (and bias) grads with ``gval``."""
+
+    @staticmethod
+    def forward(ctx, output, input_act, normalized_shape, eps, has_bias,
+                dot_buf, gw_buf, gb_buf):
+        ctx.save_for_backward(input_act)
+        ctx.normalized_shape = normalized_shape
+        ctx.eps = eps
+        ctx.has_bias = has_bias
+        ctx.dot_buf = dot_buf
+        ctx.gw_buf = gw_buf
+        ctx.gb_buf = gb_buf
+        return output
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        _mark_pass_store(ctx.dot_buf)
+        A = ctx.saved_tensors[0].to(ACCUM_DTYPE)
+        B = grad_output.to(ACCUM_DTYPE)
+        norm_A = F.layer_norm(A, ctx.normalized_shape, eps=ctx.eps)
+        gw = B * norm_A
+        sum_dims = list(range(1, gw.dim() - 1))
+        per_sample_w = gw.sum(dim=sum_dims) if sum_dims else gw             # [bs, F]
+        dot = torch.einsum("bf,f->b", per_sample_w, ctx.gw_buf)
+        if ctx.has_bias:
+            per_sample_b = B.sum(dim=sum_dims) if sum_dims else B           # [bs, F]
+            dot = dot + torch.einsum("bf,f->b", per_sample_b, ctx.gb_buf)
+        m = _store(ctx.dot_buf, dot)
+        grad_out = grad_output + (0.0 * m).to(grad_output.dtype)
+        # grads for (output, input_act, normalized_shape, eps, has_bias, dot_buf, gw_buf, gb_buf)
+        return grad_out, None, None, None, None, None, None, None
+
+
 # ---------------------------------------------------------------------------------------
 # Manager
 # ---------------------------------------------------------------------------------------
@@ -344,9 +487,23 @@ class _IGLayerNormFn(torch.autograd.Function):
 
 class GhostDecoupledManager:
     def __init__(self, model: nn.Module, val_batch_size: int,
-                 score_exclude_params=None) -> None:
+                 score_exclude_params=None, separate_val: bool = False,
+                 gval_dtype: Optional[torch.dtype] = None) -> None:
         self.model = model
         self.val_batch_size = val_batch_size
+        # separate-val mode: batches passed through the wrapped model are ALL-TRAIN; the val
+        # gradient is harvested once per optimizer step from a plain backward on the val batch
+        # (``harvest_val_grads``) and cached in per-param ``gval`` buffers that the _SV*Fn
+        # backwards project against. No combined batch, no grad_val GEMMs, no subtract-val
+        # recovery. ``gval_dtype`` sets the Linear-weight buffer dtype (pass the autocast
+        # compute dtype, e.g. bf16, so the projection GEMM runs on tensor cores without a
+        # per-backward cast); norm/embedding/bias buffers stay fp32 (their dots are fp32
+        # elementwise math, and fp32 matches the eager reference).
+        self.separate_val = bool(separate_val)
+        self.gval_dtype = gval_dtype
+        self._param_gval: Dict[int, torch.Tensor] = {}  # id(param) -> gval buffer (separate mode)
+        self._val_harvested = False
+        self._excluded_layer_ids: set = set()  # separate mode: layers excluded from the score
         # MODULE-name substrings whose dot-product is dropped from the logged SCORE only
         # (grad_val is still published, so training is unaffected) — the decoupled analogue of the
         # eager engine's param-name score_exclude_params. A tied weight is excluded when ANY of
@@ -436,10 +593,33 @@ class GhostDecoupledManager:
                 layer, total_bs, layer.weight.device
             )
 
+    def _gval_buf(self, param: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
+        """Return the (per-param, allocated-once) separate-mode ``gval`` buffer. Keyed by param
+        id so tied uses share one buffer — autograd's val ``.grad`` on the shared param already
+        sums all uses, which is exactly what each use's projection must dot against."""
+        buf = self._param_gval.get(id(param))
+        if buf is None:
+            buf = torch.zeros(param.shape, dtype=dtype, device=param.device)
+            self._param_gval[id(param)] = buf
+        return buf
+
     def _alloc_ingraph(self, layer, total_bs, dev):
         """Allocate the per-layer buffers: one shared ``dot`` [train_bs] plus a ``grad_val`` buffer
         per trainable parameter. Returns ``[dot, [(param, grad_val_buf), ...]]``. ``nn.Linear`` and
-        ``nn.LayerNorm`` carry weight + optional bias; the other layer types have a single weight."""
+        ``nn.LayerNorm`` carry weight + optional bias; the other layer types have a single weight.
+
+        separate mode: the whole batch is train (``train_bs = total_bs``) and the per-param
+        buffers are the attach-allocated ``gval`` caches (shared across shapes and tied uses),
+        not fresh per-shape grad_val stores."""
+        if self.separate_val:
+            dot = torch.zeros((total_bs,), dtype=ACCUM_DTYPE, device=dev)
+            w_dtype = self.gval_dtype or layer.weight.dtype
+            gvs = [(layer.weight, self._gval_buf(
+                layer.weight, w_dtype if isinstance(layer, nn.Linear) else ACCUM_DTYPE))]
+            bias = getattr(layer, "bias", None)
+            if bias is not None:
+                gvs.append((bias, self._gval_buf(bias, ACCUM_DTYPE)))
+            return [dot, gvs]
         train_bs = total_bs - self.val_batch_size
         dot = torch.zeros((train_bs,), dtype=ACCUM_DTYPE, device=dev)
         gvs = []
@@ -468,6 +648,7 @@ class GhostDecoupledManager:
         bias = layer.bias
         has_bias = bias is not None
         vbs = self.val_batch_size
+        separate = self.separate_val
 
         def forward(x):
             out = F.linear(x, weight, bias)
@@ -478,6 +659,8 @@ class GhostDecoupledManager:
             dot_buf = cell[0][0]
             gv_buf = cell[0][1][0][1]
             gb_buf = cell[0][1][1][1] if has_bias else None
+            if separate:
+                return _SVLinearFn.apply(out, x, dot_buf, gv_buf, gb_buf, has_bias)
             return _IGLinearFn.apply(
                 out, x, dot_buf, gv_buf, gb_buf, has_bias, x.shape[0] - vbs, vbs
             )
@@ -492,6 +675,8 @@ class GhostDecoupledManager:
         wshape = tuple(weight.shape)
         vbs = self.val_batch_size
 
+        separate = self.separate_val
+
         def forward(idx):
             out = F.embedding(idx, weight, padding_idx)
             if not self._enabled:
@@ -500,6 +685,8 @@ class GhostDecoupledManager:
                 cell[0] = self._ensure_bufs_ingraph(layer, idx.shape[0], weight.device)
             dot_buf = cell[0][0]
             gv_buf = cell[0][1][0][1]
+            if separate:
+                return _SVEmbeddingFn.apply(out, idx, dot_buf, gv_buf)
             return _IGEmbeddingFn.apply(
                 out, idx, wshape, padding_idx, dot_buf, gv_buf, idx.shape[0] - vbs, vbs
             )
@@ -519,6 +706,8 @@ class GhostDecoupledManager:
         fn_eps = eps if eps is not None else torch.finfo(ACCUM_DTYPE).eps
         vbs = self.val_batch_size
 
+        separate = self.separate_val
+
         def forward(x):
             out = F.rms_norm(x, normalized_shape, weight, eps)
             if not self._enabled:
@@ -527,6 +716,8 @@ class GhostDecoupledManager:
                 cell[0] = self._ensure_bufs_ingraph(layer, x.shape[0], x.device)
             dot_buf = cell[0][0]
             gv_buf = cell[0][1][0][1]
+            if separate:
+                return _SVRMSNormFn.apply(out, x, fn_eps, dot_buf, gv_buf)
             return _IGRMSNormFn.apply(out, x, fn_eps, dot_buf, gv_buf, x.shape[0] - vbs, vbs)
 
         return forward
@@ -541,6 +732,8 @@ class GhostDecoupledManager:
         eps = layer.eps if layer.eps is not None else 1e-5
         vbs = self.val_batch_size
 
+        separate = self.separate_val
+
         def forward(x):
             out = F.layer_norm(x, normalized_shape, weight, bias, eps)
             if not self._enabled:
@@ -550,6 +743,10 @@ class GhostDecoupledManager:
             dot_buf = cell[0][0]
             gw_buf = cell[0][1][0][1]
             gb_buf = cell[0][1][1][1] if has_bias else None
+            if separate:
+                return _SVLayerNormFn.apply(
+                    out, x, normalized_shape, eps, has_bias, dot_buf, gw_buf, gb_buf
+                )
             return _IGLayerNormFn.apply(
                 out, x, normalized_shape, eps, has_bias,
                 dot_buf, gw_buf, gb_buf, x.shape[0] - vbs, vbs,
@@ -610,6 +807,18 @@ class GhostDecoupledManager:
             # already wrapped instead of leaving the model half-monkeypatched.
             self.detach()
             raise
+        if self.separate_val:
+            # Score exclusion with tied-group semantics: a layer is dropped from the SCORE when
+            # its own module name matches, or when its weight is shared and ANY sharing module's
+            # name matches (e.g. excluding "lm_head" must also drop the tied wte use — the old
+            # tied finalizer excluded the whole shared weight the same way).
+            groups: Dict[int, List[str]] = {}
+            for n, l in self._layers:
+                groups.setdefault(id(l.weight), []).append(n)
+            for n, l in self._layers:
+                names = groups[id(l.weight)] if len(groups[id(l.weight)]) > 1 else [n]
+                if any(self._excluded(g) for g in names):
+                    self._excluded_layer_ids.add(id(l))
         self._attached = True
 
     def _attach_walk(self) -> None:
@@ -617,6 +826,13 @@ class GhostDecoupledManager:
             if isinstance(layer, _SUPPORTED):
                 if any(p.requires_grad for p in layer.parameters(recurse=False)):
                     tied = getattr(layer.weight, "_ghost_tied", False)
+                    # separate mode: tied weights need NO special route. The cached ``gval`` is
+                    # the shared param's autograd val ``.grad`` (all uses + cross-terms summed
+                    # by autograd), the dot is linear in the train gradient, so each use's
+                    # in-graph projection against the same buffer just adds. A per-module bias
+                    # on a tied Linear is fine too (the bias is private to that module).
+                    if self.separate_val:
+                        tied = False
                     # All per-layer fail-loud checks run BEFORE any mutation of this layer, so a
                     # raise here leaves it pristine and the rollback in attach() only has to
                     # restore fully-registered layers.
@@ -630,7 +846,9 @@ class GhostDecoupledManager:
                             f"GHOST_DECOUPLED_FN: tied Linear '{name}' has a bias; not supported "
                             "(tied weight + per-module bias)."
                         )
-                    if tied and not isinstance(layer, (nn.Linear, nn.Embedding)):
+                    if getattr(layer.weight, "_ghost_tied", False) and not isinstance(
+                        layer, (nn.Linear, nn.Embedding)
+                    ):
                         raise RuntimeError(
                             f"GHOST_DECOUPLED_FN: tied weight on unsupported layer '{name}' "
                             f"({type(layer).__name__}); only Linear/Embedding tying is handled."
@@ -721,6 +939,9 @@ class GhostDecoupledManager:
         self._cell_bufs.clear()
         self._flagged_weights.clear()
         self._name_restore.clear()
+        self._param_gval.clear()
+        self._excluded_layer_ids.clear()
+        self._val_harvested = False
         self._attached = False
         self._step_state = "idle"
         self._microbatches_collected = 0
@@ -748,6 +969,9 @@ class GhostDecoupledManager:
         self._step_state = "collecting"
         self._microbatches_collected = 0
         self._clear_store_flags()
+        # separate mode: force a fresh val-grad harvest each step (the val gradient changes with
+        # the weights, so a stale gval must never be projected against).
+        self._val_harvested = False
         for _, layer in self._layers:
             for p in layer.parameters(recurse=False):
                 for attr in ("_ghost_grad_val_accum", "_ghost_grad_val", "grad_dot_prod"):
@@ -761,6 +985,50 @@ class GhostDecoupledManager:
                 if hasattr(w, attr):
                     delattr(w, attr)
 
+    def harvest_val_grads(self, clear_grads: bool = True) -> None:
+        """separate mode: copy each supported param's autograd ``.grad`` — produced by a plain
+        backward on the val batch alone, with the wrappers disabled — into its ``gval`` buffer.
+
+        Must run once per optimizer step, BEFORE the train microbatches (their in-graph dots
+        read these buffers). The copy is in-place so the compiled graphs keep binding the same
+        buffer objects. ``clear_grads`` drops the harvested ``.grad`` so the subsequent train
+        backwards accumulate the train gradient from zero."""
+        if not self.separate_val:
+            raise RuntimeError(
+                "GHOST_DECOUPLED_FN: harvest_val_grads() is only part of the separate-val "
+                "lifecycle (separate_val=True); the combined-batch path stores grad_val "
+                "in-backward instead."
+            )
+        seen = set()
+        for name, layer in self._layers:
+            cell = self._cells.get(id(layer))
+            bufs = cell[0] if cell and cell[0] is not None else None
+            if bufs is None:
+                # Layer not yet run at any shape (no dot buffer): gval buffers exist per param
+                # from _alloc_ingraph only after a first forward. Allocate now via param map.
+                w_dtype = self.gval_dtype or layer.weight.dtype
+                params = [(layer.weight, w_dtype if isinstance(layer, nn.Linear) else ACCUM_DTYPE)]
+                bias = getattr(layer, "bias", None)
+                if bias is not None:
+                    params.append((bias, ACCUM_DTYPE))
+                gvs = [(p, self._gval_buf(p, dt)) for p, dt in params]
+            else:
+                gvs = bufs[1]
+            for p, buf in gvs:
+                if id(p) in seen:
+                    continue
+                seen.add(id(p))
+                if p.grad is None:
+                    raise RuntimeError(
+                        f"GHOST_DECOUPLED_FN: separate-val harvest found no .grad on a param of "
+                        f"'{name}'. Run a plain backward on the val batch (wrappers disabled via "
+                        "set_enabled(False)) before harvest_val_grads()."
+                    )
+                buf.copy_(p.grad.detach())
+                if clear_grads:
+                    p.grad = None
+        self._val_harvested = True
+
     def collect_microbatch_dot(self) -> Optional[torch.Tensor]:
         """Read this microbatch's per-layer buffers: return its ``[train_bs]`` dot and fold its
         validation gradient into the per-step accumulator.
@@ -768,7 +1036,33 @@ class GhostDecoupledManager:
         Must be called once after each microbatch's ``backward()`` — before the next backward
         overwrites the reused per-layer buffers. The returned per-microbatch dots are concatenated
         by the caller into the step's ``[N*train_bs]`` score vector. ``recover_train_grads`` then
-        consumes the accumulated val grad once, after the loop."""
+        consumes the accumulated val grad once, after the loop.
+
+        separate mode: the dots were projected against the step's harvested ``gval`` buffers;
+        there is no val grad to fold and no tied finalizer — just sum the per-layer dots
+        (tied-group-aware score exclusion precomputed at attach)."""
+        if self.separate_val:
+            if not self._val_harvested:
+                raise RuntimeError(
+                    "GHOST_DECOUPLED_FN: separate-val collect before harvest_val_grads(); the "
+                    "in-graph dots would have been projected against stale/zero gval buffers."
+                )
+            total = None
+            for name, layer in self._layers:
+                cell = self._cells.get(id(layer))
+                if cell is None or cell[0] is None:
+                    raise RuntimeError(
+                        f"GHOST_DECOUPLED_FN: '{getattr(layer, 'name', '?')}' no buffer."
+                    )
+                dot = cell[0][0]
+                if hasattr(dot, "_ghost_pass_stored"):
+                    del dot._ghost_pass_stored
+                if id(layer) in self._excluded_layer_ids:
+                    continue
+                total = dot.detach().clone() if total is None else total + dot.detach()
+            self._microbatches_collected += 1
+            return total
+
         from .supported_layers_grad_samplers_dotprod import finalize_tied_param
         total = None
         # Non-tied layers: dot + grad_val already in buffers; accumulate grad_val, sum the dot.
@@ -867,6 +1161,14 @@ class GhostDecoupledManager:
         ``mean_train_grad = (total/train) * (autograd.grad - sum_m grad_val_m)``, with per-microbatch
         ``total = train + val``. The ``sum_m grad_val_m`` lives in ``_ghost_grad_val_accum`` (one term
         at ``N == 1``)."""
+        if self.separate_val:
+            # Nothing to recover: the train backwards never saw val rows, so autograd's .grad
+            # already IS the train gradient. Close the step-state machine and reset the harvest
+            # flag so the next step must harvest a fresh val grad.
+            self._val_harvested = False
+            self._step_state = "recovered"
+            self._microbatches_collected = 0
+            return
         for name, layer in self._layers:
             # train_bs from the dot buffer length; the parameters to recover are the layer's
             # trainable params (weight + optional bias for LayerNorm).
