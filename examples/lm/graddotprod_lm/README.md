@@ -105,7 +105,7 @@ threshold-0 filtering are unchanged.
 | path | how to select | notes |
 |---|---|---|
 | **decoupled + compile + separate-val** | *(default)* | native layer backwards, dots folded into the `torch.compile`d blocks, val gradient harvested once per step |
-| **decoupled + compile, combined batch** | `--no_separate_val` | the pre-v0.6 default: val rides every scoring batch (~+9% step time vs eager on GPT-2-Small); restores the old dot scale |
+| **decoupled + compile, combined batch** | `--no_separate_val` | val rides every scoring batch in one concatenated forward/backward (~+9% step time vs eager on GPT-2-Small); restores the combined-batch dot scale |
 | **eager** | `--eager` | per-layer saved-tensor hooks; the reference path. Use for incompatible configs (also selected automatically — see below) |
 | **activation checkpointing** | add `--decoupled_mem_budget 0.5` | recompute in backward to cut peak memory (≈−27% on GPT-2-Medium for +29% time); tunable in `(0,1]`. The lever for scaling to GPT-2-Medium/Large |
 

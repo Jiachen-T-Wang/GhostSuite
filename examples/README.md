@@ -119,12 +119,15 @@ engine (one forward/backward on the concatenated `train + val` batch). Runtime l
 | `opsac_mm_every` | 1 | op-SAC mm save-fraction: recompute every N-th matmul (1 = all → min memory; ↑N = more memory, faster). Active when `selective_ac_option="op"` |
 | `regional_compile` | off | regional compile of RoPE/SwiGLU (helps A100, regresses H200) |
 
-Measured on H200 / Llama-3 130M / seq 4096 at the standard pretraining shape (global batch 12 =
-6 accumulation microbatches of local bs 2, val bs 2, no AC): regular training 285.9 ms/step,
-separate-val ghost 429.3 ms (**1.50×**), v0.5 combined-batch ghost 479.0 ms (1.68×) — and the
-remaining overhead is the algorithm's floor (one val backward per step + one projection GEMM per
-Linear per microbatch), not implementation slack. Full study:
-`docs/analysis/separate_val_efficiency_2026-07-02.md`.
+Measured on a single H200 / Llama-3 130M / seq 4096 at the standard pretraining shape (global
+batch 12 = 6 accumulation microbatches of local bs 2, val bs 2, no AC): regular training
+285.9 ms/step, separate-val ghost 429.3 ms (**1.50×**), combined-batch ghost 479.0 ms (1.68×);
+at global batch 24 the ratio drops to 1.40× as the val pass amortizes. The remaining overhead is
+the algorithm's floor — one val backward per step (amortizing as 1/N with the accumulation
+factor) plus one projection GEMM per Linear per microbatch (the dot-product readout itself,
+~25% of the model's Linear FLOPs) — not implementation slack: kernel-level profiling shows the
+extra GPU time is exactly those GEMMs and the val pass, at the same efficiency as the model's
+own kernels.
 
 The default also sets `[compile] enable = true` and `[activation_checkpoint] mode = "selective",
 selective_ac_option = "op"`. Together these run a compiled fast path with **op-level selective
@@ -132,8 +135,8 @@ activation checkpointing** that is faster than the eager engine **at the same lo
 *and* dot-product-identical). Activation checkpointing then gives a single speed↔memory dial. The
 default is **op-SAC `mme1`** — the runtime-memory frontier point that runs *below* the eager
 engine's peak memory while still ~15% faster. Numbers below were measured on the **combined-batch
-engine** (`--ghost.no-separate_val`, pre-`compile_loss`); the separate-val default shifts every
-point down in memory by roughly half and the AC dial works the same way. Llama-3 130M, seq 4096,
+engine** (`--ghost.no-separate_val --ghost.no-compile_loss`); the separate-val default shifts
+every point down in memory by roughly half and the AC dial works the same way. Llama-3 130M, seq 4096,
 train bs2 + val bs2, single H200, one session; throughput is tokens/s, loss-identical in every row:
 
 | config | flags | throughput vs eager | peak memory |

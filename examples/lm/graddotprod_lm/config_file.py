@@ -71,8 +71,9 @@ def parse_arguments():
                              'constant rescale: N*(T_tr+T_v)^2/(T_tr*T_v) with per-microbatch train '
                              'tokens T_tr, val tokens T_v, grad-accum N (rankings unchanged).')
     parser.add_argument('--no_separate_val', dest='separate_val', action='store_false',
-                        help='Restore the combined train+val batch engine (pre-v0.6 behavior and '
-                             'dot scale).')
+                        help='Use the combined train+val batch engine instead (one concatenated '
+                             'forward/backward per microstep, subtract-val recovery, and the '
+                             'combined-batch dot scale).')
     parser.set_defaults(separate_val=True)
 
     # Training parameters

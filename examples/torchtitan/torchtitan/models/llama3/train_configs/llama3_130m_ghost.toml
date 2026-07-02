@@ -73,8 +73,8 @@ components = ["model", "loss"]
 backend = "inductor"
 
 # Default = op-SAC "mme1" (op-level selective AC, recompute all matmuls): 43 GiB peak /
-# +14.8% tps over the eager engine on H200/130M — the runtime-memory frontier optimum
-# (docs/analysis/ac_frontier_2026-06-21.md). For max throughput at higher memory set
+# +14.8% tps over the eager engine on H200/130M — the runtime-memory frontier optimum.
+# For max throughput at higher memory set
 # mode="none"; for higher-memory/faster op-SAC points raise --ghost.opsac_mm_every.
 [activation_checkpoint]
 mode = "selective"
@@ -108,15 +108,15 @@ use_dummy_bias = false
 enable_validation = true
 
 # Dot-product runtime levers (override on the command line, e.g. --ghost.no-decoupled_fn or
-# --compile.enable=false). These values are the best-runtime combination measured on H200
-# (docs/investigations/ghost_outemb_plus_ac_2026-06-19.md): subtract-val + the decoupled-Function
-# path under torch.compile + top-level output compile (+23-25% tps over eager, loss-identical),
+# --compile.enable=false). These values are the best-runtime combination measured on H200:
+# subtract-val + the decoupled-Function path under torch.compile + top-level output compile
+# (+23-25% tps over eager, loss-identical),
 # with lever 1c off (1c regresses on H200; it helps on A100).
 subtract_val = true
 decoupled_fn = true
 compile_toplevel = true
 regional_compile = false
-# separate-val two-pass engine (docs/analysis/separate_val_efficiency_2026-07-02.md): one plain
+# separate-val two-pass engine: one plain
 # val backward per optimizer step + train-only microbatches whose in-graph dots project against
 # the harvested val gradient. Faster at grad-accum setups, ~half the combined path's peak memory
 # everywhere, and the training loss/grads become bit-consistent with regular training. Dots equal

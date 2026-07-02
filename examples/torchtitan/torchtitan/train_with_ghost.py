@@ -153,7 +153,7 @@ class GhostTrainer(Trainer):
 
             # Opt-in: also regional-compile the top-level layers that apply_compile skips, so their
             # ghost in-graph dot folds into a compiled region instead of running eager.
-            # Per-layer attribution (docs/investigations/ghost_outemb_plus_ac_2026-06-19.md, Part 4)
+            # Per-layer attribution on H200/130M
             # found the entire gain comes from the `output` Linear (+1.9%); compiling `norm` /
             # `tok_embeddings` adds nothing (within noise) and only lengthens warmup. So
             # GHOST_COMPILE_TOPLEVEL=1 defaults to OUTPUT ONLY; emb/norm stay off unless explicitly

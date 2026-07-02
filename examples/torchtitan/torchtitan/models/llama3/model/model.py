@@ -41,8 +41,7 @@ _DEBUG_ATTENTION_DTYPE = os.getenv("TORCHTITAN_DEBUG_ATTENTION_DTYPE", "0") == "
 #
 # Explicit on/off via GHOST_REGIONAL_COMPILE (1/0), normally set from the `--ghost.regional_compile`
 # command-line flag (see torchtitan.train_with_ghost). It is an explicit knob, NOT auto-gated:
-# 1c is GPU-dependent (measured +2.8% on A100 but -2.6% on H200 —
-# docs/investigations/ghost_1bc_h200_verification_2026-06-19.md), so the caller chooses per
+# 1c is GPU-dependent (measured +2.8% on A100 but -2.6% on H200), so the caller chooses per
 # hardware. Resolved lazily on first forward (and cached) so the config->env bridge in
 # GhostTrainer.__init__ is in effect by the time it is read.
 _regional_compile_decision = None

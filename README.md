@@ -12,7 +12,7 @@ This repository provides a clean, drop-in implementation of "ghost"-based techni
 ## Available Engines
 - `GradDotProdEngine`
   - Purpose: Online computation of gradient similarities between validation loss and individual training samples in a single backprop pass.
-  - Core idea: Reuse activations and output gradients already computed during backprop to obtain per‑parameter dot products without materializing model‑sized gradients; typically concatenates a small validation batch with the training batch.
+  - Core idea: Reuse activations and output gradients already computed during backprop to obtain per‑parameter dot products without materializing model‑sized gradients — either against a validation gradient harvested once per step (the separate-val fast path) or within a single combined train+val backward.
   - Best for: computing pair-wise gradient similarities through the entire training process (e.g., online data selection, reweighting, curriculum learning, or analyzing training dynamics). 
 
 - `GradProjLoraEngine`
@@ -128,10 +128,23 @@ than the eager engine, values unchanged). See [`examples/dvemb_lm/README.md`](ex
 ## How the Ghost Engines Work
 
 ### GradDotProd Engine
-1. **Batch Concatenation**: Training and validation batches are concatenated for a single forward pass
-2. **Gradient Computation**: During backpropagation, the engine computes:
-   - Per-parameter gradient dot products between validation and training samples. 
-   - Aggregated training gradients are recovered separately and stored in `.grad` before optimizer step. 
+
+Two computation modes produce the same per-sample dot products (up to a constant, documented
+rescale):
+
+- **Separate-val (two-pass; the default in the TorchTitan / graddotprod_lm / GREATS examples).**
+  Each optimizer step runs one *plain* backward on the fixed validation batch and harvests
+  autograd's `.grad` as the cached per-parameter validation gradient; the training microbatches
+  then run *without* appended val rows, and each supported layer's backward projects its
+  per-sample gradient against the cache (one extra GEMM per Linear — the dot-product readout).
+  The validation cost is paid once per step instead of once per microbatch, training loss and
+  gradients are bit-consistent with regular training (no recovery step), and tied weights need
+  no special handling (the dot is linear against the harvested total).
+- **Combined batch (the eager engine, and `--no_separate_val` on the decoupled path).**
+  Training and validation batches are concatenated for a single forward/backward; during
+  backpropagation the engine computes the per-parameter train↔val dot products, and the
+  aggregated training gradients are recovered via subtract-val and stored in `.grad` before the
+  optimizer step.
 
 ### GradProj Engine
 - Uses LoRA-style low-rank projection matrices

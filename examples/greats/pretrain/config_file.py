@@ -132,8 +132,8 @@ def parse_arguments():
                              "combined-batch scores up to a constant positive rescale "
                              "((T_cand+T_v)^2/(T_cand*T_v)), so the TopK selection is unchanged.")
     parser.add_argument("--no_separate_val", dest="separate_val", action="store_false",
-                        help="Restore the combined candidates+val scoring batch (pre-v0.6 "
-                             "behavior and score scale).")
+                        help="Use the combined candidates+val scoring batch instead (one "
+                             "concatenated forward/backward and the combined-batch score scale).")
     parser.set_defaults(separate_val=True)
 
     # WandB.

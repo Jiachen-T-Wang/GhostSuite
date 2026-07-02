@@ -57,8 +57,7 @@ class GhostDotProdHelper:
         self.use_fn_path = _DECOUPLED_FN
         self.use_separate_val = _DECOUPLED_FN and _SEPARATE_VAL
         if self.use_decoupled_fn:
-            # Persistence is not wired on the fn-path (follow-up:
-            # docs/issues/open/titan-fn-path-never-persists-dots_2026-07-02.md), so save_dir is
+            # Persistence is not wired on the fn-path (known follow-up), so save_dir is
             # not created here — only the eager engine below writes to it.
             if self.ghost_cfg.save_interval > 0:
                 logger.warning(
