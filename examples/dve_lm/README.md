@@ -54,13 +54,9 @@ e_s = g_s − M_{>s} g_s ,      M_{>s−1} = M_{>s} + (η_s / B_s) Σ_b e_{s,b} 
 i.e. `e_s` is the training gradient `g_s` after being transformed by the unrolled SGD Jacobian
 `∏_{t>s}(I − η_t H_t)` of all *later* steps (`H_t ≈ (1/B) Σ_b g_t g_tᵀ`). Stage 2 evaluates this
 recursion in reverse (last step → first), maintaining `M` **per layer** (block-diagonal across
-layers); all gradients live in the projected space, which is what makes `M` tractable.
-
-`--lr_mode` controls how the per-step learning rate enters the recursion:
-- `scaled` (default): folds each recorded step's `η_s` and the `1/B_s` Gauss-Newton norm into the
-  recursion — numerically consistent with the actual (small-lr, contractive) trajectory.
-- `none`: reproduces the released reference exactly (`η = 1`, sum reduction). Only well-behaved for
-  short runs / tiny gradients, since it drops the lr damping.
+layers); all gradients live in the projected space, which is what makes `M` tractable. Each step's
+recorded learning rate `η_s` and `1/B_s` Gauss-Newton norm are folded into the recursion, keeping it
+numerically consistent with the actual (small-lr, contractive) trajectory.
 
 ## Capture backend & precision (Stage 1)
 
@@ -94,7 +90,7 @@ export PILE_DATA_DIR_TEST=/path/to/pile/pile-test-gpt2
 
 python main.py --data_source pile --architecture GPT2-Small --device cuda \
     --optimizer adamw --learning_rate 3e-4 --max_steps 500 --batch_size 8 \
-    --n_test 64 --proj_rank_total 256 --lr_mode scaled \
+    --n_test 64 --proj_rank_total 256 \
     --train_and_store_grad --compute_embedding --compute_value --attribute
 ```
 
@@ -113,7 +109,6 @@ python main.py --data_source pile --architecture GPT2-Small --device cuda \
   projection params so `P` is reconstructed identically between the train (Stage 1) and test
   (Stage 3) passes. (The run directory encodes these, so a mismatch resolves to a *different* dir and
   fails loudly rather than silently mixing incompatible projections.)
-- **`none`-mode stability.** See `--lr_mode` above; prefer `scaled` for real runs.
 - **Scale.** Stage 1 writes one file per step (`n_steps × B × total_proj_dim`); per-layer `M` is
   `Σ_layer (k_i·k_o)²`. Fine for GPT2-Tiny/Small; very long runs may want memmap capture.
 - **Precision / reproducibility.** The default `bf16` trajectory diverges slightly from `fp32`; the
