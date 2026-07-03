@@ -214,11 +214,13 @@ class GradProjLoraEngine:
 
             self.metadata['layers'].append(layer_meta)
 
-    def attach(self, optimizer=None):
+    def attach(self, optimizer=None, verbose=True):
         """Attach hooks to selected layers.
 
         ``optimizer`` is accepted (and ignored) so the signature matches the GhostEngine
         protocol — GradProjLora only observes gradients, it does not update them.
+        ``verbose=False`` silences the attach notice (for callers that toggle hooks every
+        step, e.g. the OPUS example's scoring/update alternation).
         """
         if self.is_attached:
             return
@@ -238,9 +240,10 @@ class GradProjLoraEngine:
             self.hooks[layer_name] = hooks
 
         self.is_attached = True
-        print(f"[INFO] Attached projection hooks to {len(self.matched_layers)} layers")
+        if verbose:
+            print(f"[INFO] Attached projection hooks to {len(self.matched_layers)} layers")
 
-    def detach(self):
+    def detach(self, verbose=True):
         """Remove hooks from layers and clean up."""
         if not self.is_attached:
             return
@@ -258,7 +261,8 @@ class GradProjLoraEngine:
 
         self.hooks.clear()
         self.is_attached = False
-        print(f"[INFO] Detached projection hooks from {len(self.matched_layers)} layers")
+        if verbose:
+            print(f"[INFO] Detached projection hooks from {len(self.matched_layers)} layers")
 
     def begin_step(self):
         """Begin a gradient-accumulation step: reset the per-layer microbatch buffers.

@@ -48,6 +48,40 @@ def greedy_selection(scores: np.ndarray, interaction: np.ndarray, K: int):
     return selected
 
 
+def stochastic_greedy_selection(scores: np.ndarray, interaction: np.ndarray, K: int,
+                                temperature: float = 1.0, rng=None):
+    """Boltzmann variant of :func:`greedy_selection` (OPUS's default selection): each pick is
+    *sampled* from ``softmax(remaining_scores / temperature)`` instead of argmax'd, then its
+    interaction row is subtracted from the remaining scores. Port of upstream OPUS
+    ``stochastic_greedy_selection`` (github.com/gszfwsb/OPUS), with two deliberate deviations:
+    the max is always subtracted before ``exp`` (softmax-invariant; upstream only guards at
+    ``max > 700``) and randomness comes from an injectable ``numpy.random.Generator`` instead of
+    the global ``np.random`` state, so selections are reproducible per run."""
+    if K > len(scores):
+        raise ValueError(f"stochastic_greedy_selection: K={K} exceeds the {len(scores)} candidates.")
+    if temperature <= 0:
+        raise ValueError(f"stochastic_greedy_selection: temperature must be > 0, got {temperature}.")
+    if rng is None:
+        rng = np.random.default_rng()
+    scores = scores.copy().astype(np.float64)
+    available = np.ones(len(scores), dtype=bool)
+    selected = []
+    for _ in range(K):
+        current = scores[available] / temperature
+        probs = np.exp(current - np.max(current))
+        total = probs.sum()
+        if total == 0 or not np.isfinite(total):
+            probs = np.full_like(probs, 1.0 / len(probs))
+        else:
+            probs = probs / total
+        avail_idx = np.where(available)[0]
+        pick = int(avail_idx[rng.choice(len(avail_idx), p=probs)])
+        selected.append(pick)
+        scores = scores - interaction[pick, :]
+        available[pick] = False
+    return selected
+
+
 class SelectionPolicy:
     """Base class. Subclasses set the two flags and implement ``select``."""
 
