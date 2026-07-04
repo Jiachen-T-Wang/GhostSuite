@@ -57,7 +57,14 @@ case "$ARM" in
     greedy)
         ARGS="$ARGS --method OPUS --opus_selection_method greedy \
               --opus_preconditioner none";;
-    *) echo "Unknown arm: $ARM (stochastic|greedy)"; exit 1;;
+    topk)
+        # Temperature->0 limit, no Gram penalty: top-k on the sketched adamw_scalar
+        # scores. Isolates OPUS's scoring signal (sketch fidelity + optimizer-induced
+        # layer weighting) from its selection-rule stochasticity/diversity — the direct
+        # head-to-head against GREATS TopK on exact dots.
+        ARGS="$ARGS --method OPUS --opus_selection_method topk \
+              --opus_preconditioner adamw_scalar";;
+    *) echo "Unknown arm: $ARM (stochastic|greedy|topk)"; exit 1;;
 esac
 
 echo "Running: python main.py $ARGS"
