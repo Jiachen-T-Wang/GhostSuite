@@ -64,7 +64,15 @@ case "$ARM" in
         # head-to-head against GREATS TopK on exact dots.
         ARGS="$ARGS --method OPUS --opus_selection_method topk \
               --opus_preconditioner adamw_scalar";;
-    *) echo "Unknown arm: $ARM (stochastic|greedy|topk)"; exit 1;;
+    topk-raw)
+        # Control: top-k on sketched RAW scores (no preconditioner). Differs from the
+        # committed GREATS arm only by sketch noise (TopK on sketched vs exact raw dots),
+        # and from the topk arm only by the adamw_scalar layer reweighting — completing
+        # the attribution: GREATS vs topk-raw = sketching, topk-raw vs topk = weighting,
+        # topk vs stochastic = selection softness.
+        ARGS="$ARGS --method OPUS --opus_selection_method topk \
+              --opus_preconditioner none";;
+    *) echo "Unknown arm: $ARM (stochastic|greedy|topk|topk-raw)"; exit 1;;
 esac
 
 echo "Running: python main.py $ARGS"
