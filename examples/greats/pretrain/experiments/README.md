@@ -1,5 +1,12 @@
 # GREATS pretraining: online batch selection on Pile
 
+> **Provenance warning (2026-07-04):** these logs were run before the `a93f856` LR-schedule
+> fix (the old config hardcoded `lr_decay_iters=10000`, flatlining at min-lr for the second
+> half of the 20k runs). The *internal* GREATS-vs-Regular comparison below is unaffected (all
+> arms shared the schedule), but do **not** compare new runs against these curves — see
+> `docs/issues/open/greats-pretrain-experiment-logs-predate-lr-schedule-fix_2026-07-04.md`.
+> Same-code reruns of Regular and GREATS-excl live in `examples/opus/experiments/logs/`.
+
 Held-out Pile loss for training on a **random** batch (Regular) vs **GREATS** online batch
 selection — GPT2-Small, **equal update size `k=16`** (every arm steps on 16 samples; GREATS
 selects the best 16 of a 32-candidate pool by the train↔val gradient dot product `<g_i, g_val>`).
