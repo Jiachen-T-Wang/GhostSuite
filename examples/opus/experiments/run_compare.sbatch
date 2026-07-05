@@ -17,8 +17,9 @@
 #   sbatch experiments/run_compare.sbatch stochastic <MAX_STEPS>
 #       OPUS default: Boltzmann stochastic-greedy, adamw_scalar preconditioner,
 #       temperature 1e-9 — calibrated to the observed score scale at this setup
-#       (pilot: score std ~1.1e-9 under adamw_scalar; upstream's T=0.9 is tuned to
-#       their GPT2-XL/Muon score scale and would sample ~uniformly here).
+#       (pilot: score std ~1.1e-9 under adamw_scalar; the reference implementation's
+#       T=0.9 default (github.com/gszfwsb/OPUS) is tuned to their GPT2-XL/Muon score
+#       scale and would sample ~uniformly here).
 #   sbatch experiments/run_compare.sbatch greedy     <MAX_STEPS>
 #       Deterministic greedy with the Gram redundancy penalty in RAW gradient units
 #       (preconditioner none; pilot: score ~2e-2, Gram diag ~0.3 — the penalty is

@@ -1,7 +1,7 @@
 # Examples Directory
 
 This directory contains runnable examples demonstrating the Ghost Engine framework for
-efficient per-sample gradient computation. It is organized into five subfolders, each
+efficient per-sample gradient computation. It is organized into six subfolders, each
 covered by a section below:
 
 1. [`minimal/`](#1-minimal-examples-minimal) — smallest end-to-end demos, no data prep.
@@ -9,7 +9,9 @@ covered by a section below:
 3. [`torchtitan/`](#3-llm-pretraining-with-torchtitan-torchtitan) — large-scale LLM pretraining.
 4. [`greats/`](#4-online-batch-selection-with-greats-greats) — online batch selection built
    on the ghost dot-products.
-5. [`dvemb_lm/`](#5-data-value-embedding-dvemb_lm) — trajectory-specific data valuation built on
+5. [`opus/`](#5-sketched-online-data-selection-with-opus-opus) — sketched, diversity-aware
+   online data selection built on the ghost gradient projections.
+6. [`dvemb_lm/`](#6-data-value-embedding-dvemb_lm) — trajectory-specific data valuation built on
    the ghost gradient projections.
 
 
@@ -185,7 +187,31 @@ See [`greats/README.md`](greats/README.md), [`greats/pretrain/README.md`](greats
 and [`greats/sft/README.md`](greats/sft/README.md) for details.
 
 
-## 5. Data Value Embedding (`dvemb_lm/`)
+## 5. Sketched Online Data Selection with OPUS (`opus/`)
+
+[OPUS](https://github.com/gszfwsb/OPUS) (Wang et al., ICML 2026) extends the GREATS line:
+candidates are scored by **sketched, optimizer-preconditioned** gradient inner products
+against a proxy batch, plus a candidate-candidate similarity (Gram) matrix that feeds a
+diversity-aware Boltzmann **stochastic-greedy** selection. This port computes the per-sample
+sketches with the `GradProjLora` engine's two-sided factorized projection inside the backward
+— no per-sample gradient is ever materialized, making the scoring pass 5–6× faster than the
+reference implementation's CountSketch at matched fidelity — and shares the `lm/` model/data
+stack and the GREATS pretrain protocol, so the two selection rules are directly comparable
+(see [`opus/experiments/`](opus/experiments/README.md) for the Pile comparison).
+
+```bash
+# Synthetic smoke test (1 GPU, no corpus)
+python examples/opus/main.py --method OPUS --train_set synthetic \
+    --architecture GPT2-Tiny --candidate_batch_size 16 --batch_size 8 \
+    --val_batch_size 4 --max_steps 12 --eval_interval 4 \
+    --model_dtype float32 --train_dtype float32
+```
+
+See [`opus/README.md`](opus/README.md) for the algorithm, flags, and the differences from the
+reference implementation.
+
+
+## 6. Data Value Embedding (`dvemb_lm/`)
 
 [Data Value Embedding](https://arxiv.org/abs/2412.09538) (DVEmb) attributes a trained model's
 behavior on **test** examples back to each **training** example *and the training step at which it

@@ -3,7 +3,8 @@
 Mirrors examples/greats/pretrain/config_file.py (so it reuses the same shared/ model + data
 utilities and stays batch-for-batch comparable with the committed GREATS experiment) and adds
 the OPUS-specific knobs: sketch dimensions, the selection method (Boltzmann stochastic-greedy /
-greedy / top-k), its temperature, and the optimizer-induced preconditioner mode.
+greedy / top-k), its temperature, and the optimizer-induced preconditioner mode. "OPUS
+reference" defaults refer to the reference implementation at github.com/gszfwsb/OPUS.
 """
 
 import argparse
@@ -36,26 +37,27 @@ def parse_arguments():
     parser.add_argument("--method", type=str, default="OPUS",
                         choices=["OPUS", "Regular"])
 
-    # Candidate pool (upstream's buffer): N scored candidates per step, k selected.
+    # Candidate pool (OPUS's buffer): N scored candidates per step, k selected.
     parser.add_argument("--candidate_batch_size", type=int, default=None,
                         help="Candidate pool size N scored each step; the trained subset "
                              "size k is --batch_size (N >= k). Defaults to 2 * batch_size "
-                             "(selection ratio 0.5, upstream's default).")
+                             "(selection ratio 0.5, the OPUS reference default).")
 
     # OPUS selection knobs.
     parser.add_argument("--opus_selection_method", type=str, default="stochastic",
                         choices=["stochastic", "greedy", "topk"],
                         help="stochastic = Boltzmann stochastic-greedy with the Gram "
-                             "redundancy penalty (upstream default); greedy = deterministic "
+                             "redundancy penalty (the OPUS default); greedy = deterministic "
                              "argmax with the penalty; topk = plain top-k by score "
                              "(no diversity term — the GREATS-style ablation arm).")
     parser.add_argument("--opus_temperature", type=float, default=0.9,
-                        help="Boltzmann temperature for stochastic selection "
-                             "(upstream run.sh default 0.9).")
+                        help="Boltzmann temperature for stochastic selection (the OPUS "
+                             "reference default is 0.9; calibrate to the observed score "
+                             "scale — see experiments/README.md).")
     parser.add_argument("--opus_preconditioner", type=str, default="adamw_scalar",
                         choices=["none", "adamw_scalar"],
-                        help="none = raw gradient inner products (upstream 'sgd'); "
-                             "adamw_scalar = upstream's per-layer AdamW scalar factors "
+                        help="none = raw gradient inner products (OPUS's 'sgd' mode); "
+                             "adamw_scalar = OPUS's per-layer AdamW scalar factors "
                              "C_t/sqrt(numel) on the train side (the element-wise AdamW "
                              "diagonal needs materialized per-sample gradients and is not "
                              "supported — see opus_scorer.py).")
@@ -63,8 +65,8 @@ def parse_arguments():
     # Sketch (gradient projection) knobs.
     parser.add_argument("--proj_dim", type=int, default=8192,
                         help="Per-layer sketch budget k_i*k_o (split per layer by the "
-                             "engine's aspect-ratio rule). Upstream's CountSketch default "
-                             "is 8192 per layer.")
+                             "engine's aspect-ratio rule). The OPUS reference's CountSketch "
+                             "default is 8192 per layer.")
     parser.add_argument("--proj_rank_min", type=int, default=4,
                         help="Minimum per-side projection dimension.")
     parser.add_argument("--proj_seed", type=int, default=4242,
@@ -78,9 +80,9 @@ def parse_arguments():
                              "(default: all transformer-block Linears; the tied "
                              "wte/lm_head are excluded — the recommended GREATS setting).")
     parser.add_argument("--score_seq_len", type=int, default=None,
-                        help="Score on a prefix window of this many tokens (upstream's "
-                             "score_len efficiency knob). Default: the full sequence, "
-                             "matching how the GREATS experiment scores.")
+                        help="Score on a prefix window of this many tokens (the OPUS "
+                             "reference's score_len efficiency knob). Default: the full "
+                             "sequence, matching how the GREATS experiment scores.")
 
     # Architecture.
     parser.add_argument("--architecture", type=str, default="GPT2-Small",

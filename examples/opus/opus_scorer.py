@@ -6,18 +6,18 @@ OPUS selection rule needs (github.com/gszfwsb/OPUS, ICML 2026):
 - per-candidate utility ``s_i = <sketch(g_i), mean_j sketch(g_vj)>``
 - the candidate-candidate similarity (Gram) ``sim_ij = <sketch(g_i), sketch(g_j)>``
 
-where ``sketch(g)`` is the per-sample gradient in projected space. Upstream OPUS's default
-("random projection") mode CountSketches each per-sample gradient by materializing it in row
-chunks; here the sketch is the engine's two-sided factorized projection
+where ``sketch(g)`` is the per-sample gradient in projected space. The OPUS reference
+implementation's default ("random projection") mode CountSketches each per-sample gradient by
+materializing it in row chunks; here the sketch is the engine's two-sided factorized projection
 ``P_o (Σ_t b_t a_tᵀ) P_iᵀ`` computed inside the backward hooks WITHOUT ever materializing a
 per-sample gradient — same unbiased-inner-product guarantee (Gaussian ``N(0, 1/k)`` /
 calibrated row-orthonormal ``P``), much less work per layer.
 
-Preconditioning (the "optimizer-induced" part of OPUS): ``adamw_scalar`` applies upstream's
+Preconditioning (the "optimizer-induced" part of OPUS): ``adamw_scalar`` applies OPUS's
 per-layer scalar factors — the AdamW step-size factor
 ``C_t = lr·(1-β1)·sqrt(1-β2^t)/(1-β1^t)`` times the ``1/sqrt(numel)`` layer normalization —
 to the TRAIN-side sketches, so scores carry ``c_l`` and the Gram carries ``c_l²``, exactly
-upstream's left-side weighting semantics. Upstream's *element-wise* AdamW diagonal
+the reference's left-side weighting semantics. The reference's *element-wise* AdamW diagonal
 ``1/(sqrt(v_t)+eps)`` is NOT supported: it cannot pass through a factorized projection
 without materializing the gradient, which is the very cost this scorer avoids (a
 rank-1-factored diagonal folded into ``P_o``/``P_i`` is possible future work).
@@ -46,9 +46,10 @@ class OpusProjScorer:
         self.preconditioner = config.opus_preconditioner
         if self.preconditioner not in ("none", "adamw_scalar"):
             raise ValueError(
-                f"Unknown opus_preconditioner {self.preconditioner!r}; upstream's element-wise "
-                "AdamW diagonal / Muon modes need materialized per-sample gradients and are "
-                "not supported by the factorized-projection scorer (see module docstring)."
+                f"Unknown opus_preconditioner {self.preconditioner!r}; the OPUS reference's "
+                "element-wise AdamW diagonal / Muon modes need materialized per-sample "
+                "gradients and are not supported by the factorized-projection scorer "
+                "(see module docstring)."
             )
 
         # proj_dir is only used if a caller ever saves projections; the scorer always

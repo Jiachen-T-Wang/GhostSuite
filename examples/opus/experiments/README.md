@@ -1,12 +1,14 @@
 # OPUS vs GREATS pretraining: online selection on Pile
 
-Held-out Pile loss for **OPUS** selection (this example) vs **GREATS** TopK vs **Regular**
+Held-out Pile loss for **OPUS** selection (this example, re-implementing
+[github.com/gszfwsb/OPUS](https://github.com/gszfwsb/OPUS)) vs **GREATS** TopK vs **Regular**
 (random batch) — GPT2-Small, equal update size `k=16` (every arm steps on 16 samples; the
 selection arms pick them from a 32-candidate pool scored against an m=16 proxy batch drawn
-from the eval window pool). **All six curves are same-code runs** from branch `opus-example`
-(the committed 2026-06-25 GREATS experiment logs are *not* comparable — they predate the
-`a93f856` LR-schedule fix and flatlined at min-lr for the second half; see
-`docs/issues/open/greats-pretrain-experiment-logs-predate-lr-schedule-fix_2026-07-04.md`).
+from the eval window pool). **All six curves are same-code runs**: the Regular / GREATS
+baselines were re-run alongside the OPUS arms because the logs of the earlier GREATS
+experiment (2026-06-25) predate an LR-schedule fix — the old config hardcoded a 10k-step
+cosine horizon, flatlining at min-lr for the second half of a 20k run — and are therefore
+not comparable with newer runs.
 
 ![val/test loss vs step](opus_pretrain_2026-07-04.png)
 
@@ -27,23 +29,25 @@ from the eval window pool). **All six curves are same-code runs** from branch `o
    ties GREATS TopK on exact ghost dot products (Δval ≤ 0.002, within single-run noise) — the
    factorized projection loses nothing in selection quality (score fidelity vs exact was
    Spearman 0.995 at this seq length), while its scoring pass costs the same as GREATS's
-   (~0.197 s/step on H200) and is 5–6× faster than upstream OPUS's own implementation
-   (`docs/analysis/opus_port_correctness_efficiency_2026-07-03.md`).
+   (~0.197 s/step on H200) and is 5–6× faster than the OPUS reference implementation's own
+   scoring (see the main [example README](../README.md) for the measured numbers).
 2. **The whole selection gain is first-order quality + hard TopK** (~0.034 nats over Regular
    at this protocol). OPUS's additions on top of TopK do not help here:
-   - *Optimizer-induced scalars* (`adamw_scalar`, upstream's `C_t/√numel` layer weighting):
+   - *Optimizer-induced scalars* (`adamw_scalar`, OPUS's `C_t/√numel` layer weighting):
      neutral (2.832 vs 2.830).
-   - *Boltzmann stochasticity* (temperature calibrated to the observed score std — upstream's
-     default T=0.9 would sample uniformly at this score scale): keeps only ~60% of the TopK
-     gain (2.845).
+   - *Boltzmann stochasticity* (temperature calibrated to the observed score std — the
+     reference default T=0.9 would sample uniformly at this score scale): keeps only ~60% of
+     the TopK gain (2.845).
    - *Gram diversity penalty*: at a scale where it meaningfully bites (raw units), greedy
      selection is **worse than random** (2.900) — it over-diversifies into low-utility
-     candidates. At upstream's own published scale the penalty is a ~1e-8-relative
-     perturbation (score ∝ c, Gram ∝ c², c ≈ 1e-8), i.e. **published OPUS is effectively
-     near-TopK selection**; its reported gains are consistent with the first-order signal.
+     candidates. At the reference implementation's own published scale the penalty is a
+     ~1e-8-relative perturbation (score ∝ c, Gram ∝ c², c ≈ 1e-8), i.e. **published OPUS is
+     effectively near-TopK selection**; its reported gains are consistent with the
+     first-order signal.
 3. **Scale sensitivity is the practical OPUS gotcha.** Score magnitudes are
    `C_t/√numel`-scaled (∝ current lr), so a fixed temperature changes meaning across setups
-   and across the LR schedule; see the pilot in the analysis doc.
+   and across the LR schedule. Calibrate T to the observed score scale (a short pilot at the
+   target lr: score std was ~1.1e-9 under `adamw_scalar`, ~2.5e-2 in raw units here).
 
 ## Setup
 
@@ -73,9 +77,8 @@ sbatch experiments/run_compare.sbatch GREATS  excl 20000
 
 ## Provenance
 
-A100-80GB (`--constraint=gpu80`), GhostSuite worktree `.venv`, branch `opus-example`
-(`ae01658` + baseline reruns), single run per arm. Jobs: OPUS stochastic 10635533, greedy
-10635534, topk 10658023, topk-raw 10659765 (2026-07-03/04); Regular rerun 10691297,
-GREATS-excl rerun 10691298 (2026-07-04). Raw logs under `logs/`. Cross-arm gaps of
+A100-80GB (`--constraint=gpu80`), GhostSuite `.venv`, single run per arm (2026-07-03/04).
+Jobs: OPUS stochastic 10635533, greedy 10635534, topk 10658023, topk-raw 10659765; Regular
+rerun 10691297, GREATS-excl rerun 10691298. Raw logs under `logs/`. Cross-arm gaps of
 ±0.002 val are within single-run noise; the Regular↔TopK gap (~0.034) and the greedy
 deficit (~0.035) are consistent across all 40 eval points of the second half.

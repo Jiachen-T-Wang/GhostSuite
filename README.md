@@ -40,7 +40,7 @@ source .venv/bin/activate
 
 ## Quick Start
 
-The `examples/` directory holds five groups of runnable demos, one per subfolder.
+The `examples/` directory holds six groups of runnable demos, one per subfolder.
 Each is summarized below; see [`examples/README.md`](examples/README.md) for the full
 walkthrough, all options, and the TorchTitan speed↔memory tuning guide.
 
@@ -106,6 +106,25 @@ python examples/greats/pretrain/main.py --method GREATS --train_set synthetic \
 
 See [`examples/greats/README.md`](examples/greats/README.md) for both variants and the
 first-order vs. second-order selection modes.
+
+### Sketched online data selection with OPUS (`examples/opus/`)
+[OPUS](https://github.com/gszfwsb/OPUS) (Wang et al., ICML 2026) extends the GREATS line with
+sketched, optimizer-preconditioned scores and diversity-aware Boltzmann selection. This port
+computes the per-sample gradient sketches with the `GradProjLora` engine's factorized
+projection (no per-sample gradient is ever materialized — 5–6× faster scoring than the
+reference implementation's CountSketch at matched fidelity), then selects via
+stochastic-greedy / greedy / top-k.
+
+```bash
+# Synthetic smoke test (1 GPU, no corpus)
+python examples/opus/main.py --method OPUS --train_set synthetic \
+    --architecture GPT2-Tiny --candidate_batch_size 16 --batch_size 8 \
+    --val_batch_size 4 --max_steps 12 --model_dtype float32 --train_dtype float32
+```
+
+See [`examples/opus/README.md`](examples/opus/README.md), and
+[`examples/opus/experiments/`](examples/opus/experiments/README.md) for the OPUS-vs-GREATS
+comparison on Pile.
 
 ### Data Value Embedding (`examples/dvemb_lm/`)
 [Data Value Embedding](https://arxiv.org/abs/2412.09538) (DVEmb) attributes a trained model's

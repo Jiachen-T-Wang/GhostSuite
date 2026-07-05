@@ -1,12 +1,12 @@
 """Plot OPUS-vs-GREATS-vs-Regular pretraining val/test loss vs steps (two panels).
 
-All six curves are SAME-CODE runs (branch `opus-example`, post-a93f856 LR schedule): the
-Regular / GREATS-excl baselines were re-run alongside the OPUS arms because the committed
-2026-06-25 GREATS experiment logs predate the LR-schedule fix and are not comparable (see
-docs/issues/open/greats-pretrain-experiment-logs-predate-lr-schedule-fix_2026-07-04.md).
+All six curves are SAME-CODE runs: the Regular / GREATS-excl baselines were re-run alongside
+the OPUS arms because the 2026-06-25 GREATS experiment logs predate an LR-schedule fix (the
+old config hardcoded a 10k cosine horizon, flatlining at min-lr for the second half of a 20k
+run) and are not comparable with newer runs — see this folder's README.
 
 Parses the raw run logs in ./logs/ and writes ./opus_pretrain_2026-07-04.png. Run from the
-repo root with this worktree's venv:
+repo root:
     .venv/bin/python examples/opus/experiments/plot_opus_pretrain_loss.py
 """
 import glob
