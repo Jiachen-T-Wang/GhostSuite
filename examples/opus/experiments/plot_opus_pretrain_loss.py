@@ -1,8 +1,12 @@
 """Plot OPUS-vs-GREATS-vs-Regular pretraining val/test loss vs steps (two panels).
 
-Parses the raw run logs in ./logs/ (OPUS arms) plus the committed GREATS experiment logs
-(examples/greats/pretrain/experiments/logs/ — same protocol, same seed, same eval windows)
-and writes ./opus_pretrain_2026-07-03.png. Run from the repo root with this worktree's venv:
+All six curves are SAME-CODE runs (branch `opus-example`, post-a93f856 LR schedule): the
+Regular / GREATS-excl baselines were re-run alongside the OPUS arms because the committed
+2026-06-25 GREATS experiment logs predate the LR-schedule fix and are not comparable (see
+docs/issues/open/greats-pretrain-experiment-logs-predate-lr-schedule-fix_2026-07-04.md).
+
+Parses the raw run logs in ./logs/ and writes ./opus_pretrain_2026-07-04.png. Run from the
+repo root with this worktree's venv:
     .venv/bin/python examples/opus/experiments/plot_opus_pretrain_loss.py
 """
 import glob
@@ -15,22 +19,20 @@ import matplotlib.pyplot as plt
 
 _HERE = os.path.dirname(os.path.abspath(__file__))           # examples/opus/experiments
 LOG_DIR = os.path.join(_HERE, "logs")
-GREATS_LOGS = os.path.abspath(os.path.join(
-    _HERE, "..", "..", "greats", "pretrain", "experiments", "logs"))
-OUT = os.path.join(_HERE, "opus_pretrain_2026-07-03.png")
+OUT = os.path.join(_HERE, "opus_pretrain_2026-07-04.png")
+
 
 def _first(pattern):
-    hits = sorted(glob.glob(pattern))
+    hits = sorted(glob.glob(os.path.join(LOG_DIR, pattern)))
     return hits[0] if hits else None
 
 ARMS = [
-    ("Regular", os.path.join(GREATS_LOGS, "regular_10275913.log"), "tab:blue"),
-    ("GREATS (excl wte/lm_head)",
-     os.path.join(GREATS_LOGS, "greats_excl_wte_lmhead_10275914.log"), "tab:orange"),
-    ("OPUS stochastic (adamw_scalar, T=1e-9)",
-     _first(os.path.join(LOG_DIR, "opus_stochastic_*.log")), "tab:red"),
-    ("OPUS greedy (raw units)",
-     _first(os.path.join(LOG_DIR, "opus_greedy_*.log")), "tab:purple"),
+    ("Regular",                          _first("regular_rerun_*.log"),     "tab:blue",   "-"),
+    ("GREATS TopK (excl wte/lm_head)",   _first("greats_excl_rerun_*.log"), "tab:orange", "-"),
+    ("OPUS topk (adamw_scalar)",         _first("opus_topk_1*.log"),        "tab:red",    "-"),
+    ("OPUS topk (raw scores)",           _first("opus_topk-raw_*.log"),     "tab:brown",  "--"),
+    ("OPUS stochastic (T=1e-9)",         _first("opus_stochastic_*.log"),   "tab:purple", "-"),
+    ("OPUS greedy (raw units)",          _first("opus_greedy_*.log"),       "tab:gray",   "--"),
 ]
 _LINE = re.compile(r"^step (\d+): train loss [\d.]+, val loss ([\d.]+), test loss ([\d.]+)")
 
@@ -48,13 +50,13 @@ def parse(path):
 
 
 fig, (ax_val, ax_test) = plt.subplots(1, 2, figsize=(11, 4.2))
-for label, fname, color in ARMS:
+for label, fname, color, ls in ARMS:
     if fname is None or not os.path.exists(fname):
         print(f"skipping {label}: log not found")
         continue
     steps, val, test = parse(fname)
-    ax_val.plot(steps, val, label=label, color=color, lw=1.6)
-    ax_test.plot(steps, test, label=label, color=color, lw=1.6)
+    ax_val.plot(steps, val, label=label, color=color, lw=1.6, ls=ls)
+    ax_test.plot(steps, test, label=label, color=color, lw=1.6, ls=ls)
     if steps:
         print(f"{label}: final step {steps[-1]}  val {val[-1]:.3f}  test {test[-1]:.3f}")
 
@@ -65,11 +67,11 @@ for ax, title in ((ax_val, "val loss, Pile (GPT2-Small)"),
     ax.set_ylabel("Loss (nats)")
     ax.legend(fontsize=8)
     ax.grid(alpha=0.3)
-    ax.set_ylim(2.85, 3.6)
+    ax.set_ylim(2.75, 3.6)
     ax.set_xlim(2000, 20000)
 
-fig.suptitle("OPUS vs GREATS pretraining — online selection on Pile (equal update size k=16)",
-             y=1.02)
+fig.suptitle("OPUS vs GREATS pretraining — online selection on Pile "
+             "(equal update size k=16, same-code arms)", y=1.02)
 fig.tight_layout()
 fig.savefig(OUT, dpi=150, bbox_inches="tight")
 print("wrote", OUT)
